@@ -1,0 +1,19 @@
+{
+  "name": "shm-lru-aging-and-quotas",
+  "version": "1.0.0",
+  "description": "Shared memory LRU using aging tiers and quotas against rates of query",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/index.js"
+  },
+  "keywords": [
+    "shared",
+    "memory",
+    "LRU",
+    "cache",
+    "sessions",
+    "quota"
+  ],
+  "author": "R. Leddy",
+  "license": "MIT"
+}
