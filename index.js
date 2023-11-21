@@ -10,7 +10,7 @@ const INTER_PROC_DESCRIPTOR_WORDS = 8
 const DEFAULT_RESIDENCY_TIMEOUT = MIN_DELTA
 //
 
-const SUPER_HEADER = 256
+const SUPER_HEADER = 256                // one super header per LRU shm memory pair
 const MAX_LOCK_ATTEMPTS = 3
 
 const WORD_SIZE = 4
@@ -63,13 +63,9 @@ class ReaderWriter {
         //
         let common_path = conf.token_path
         //
-        let proc_count = (conf.proc_count !== undefined) ? parseInt(conf.proc_count) : 0
-        proc_count = Math.max(proc_count,2)     // expect one attaching process other than initializer (May be just logging)
-        this.proc_count = proc_count
-        //
         this.tier_count = (conf.tiers.length !== undefined) ? parseInt(conf.el_count) : DEFAULT_ELEMENT_COUNT;
         //
-        this.shm_com_key = new Array(proc_count)
+        this.shm_com_key = new Array(this.tier_count)
         this.shm_com_key.fill(-1)
         //
         let NN = this.tier_count
@@ -92,6 +88,13 @@ class ReaderWriter {
     }
     
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    /**
+     * 
+     * @param {*} tier 
+     * @param {*} resolve 
+     * @param {*} reject 
+     * @param {*} count 
+     */
     try_again(tier,resolve,reject,count) {
         count++
         // try again at least once before stalling on a lock
@@ -109,6 +112,12 @@ class ReaderWriter {
         })
     }
 
+    /**
+     * 
+     * @param {Number} tier - index of the tier for accessing the com key
+     * @param {Number} count - 
+     * @returns 
+     */
     async access(tier,count) {
         if ( count === undefined ) count = 0
         return new Promise((resolve,reject) => {
@@ -125,6 +134,10 @@ class ReaderWriter {
         })
     }
 
+    /**
+     * 
+     * @param {Number} tier - index of the tier for accessing the com key
+     */
     lock_asset(tier) {
         if ( this.proc_index >= 0 && this.com_buffer.length ) {
             if ( this.asset_lock ) return; // it is already locked
@@ -136,9 +149,13 @@ class ReaderWriter {
         }
     }
 
+    /**
+     * 
+     * @param {Number} tier - index of the tier for accessing the com key
+     */
     unlock_asset(tier) {
         if ( this.proc_index >= 0 && this.com_buffer.length ) {
-            let result = shm.unlock(this.shm_com_key[[tier]])
+            let result = shm.unlock(this.shm_com_key[tier])
             if ( result !== true ) {
                 console.log(shm.get_last_mutex_reason(this.shm_com_key[tier]))
             }
@@ -148,11 +165,26 @@ class ReaderWriter {
 }
 
 
+/**
+ * 
+ */
 class Tier {
 
     constructor() {
+        this.lru_buffer = false
+        this.hh_bufer = false
+        this.count = 0
+        this.lru_key = false
+        this.hh_key = false
     }
 
+    /**
+     * 
+     * @param {Number} sz - size of the element being stored
+     * @param {Number} hss - hop scotch scale
+     * @param {Number} rec_size - size of the element being stored
+     * @returns {Array} - [this.lru_key,this.hh_key] which are the region keys 
+     */
     init(sz,hss,rec_size) {
         this.lru_buffer = shm.create(sz); // create another tieir
         this.lru_key = this.lru_buffer.key
@@ -166,6 +198,14 @@ class Tier {
         return [this.lru_key,this.hh_key]  // LRU is memory storing the objects in an LRU, HH is the hopscotch tables
     }
 
+    /**
+     * 
+     * @param {Number} sz - size of the region
+     * @param {Number} hss - hop scotch scale
+     * @param {Number} rec_size - size of the element being stored
+     * @param {Number} lru_key 
+     * @param {Number} hh_key 
+     */
     attach(sz,hss,rec_size,lru_key,hh_key) {
         this.lru_buffer = shm.get(lru_key); //
         this.count = shm.initLRU(lru_key,rec_size,sz,false)
@@ -178,10 +218,11 @@ class Tier {
 
 
 
-  // proc_names -- the list of js file names that will be attaching to the regions.
-  // initializer -- true if master of ceremonies
-  //
-  // note: the initializer has to be called first before others.
+// proc_names -- the list of js file names that will be attaching to the regions.
+// initializer -- true if master of ceremonies
+//
+// note: the initializer has to be called first before others.
+
 
 /**
  * 
@@ -206,6 +247,13 @@ class ShmLRUCache extends ReaderWriter {
         super(conf)
         this.count = DEFAULT_ELEMENT_COUNT
         this.conf = conf
+
+        //
+        let proc_count = (conf.proc_count !== undefined) ? parseInt(conf.proc_count) : 0
+        proc_count = Math.max(proc_count,2)     // expect one attaching process other than initializer (May be just logging)
+        this.proc_count = proc_count
+
+        //
         // Provide a hash function by default or externally.
         try {
             this.hasher = conf.hasher ? (() =>{ hasher = require(conf.hasher); return(hasher.init(conf.seed)); })()
@@ -239,37 +287,39 @@ class ShmLRUCache extends ReaderWriter {
         //
         let sz = INTER_PROC_DESCRIPTOR_WORDS
         let proc_count = this.proc_count
-        //
-        let mpath_match = -1
-        if ( (typeof conf.token_path !== "undefined") ) {  // better idea
-            this.initializer = conf.am_initializer
-            if ( this.initializer === undefined ) this.initializer = false
-        }
-        //
-        if ( this.initializer ) {
-            this.com_buffer = shm.create(proc_count*sz + SUPER_HEADER,'Uint32Array',this.shm_com_key)
-        } else {
-            this.com_buffer = shm.get(this.shm_com_key,'Uint32Array')
-            if ( (mpath_match === -1) && (this.com_buffer === null) ) {
-                console.dir(conf)
-                console.log("module_path DOES NOT match with master_of_ceremonies OR master_of_ceremonies not yet initialized")
-                throw(new Error("possible configuration error"))
+        let NN = this.tier_count
+        for ( let i = 0; i < NN; i++ ) {
+            //
+            let mpath_match = -1
+            if ( (typeof conf.token_path !== "undefined") ) {  // better idea
+                this.initializer = conf.am_initializer
+                if ( this.initializer === undefined ) this.initializer = false
             }
+            //
+            if ( this.initializer ) {
+                this.com_buffer = shm.create(proc_count*sz*i + SUPER_HEADER,'Uint32Array',this.shm_com_key[i])
+            } else {
+                this.com_buffer = shm.get(this.shm_com_key[i],'Uint32Array')
+                if ( (mpath_match === -1) && (this.com_buffer === null) ) {
+                    console.dir(conf)
+                    console.log("module_path DOES NOT match with master_of_ceremonies OR master_of_ceremonies not yet initialized")
+                    throw(new Error("possible configuration error"))
+                }
+            }
+            //
+            this.proc_index = this.initializer ? 0 : 1
+            let pid = this.pid
+            let p_offset = NUM_INFO_FIELDS*(this.proc_index)*i + SUPER_HEADER
+            this.com_buffer[p_offset + PID_INDEX] = pid
+            this.com_buffer[p_offset + WRITE_FLAG_INDEX] = 0
+            this.com_buffer[p_offset + INFO_INDEX_LRU] = 0  //??
+            this.com_buffer[p_offset + INFO_INDEX_HH] = 0  //??
+            //
+            shm.init_mutex(this.shm_com_key[i],this.initializer)        // put the mutex at the very start of the communicator region.
+            //
         }
-        //
-        this.proc_index = this.initializer ? 0 : 1
-        let pid = this.pid
-        let p_offset = NUM_INFO_FIELDS*(this.proc_index) + SUPER_HEADER
-        this.com_buffer[p_offset + PID_INDEX] = pid
-        this.com_buffer[p_offset + WRITE_FLAG_INDEX] = 0
-        this.com_buffer[p_offset + INFO_INDEX_LRU] = 0  //??
-        this.com_buffer[p_offset + INFO_INDEX_HH] = 0  //??
-        //
-        shm.init_mutex(this.shm_com_key,this.initializer)        // put the mutex at the very start of the communicator region.
     }
 
-
-    // ----
     /**
      * 
      * @param {object} conf 
@@ -279,20 +329,15 @@ class ShmLRUCache extends ReaderWriter {
         this.record_size = parseInt(conf.record_size)
         this.count = (conf.el_count !== undefined) ? parseInt(conf.el_count) : DEFAULT_ELEMENT_COUNT;
         //
+        let NN = this.tier_count
+        let sz = ((this.count*this.record_size) + LRU_HEADER)
+        let hss = this.hop_scotch_scale
+        let rec_size = this.record_size
+        let p_offset = SUPER_HEADER  // even is the initializer is not at 0, all procs can read from zero
+        //
         if ( this.initializer ) {
             //
-            let NN = this.tier_count
-            let sz = ((this.count*this.record_size) + LRU_HEADER)
-            let hss = this.hop_scotch_scale
-
-            this._use_immediate_eviction = conf.immediate_evictions ? conf.immediate_evictions : false    
-            // Eviction -- only the process that manages memory can setup periodic eviction.
-            if ( conf.evictions_timeout ) {
-                this.setup_eviction_proc(conf)
-            }
-            //
-            let rec_size = this.record_size
-            let p_offset = SUPER_HEADER  // even is the initializer is not at 0, all procs can read from zero
+            this._use_immediate_eviction = conf.immediate_evictions ? conf.immediate_evictions : false
             //
             for ( let i = 0; i < NN; i++ ) {
                 let tier = this.tiers[i]
@@ -301,10 +346,12 @@ class ShmLRUCache extends ReaderWriter {
                 this.com_buffer[p_offset*i + INFO_INDEX_LRU] = lru_key
                 this.com_buffer[p_offset*i + INFO_INDEX_HH] = hh_key
             }
+            // Eviction -- only the process that manages memory can setup periodic eviction.
+            if ( conf.evictions_timeout ) {
+                this.setup_eviction_proc(conf)
+            }
             //
         } else {
-            let NN = this.tier_count
-            let p_offset = SUPER_HEADER
             //
             for ( let i = 0; i < NN; i++ ) {
                 let tier = this.tiers[i]
@@ -348,7 +395,6 @@ class ShmLRUCache extends ReaderWriter {
      * @param {object} value 
      * @returns {string} - a hyphenated string where the left is the modulus of the hash and the right is the hash itself.
      */
-
     augment_hash(hash) {
         let hh = hash
         let top = hh % this.count
@@ -368,7 +414,6 @@ class ShmLRUCache extends ReaderWriter {
      * @param {object} value 
      * @returns {Array} - a hyphenated string where a[0] is the modulus of the hash and a[1] is the hash itself.
      */
-
     augmented_hash_pair(hash) {
         let hh = hash
         let top = hh % this.count
@@ -377,12 +422,20 @@ class ShmLRUCache extends ReaderWriter {
   
 
     /**
+     * Set will automatically go to the first tier. 
+     * 
+     * About duplicating entries or not with tier awareness...
+     * The set is taken as truth. Truth is established by the applications.
+     * Only, after the value is set, another thread may discard the aged entry.
+     * 
+     * Hence, a set is an update that moves an entry to the first tier if the entry is present.
+     * After set successfully stores a value, it adds work to a deduplicating thread
      * 
      * @param {string|Array} hash_augmented - hyphentated string or a pair
      * @param {string|Number} value 
-     * @returns 
+     * @returns {Number}
      */
-    async set(hash_augmented,value) {
+    async set(hash_augmented,value,ith_tier) {
         if ( typeof value === 'string' ) {
             if ( !(value.length) ) return(-1)
             if ( value.length > this.record_size ) return(-1)    
@@ -394,9 +447,15 @@ class ShmLRUCache extends ReaderWriter {
 		let index = parseInt(pair[1])
         //
         if ( this.proc_index < 0 ) return  // guard against bad initialization and test cases
-        this.lock_asset()
+
+        let tier = this.tiers[0]
+        if ( !(isNaN(ith_tier)) && (ith_tier >= 0) && (ith_tier < this.tiers.length)) {
+            tier = this.tiers[ith_tier]
+        }
+
+        this.lock_asset(0)
         //
-        let status = shm.set(this.lru_key,value,hash,index)   // SET
+        let status = shm.set(tier.lru_key,value,hash,index)   // SET
         //
         if ( ((status === false) || (status < 0)) && this._use_immediate_eviction) {
             // error condition...
@@ -404,8 +463,8 @@ class ShmLRUCache extends ReaderWriter {
             let reduced_max = 20
             let status_retry = 1
             while ( reduced_max > 0 ) {
-                let [t_shift,rmax] = this.immediate_evictions(time_shift,reduced_max)
-                status_retry = shm.set(this.lru_key,value,hash,index)
+                let [t_shift,rmax] = this.immediate_evictions(tier,time_shift,reduced_max)
+                status_retry = shm.set(tier.lru_key,value,hash,index)
                 if ( status_retry > 0 ) break;
                 time_shift = t_shift
                 reduced_max = rmax
@@ -414,14 +473,14 @@ class ShmLRUCache extends ReaderWriter {
                 throw new Error("evictions fail to regain space")
             }
         }
-        this.unlock_asset()
+        this.unlock_asset(0)
         return status
     }
 
     /**
      * 
      * @param {string|Array} hash_augmented 
-     * @returns 
+     * @returns {string|boolean}
      */
     async get(hash_augmented) {
         let pair = Array.isArray(hash_augmented) ?  hash_augmented : hash_augmented.split('-')
@@ -434,6 +493,11 @@ class ShmLRUCache extends ReaderWriter {
         return(value)
     }
 
+    /**
+     * 
+     * @param {string} hash_augmented 
+     * @returns {boolean|Number}
+     */
     async del(hash_augmented) {
         let pair = Array.isArray(hash_augmented) ?  hash_augmented : hash_augmented.split('-')
 		let hash = parseInt(pair[0])
@@ -445,6 +509,11 @@ class ShmLRUCache extends ReaderWriter {
         return(result)
     }
 
+    /**
+     * 
+     * @param {string} hash_augmented 
+     * @returns 
+     */
     async delete(hash_augmented) {
         return this.del(hash_augmented)
     }
@@ -452,6 +521,11 @@ class ShmLRUCache extends ReaderWriter {
 
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+    /**
+     * 
+     * @param {object} conf 
+     * @returns {boolean}
+     */
     setup_eviction_proc(conf) {
         let eviction_timeout = (conf.sessions_length !== undefined) ? conf.sessions_length : DEFAULT_RESIDENCY_TIMEOUT
         let prev_milisec = (conf.aged_out_secs !== undefined) ? (conf.aged_out_secs*1000) : DEFAULT_RESIDENCY_TIMEOUT
@@ -468,7 +542,7 @@ class ShmLRUCache extends ReaderWriter {
 
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-    immediate_evictions(age_reduction,e_max) {
+    immediate_evictions(tier,age_reduction,e_max) {
         let conf = this.conf
         let prev_milisec = (conf.aged_out_secs !== undefined) ? (conf.aged_out_secs*1000) : DEFAULT_RESIDENCY_TIMEOUT
         if ( (typeof age_reduction === 'number') && (age_reduction < prev_milisec)) {
@@ -482,7 +556,7 @@ class ShmLRUCache extends ReaderWriter {
         if ( max_evict <= 0 ) return([0,0])
         if ( this.proc_index < 0 ) return([0,0])  // guard against bad initialization and test cases
         //
-        let evict_list = shm.run_lru_eviction(this.lru_key,cutoff,max_evict)
+        let evict_list = shm.run_lru_eviction(tier.lru_key,cutoff,max_evict)
         if ( evict_list.length ) {
             let self = this
             setTimeout(() => {
