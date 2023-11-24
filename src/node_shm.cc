@@ -157,6 +157,8 @@ namespace node_shm {
 	map<int,size_t> g_ids_to_seg_sizes;
 	map<key_t,MutexHolder *> g_MUTEX_per_segment;
 
+	void *g_com_buffer = NULL;
+
 
 
 	// Arrays to keep info about created segments, call it "info ararys"
@@ -452,6 +454,11 @@ namespace node_shm {
 	static void AtNodeExit(void*) {
 		detachShmSegments();
 	}
+
+
+
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
 	// fixed size data elements 
@@ -1073,9 +1080,9 @@ namespace node_shm {
 	NAN_METHOD(run_lru_eviction_move_values)  {
 		Nan::HandleScope scope;
 		key_t key1 = Nan::To<uint32_t>(info[0]).FromJust();
-		key_t key2 = Nan::To<uint32_t>(info[0]).FromJust();
-		time_t cutoff = Nan::To<uint32_t>(info[1]).FromJust();
-		uint32_t max_evict_b = Nan::To<uint32_t>(info[2]).FromJust();
+		key_t key2 = Nan::To<uint32_t>(info[1]).FromJust();
+		time_t cutoff = Nan::To<uint32_t>(info[2]).FromJust();
+		uint32_t max_evict_b = Nan::To<uint32_t>(info[3]).FromJust();
 		//
 		LRU_cache *from_lru_cache = g_LRU_caches_per_segment[key1];
 		LRU_cache *to_lru_cache = g_LRU_caches_per_segment[key2];
@@ -1275,6 +1282,244 @@ namespace node_shm {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			}
 		}
+	}
+
+
+
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+	// SUPER_HEADER,NTiers,INTER_PROC_DESCRIPTOR_WORDS
+	// let p_offset = sz*(this.proc_index)*i + SUPER_HEADER*NTiers
+
+
+	uint32_t g_SUPER_HEADER =0;
+	uint32_t g_NTiers = 0;
+	uint32_t g_INTER_PROC_DESCRIPTOR_WORDS = 0;
+	const uint32_t OFFSET_TO_MESSAGE = 32;
+	const uint32_t MAX_MESSAGE_SIZE = 128;
+	const uint32_t OFFSET_TO_MARKER = 0;
+	const uint32_t OFFSET_TO_HASH = 2;
+	const uint32_t OFFSET_TO_MESSAGE = (2+64+2);
+	const uint32_t DEFAULT_MICRO_TIMEOUT = 2; // 2 seconds
+
+	const MAX_WAIT_LOOPS = 1000;
+
+
+	NAN_METHOD(set_com_buf)  {
+		Nan::HandleScope scope;
+		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
+		uint32_t SUPER_HEADER = Nan::To<uint32_t>(info[1]).FromJust();
+		uint32_t NTiers = Nan::To<uint32_t>(info[2]).FromJust();
+		uint32_t INTER_PROC_DESCRIPTOR_WORDS = Nan::To<uint32_t>(info[3]).FromJust();
+
+		//
+		int resId = shmget(key, 0, 0);
+		if (resId == -1) {
+			switch(errno) {
+				case ENOENT: // not exists
+				case EIDRM:  // scheduled for deletion
+					info.GetReturnValue().Set(Nan::New<Number>(-1));
+					return;
+				default:
+					return Nan::ThrowError(strerror(errno));
+			}
+		}
+
+		void *region = getShmSegmentAddr(resId);
+		if ( region == nullptr ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+		//
+
+		g_com_buffer = region
+		info.GetReturnValue().Set(Nan::New<Boolean>(true));
+
+		g_SUPER_HEADER = SUPER_HEADER;
+		g_NTiers = NTiers;
+		g_INTER_PROC_DESCRIPTOR_WORDS = INTER_PROC_DESCRIPTOR_WORDS;
+	}
+
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+	static_assert(sizeof(T) == sizeof(std::atomic<T>), 
+			"atomic<T> isn't the same size as T");
+
+	static_assert(std::atomic<T>::is_always_lock_free,  // C++17
+			"atomic<T> isn't lock-free, unusable on shared mem");
+			
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+	typedef enum {
+		CLEAR_FOR_WRITE,  // unlocked - only one process will write in this spot, so don't lock for writing. Just indicate that reading can be done
+		CLEARED_FOR_READ, // the current process will set the atomic to CLEARED_FOR_READ
+		LOCKED_FOR_READ	  // a thread (process) that picks up the reading task will block other readers
+	} COM_BUFFER_STATE;
+
+
+
+	// only one process/thread should own this position. 
+	// The only contention will be that some process/thread will inspect the buffer to see if there is a job there.
+	// waiting for the state to be CLEAR_FOR_WRITE
+	//
+	inline bool wait_to_write(char *read_marker) {
+		auto p = static_cast<atomic<int>*>(read_marker);
+		uint32_t count = 0;
+		while ( p != 0 ) {
+			count++;
+			COM_BUFFER_STATE clear = (COM_BUFFER_STATE)(p->load(std::memory_order_relaxed));
+			if ( clear == CLEAR_FOR_WRITE ) break
+			//
+			if ( count > MAX_WAIT_LOOPS ) {
+				return false;
+			}
+			usleep(2);
+		}
+		return true;
+	}
+
+	inline void cleared_for_read(unsigned char *read_marker) {
+		auto p = static_cast<atomic<int>*>(read_marker);
+		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),CLEARED_FOR_READ)
+						&& ((COM_BUFFER_STATE)(*read_marker) !== CLEARED_FOR_READ));
+	}
+
+	inline void claim_for_read(unsigned char *read_marker) {
+		auto p = static_cast<atomic<int>*>(read_marker);
+		auto p = static_cast<atomic<int>*>(read_marker);
+		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),LOCKED_FOR_READ)
+						&& ((COM_BUFFER_STATE)(*read_marker) !== LOCKED_FOR_READ));
+	}
+
+	inline void clear_for_write(unsigned char *read_marker) {
+		auto p = static_cast<atomic<int>*>(read_marker);
+		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),CLEAR_FOR_WRITE)
+						&& ((COM_BUFFER_STATE)(*read_marker) !== CLEAR_FOR_WRITE));
+	}
+
+
+	int reader_operation(uint16_t proc_count, uint16_t assigned_tier) {
+		if ( g_com_buffer == NULL  ) {    // com buffer not intialized
+			return -5; // plan error numbers: this error is huge problem cannot operate
+		}
+		if ( (proc_count > 0) && (assigned_tier >= 0) ) {
+			//
+			char **messages = new char *[proc_count];  // get this many addrs
+			//
+			uint32_t condition_key = g_tier_to_CONDITION[tier];
+			ConditionHolder *cond = g_CONDITION_per_segment[condition_key];
+			if ( cond != NULL) {
+				if ( cond->wait_on_timed(shared_state,DEFAULT_MICRO_TIMEOUT) ) {  // start working
+					// 
+					uint32_t ready_msg_count = 0;
+
+					// FIRST: gather messages that are aready for addition to shared data structures.
+					//
+					for ( uint32_t proc = 0; proc < proc_count; proc++ ) {
+						//
+						uint32_t p_offset = g_INTER_PROC_DESCRIPTOR_WORDS*(proc)*assigned_tier + g_SUPER_HEADER*g_NTiers;
+						char *access_point = ((char *)g_com_buffer) + p_offset;
+						char *read_marker = (access_point + OFFSET_TO_MARKER);
+						uint32_t *hash_parameter = (uint32_t *)(access_point + OFFSET_TO_HASH);
+						char *m_insert = (access_point + OFFSET_TO_MESSAGE);
+
+						if ( (COM_BUFFER_STATE)(*read_marker) == CLEARED_FOR_READ ) {
+							//
+							claim_for_read(read_marker)
+							messages[ready_msg_count] = m_insert;
+							ready_msg_count++;
+							//
+						}
+
+					}
+
+				}
+			}
+		}
+
+
+			return 0;
+		}
+
+		return(-1)
+	}
+
+/*
+uint32_t p_offset = g_INTER_PROC_DESCRIPTOR_WORDS*(process)*i + g_SUPER_HEADER*g_NTiers;
+char *access_point = ((char *)g_com_buffer) + p_offset;
+char *read_marker = (access_point + OFFSET_TO_MARKER);
+uint32_t *hash_parameter = (uint32_t *)(access_point + OFFSET_TO_HASH);
+char *m_insert = (access_point + OFFSET_TO_MESSAGE);
+*/
+
+	/**
+	 * Waking up any thread that waits on input into the tier.
+	 * Any number of processes may place a message into a tier. 
+	 * If the tier is full, the reader has the job of kicking off the eviction process.
+	*/
+	bool wake_up_readers(uint32_t tier) {
+		uint32_t condition_key = g_tier_to_CONDITION[tier];
+		ConditionHolder *cond = g_CONDITION_per_segment[condition_key];
+		if ( cond != NULL) {
+			return cond->signal();
+		}
+		return false
+	}
+
+	/**
+	 * 
+	*/
+	NAN_METHOD(put)  {
+		Nan::HandleScope scope;
+		uint32_t process = Nan::To<uint32_t>(info[0]).FromJust();	// the process number
+		uint32_t hash_bucket = Nan::To<uint32_t>(info[1]).FromJust();	// hash modulus the number of buckets (hence a bucket)
+		uint32_t full_hash = Nan::To<uint32_t>(info[2]).FromJust();		// hash of the value
+		//
+		char* buffer = (char*) node::Buffer::Data(info[3]->ToObject());
+    	unsigned int size = info[4]->Uint32Value();
+
+		uint32_t tier = 0;
+
+		if ( g_com_buffer == NULL ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		} else {
+			//
+			if ( buffer && (size > 0) ) {
+				//
+				uint32_t p_offset = g_INTER_PROC_DESCRIPTOR_WORDS*(process)*i + g_SUPER_HEADER*g_NTiers;
+				char *access_point = ((char *)g_com_buffer) + p_offset;
+				char *read_marker = (access_point + OFFSET_TO_MARKER);
+				uint32_t *hash_parameter = (uint32_t *)(access_point + OFFSET_TO_HASH);
+				char *m_insert = (access_point + OFFSET_TO_MESSAGE);
+				//
+				// 
+				// WAIT - a reader may be still taking data out of our slot.
+				// let it finish before puting in the new stuff.
+				if ( wait_to_write(read_marker) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
+					hash_parameter[0] = hash_bucket;
+					hash_parameter[1] = full_hash;
+					memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));
+					// will sigal just in case this is the first writer done and a thread is out there with nothing to do.
+					// wakeup a conditional reader if it happens to be sleeping and mark it for reading, 
+					// which prevents this process from writing until the data is consumed
+					cleared_for_read(read_marker);
+					bool status = wake_up_readers(tier);
+					if ( !status ) {
+						info.GetReturnValue().Set(Nan::New<Boolean>(false));
+					}
+				} else {
+					// something went wrong ... perhaps a frozen reader...
+					info.GetReturnValue().Set(Nan::New<Number>(-1));
+					return;
+				}
+				//
+			} else {
+				info.GetReturnValue().Set(Nan::New<Number>(-1));
+				return;
+			}
+		}
+		info.GetReturnValue().Set(Nan::New<Boolean>(true));
 	}
 
 

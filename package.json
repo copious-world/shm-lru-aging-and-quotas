@@ -4,7 +4,10 @@
   "description": "Shared memory LRU using aging tiers and quotas against rates of query",
   "main": "index.js",
   "scripts": {
-    "test": "node test/index.js"
+    "test": "node test/index.js",
+    "gyp-install": "node-gyp configure && node-gyp rebuild",
+    "preinstall": "bash util/help-install.sh",
+    "install": "cmake-js compile"
   },
   "keywords": [
     "shared",
@@ -12,8 +15,21 @@
     "LRU",
     "cache",
     "sessions",
-    "quota"
+    "quota",
+    "ipc",
+    "shm",
+    "lru",
+    "cache",
+    "shared memory",
+    "typed array"
   ],
   "author": "R. Leddy",
-  "license": "MIT"
+  "license": "MIT",
+  "funding": {
+    "type": "GitHub Sponsors",
+    "url": "https://github.com/sponsors/copious-world"
+  },
+  "dependencies": {
+    "nan": "^2.18.0"
+  }
 }

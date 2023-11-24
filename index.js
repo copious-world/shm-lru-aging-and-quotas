@@ -1,16 +1,17 @@
-const shm = require('shm-typed-lru')
+'use strict';
+const shm = require('./build/Release/shm-typed-lru.node');
 const { XXHash32 } = require('xxhash32-node-cmake')
 const ftok = require('ftok')   // using this to get a shm segment id for the OS.
 
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 //
 const MAX_EVICTS = 10
 const MIN_DELTA = 1000*60*60   // millisecs
-const MAX_FAUX_HASH = 100000
 const INTER_PROC_DESCRIPTOR_WORDS = 8
 const DEFAULT_RESIDENCY_TIMEOUT = MIN_DELTA
 //
 
-const SUPER_HEADER = 256                // one super header per LRU shm memory pair
+const SUPER_HEADER = 256                // mutex is stored at the bottome of the buffer...
 const MAX_LOCK_ATTEMPTS = 3
 
 const WORD_SIZE = 4
@@ -52,6 +53,146 @@ function init_default(seed) {
 }
 
 
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+//
+
+const uint32Max = Math.pow(2,32) - 1;
+const keyMin = 1;
+const keyMax = uint32Max - keyMin;
+const perm = Number.parseInt('660', 8);
+const lengthMin = 1;
+/**
+ * Max length of shared memory segment (count of elements, not bytes)
+ */
+const lengthMax = shm.NODE_BUFFER_MAX_LENGTH;
+
+const cleanup = () => {
+	try {
+		var cnt = shm.detachAll();
+		if (cnt > 0)
+			console.info('shm segments destroyed:', cnt);
+	} catch(exc) { console.error(exc); }
+};
+process.on('exit', cleanup);
+let sigint_proc_stop = false
+process.on('SIGINT',() => {
+	cleanup()
+	if ( sigint_proc_stop === true ) process.exit(0)
+	if ( typeof sigint_proc_stop === "function" ) sigint_proc_stop()
+})
+
+function set_sigint_proc_stop(func) {
+	sigint_proc_stop = func
+}
+
+/**
+ * Types of shared memory object
+ */
+const BufferType = {
+	'Buffer': shm.SHMBT_BUFFER,
+	'Int8Array': shm.SHMBT_INT8,
+	'Uint8Array': shm.SHMBT_UINT8,
+	'Uint8ClampedArray': shm.SHMBT_UINT8CLAMPED,
+	'Int16Array': shm.SHMBT_INT16,
+	'Uint16Array': shm.SHMBT_UINT16,
+	'Int32Array': shm.SHMBT_INT32,
+	'Uint32Array': shm.SHMBT_UINT32,
+	'Float32Array': shm.SHMBT_FLOAT32, 
+	'Float64Array': shm.SHMBT_FLOAT64,
+};
+
+/**
+ * Create shared memory segment
+ * @param {int} count - number of elements
+ * @param {string} typeKey - see keys of BufferType
+ * @param {int/null} key - integer key of shared memory segment, or null to autogenerate
+ * @return {mixed/null} shared memory buffer/array object, or null on error
+ *  Class depends on param typeKey: Buffer or descendant of TypedArray
+ *  Return object has property 'key' - integer key of created shared memory segment
+ */
+function create(count, typeKey /*= 'Buffer'*/, key /*= null*/) {
+	if (typeKey === undefined)
+		typeKey = 'Buffer';
+	if (key === undefined)
+		key = null;
+	if (BufferType[typeKey] === undefined)
+		throw new Error("Unknown type key " + typeKey);
+	if (key !== null) {
+		if (!(Number.isSafeInteger(key) && key >= keyMin && key <= keyMax))
+			throw new RangeError('Shm key should be ' + keyMin + ' .. ' + keyMax);
+	}
+	var type = BufferType[typeKey];
+	//var size1 = BufferTypeSizeof[typeKey];
+	//var size = size1 * count;
+	if (!(Number.isSafeInteger(count) && (count >= lengthMin && count <= lengthMax)))
+		throw new RangeError('Count should be ' + lengthMin + ' .. ' + lengthMax);
+	let res;
+	if (key) {
+		res = shm.get(key, count, shm.IPC_CREAT|shm.IPC_EXCL|perm, 0, type);
+	} else {
+		do {
+			key = _keyGen();   // generate random numbers until a new one comes up.
+			res = shm.get(key, count, shm.IPC_CREAT|shm.IPC_EXCL|perm, 0, type);
+		} while(!res);
+	}
+	if (res) {
+		res.key = key;
+	}
+	return res;
+}
+
+/**
+ * Get shared memory segment
+ * @param {int} key - integer key of shared memory segment
+ * @param {string} typeKey - see keys of BufferType
+ * @return {mixed/null} shared memory buffer/array object, see create(), or null on error
+ */
+function get(key, typeKey /*= 'Buffer'*/) {
+	if (typeKey === undefined)
+		typeKey = 'Buffer';
+	if (BufferType[typeKey] === undefined)
+		throw new Error("Unknown type key " + typeKey);
+	var type = BufferType[typeKey];
+	if (!(Number.isSafeInteger(key) && key >= keyMin && key <= keyMax))
+		throw new RangeError('Shm key should be ' + keyMin + ' .. ' + keyMax);
+	let res = shm.get(key, 0, 0, 0, type);
+	if (res) {
+		res.key = key;
+	}
+	return res;
+}
+
+/**
+ * Detach shared memory segment
+ * If there are no other attaches for this segment, it will be destroyed
+ * @param {int} key - integer key of shared memory segment
+ * @param {bool} forceDestroy - true to destroy even there are other attaches
+ * @return {int} count of left attaches or -1 on error
+ */
+function detach(key, forceDestroy /*= false*/) {
+	if (forceDestroy === undefined)
+		forceDestroy = false;
+	return shm.detach(key, forceDestroy);
+}
+
+/**
+ * Detach all created and getted shared memory segments
+ * Will be automatically called on process exit/termination
+ * @return {int} count of destroyed segments
+ */
+function detachAll() {
+	return shm.detachAll();
+}
+
+
+function _keyGen() {
+	return keyMin + Math.floor(Math.random() * keyMax);
+}
+
+
+
+
+
 /**
  * 
  * 
@@ -65,18 +206,14 @@ class ReaderWriter {
         //
         this.tier_count = (conf.tiers.length !== undefined) ? parseInt(conf.el_count) : DEFAULT_ELEMENT_COUNT;
         //
-        this.shm_com_key = new Array(this.tier_count)
-        this.shm_com_key.fill(-1)
+        this.shm_com_key = false
         //
-        let NN = this.tier_count
         //
-        for ( let i = 0; i < NN; i++ ) {
-            this.shm_com_key[i] = ftok(`${common_path}${i}`)
-            if ( this.shm_com_key[i] < 0 ) {
-                common_path = `${__dirname}${i}`
-                this.shm_com_key[i] = ftok(common_path)
-            }
-        }
+        let proc_count = (conf.proc_count !== undefined) ? parseInt(conf.proc_count) : 0
+        proc_count = Math.max(proc_count,2)     // expect one attaching process other than initializer (May be just logging)
+        this.proc_count = proc_count
+        //
+        this.shm_com_key = ftok(`${common_path}`)
         //
         this.asset_lock = false
         this.com_buffer = []
@@ -86,20 +223,72 @@ class ReaderWriter {
         this.resolver = null
         //
     }
+
+
+
+    /**
+     * 
+     * @param {object} conf 
+     */
+    init_shm_communicator(conf) {
+        //
+        let sz = INTER_PROC_DESCRIPTOR_WORDS
+        let proc_count = this.proc_count
+        let NTiers = this.tier_count
+
+        let mpath_match = -1
+        if ( (typeof conf.token_path !== "undefined") ) {  // better idea
+            this.initializer = conf.am_initializer
+            if ( this.initializer === undefined ) this.initializer = false
+        }
+        //
+        if ( this.initializer ) {
+            this.com_buffer = shm.create(proc_count*sz*NTiers + SUPER_HEADER*NTiers,'Uint32Array',this.shm_com_key)
+        } else {
+            this.com_buffer = shm.get(this.shm_com_key,'Uint32Array')
+            if ( (mpath_match === -1) && (this.com_buffer === null) ) {
+                console.dir(conf)
+                console.log("possibly the shared memory region is not initialized")
+                throw(new Error("possible configuration error"))
+            }
+        }
+
+        //
+        shm.set_com_buf(this.shm_com_key,SUPER_HEADER,NTiers,INTER_PROC_DESCRIPTOR_WORDS) // 
+
+        const super_header_offset =  SUPER_HEADER*NTiers  // maybe a lock per tier
+        //
+        for ( let i = 0; i < NTiers; i++ ) {
+            //
+            this.proc_index = this.initializer ? 0 : 1
+            let pid = this.pid
+            let p_offset = sz*(this.proc_index)*i + super_header_offset
+            this.com_buffer[p_offset + PID_INDEX] = pid
+            this.com_buffer[p_offset + WRITE_FLAG_INDEX] = 0
+            this.com_buffer[p_offset + INFO_INDEX_LRU] = 0  //??
+            this.com_buffer[p_offset + INFO_INDEX_HH] = 0  //??
+            //
+            // mutex per tier ... but will use on special occasions...
+            shm.init_mutex(this.shm_com_key,i,this.initializer)   // put the mutex at the very start of the communicator region.
+        }
+        //
+
+    }
+
     
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
     /**
      * 
-     * @param {*} tier 
-     * @param {*} resolve 
-     * @param {*} reject 
-     * @param {*} count 
+     * @param {Number} tier 
+     * @param {Function} resolve 
+     * @param {Function} reject 
+     * @param {Number} count 
      */
     try_again(tier,resolve,reject,count) {
         count++
         // try again at least once before stalling on a lock
         setImmediate(() => { 
-            let result = shm.try_lock(this.shm_com_key[tier])
+            let result = shm.try_lock(this.shm_com_key,tier)
             if ( result === true ) {
                 resolve(true)
             } else if ( result === false ) {
@@ -116,13 +305,13 @@ class ReaderWriter {
      * 
      * @param {Number} tier - index of the tier for accessing the com key
      * @param {Number} count - 
-     * @returns 
+     * @returns {Promise}
      */
     async access(tier,count) {
         if ( count === undefined ) count = 0
         return new Promise((resolve,reject) => {
             this.asset_lock = false
-            let result = shm.try_lock(this.shm_com_key[tier])
+            let result = shm.try_lock(this.shm_com_key,tier)
             if ( result === true ) {
                 this.asset_lock = true
                 resolve(true)
@@ -142,9 +331,9 @@ class ReaderWriter {
         if ( this.proc_index >= 0 && this.com_buffer.length ) {
             if ( this.asset_lock ) return; // it is already locked
             //
-            let result = shm.lock(this.shm_com_key[tier])
+            let result = shm.lock(this.shm_com_key,tier)
             if ( result !== true ) {
-                console.log(shm.get_last_mutex_reason(this.shm_com_key[tier]))
+                console.log(shm.get_last_mutex_reason(this.shm_com_key,tier))
             }
         }
     }
@@ -155,9 +344,9 @@ class ReaderWriter {
      */
     unlock_asset(tier) {
         if ( this.proc_index >= 0 && this.com_buffer.length ) {
-            let result = shm.unlock(this.shm_com_key[tier])
+            let result = shm.unlock(this.shm_com_key,tier)
             if ( result !== true ) {
-                console.log(shm.get_last_mutex_reason(this.shm_com_key[tier]))
+                console.log(shm.get_last_mutex_reason(this.shm_com_key,tier))
             }
         }
     }
@@ -214,6 +403,9 @@ class Tier {
         this.hh_key = hh_key
         this.lru_key = lru_key
     }
+
+
+
 }
 
 
@@ -249,11 +441,6 @@ class ShmLRUCache extends ReaderWriter {
         this.conf = conf
 
         //
-        let proc_count = (conf.proc_count !== undefined) ? parseInt(conf.proc_count) : 0
-        proc_count = Math.max(proc_count,2)     // expect one attaching process other than initializer (May be just logging)
-        this.proc_count = proc_count
-
-        //
         // Provide a hash function by default or externally.
         try {
             this.hasher = conf.hasher ? (() =>{ hasher = require(conf.hasher); return(hasher.init(conf.seed)); })()
@@ -278,47 +465,7 @@ class ShmLRUCache extends ReaderWriter {
         }
     }
     
-    
-    /**
-     * 
-     * @param {object} conf 
-     */
-    init_shm_communicator(conf) {
-        //
-        let sz = INTER_PROC_DESCRIPTOR_WORDS
-        let proc_count = this.proc_count
-        let NN = this.tier_count
-        for ( let i = 0; i < NN; i++ ) {
-            //
-            let mpath_match = -1
-            if ( (typeof conf.token_path !== "undefined") ) {  // better idea
-                this.initializer = conf.am_initializer
-                if ( this.initializer === undefined ) this.initializer = false
-            }
-            //
-            if ( this.initializer ) {
-                this.com_buffer = shm.create(proc_count*sz*i + SUPER_HEADER,'Uint32Array',this.shm_com_key[i])
-            } else {
-                this.com_buffer = shm.get(this.shm_com_key[i],'Uint32Array')
-                if ( (mpath_match === -1) && (this.com_buffer === null) ) {
-                    console.dir(conf)
-                    console.log("module_path DOES NOT match with master_of_ceremonies OR master_of_ceremonies not yet initialized")
-                    throw(new Error("possible configuration error"))
-                }
-            }
-            //
-            this.proc_index = this.initializer ? 0 : 1
-            let pid = this.pid
-            let p_offset = NUM_INFO_FIELDS*(this.proc_index)*i + SUPER_HEADER
-            this.com_buffer[p_offset + PID_INDEX] = pid
-            this.com_buffer[p_offset + WRITE_FLAG_INDEX] = 0
-            this.com_buffer[p_offset + INFO_INDEX_LRU] = 0  //??
-            this.com_buffer[p_offset + INFO_INDEX_HH] = 0  //??
-            //
-            shm.init_mutex(this.shm_com_key[i],this.initializer)        // put the mutex at the very start of the communicator region.
-            //
-        }
-    }
+
 
     /**
      * 
@@ -647,3 +794,23 @@ class ShmLRUCache extends ReaderWriter {
 
 
 module.exports = ShmLRUCache
+
+
+
+
+
+
+
+
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+//Exports
+module.exports.create = create;
+module.exports.get = get;
+module.exports.detach = detach;
+module.exports.detachAll = detachAll;
+module.exports.getTotalSize = shm.getTotalSize;
+module.exports.BufferType = BufferType;
+module.exports.LengthMax = lengthMax;
+//
+module.exports.set_sigint_proc_stop = set_sigint_proc_stop
