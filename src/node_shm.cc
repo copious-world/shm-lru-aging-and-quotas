@@ -1398,13 +1398,149 @@ namespace node_shm {
 	}
 
 
-	int reader_operation(uint16_t proc_count, uint16_t assigned_tier) {
+	// messages_reserved is an area to store pointers to the messages that will be read.
+	// duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
+
+	// 				(TBD)
+	//  	attach_to_lru_list(LRU_element *first,LRU_element *last);
+	//		pair<uint32_t,uint32_t> filter_existence_check(messages,accesses,ready_msg_count);
+	//		LRU_element *claim_free_mem(ready_msg_count,assigned_tier)
+
+	// LRU_cache method
+	pair<uint32_t,uint32_t> filter_existence_check(char **messages,char **accesses,uint32_t ready_msg_count) {
+		uint32_t new_count = 0;
+		uint32_t dup_count = 0;
+		while ( ready_msg_count-- >= 0 ) {
+			uint64_t hash = ((uint64_t *)(*messages))[0];
+			if ( _hmap_i->get(hash) == 0 ) {
+				accesses[dup_count++] = messages[ready_msg_count];
+				messages[ready_msg_count] = NULL;
+			}
+		}
+		return pair<uint32_t,uint32_t>(new_count,dup_count);
+	}
+
+/*
+
+class LFS {
+public:
+
+	void push(const T& val)
+	{
+		node<T>* new_node = new node<T>(val);
+		new_node->next = _head.load();
+		while(!_head.compare_exchange_weak(new_node->next, new_node));
+	}
+
+
+};
+
+*/
+
+	// LRU_cache method
+	void return_to_free_mem(LRU_element *el) {				// a versions of push
+		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_next));
+		//
+		uint32_t el_offset = (uint32_t)(el - start);
+		uint32_t h_offset = head->load(std::memory_order_relaxed);
+		while(!head->compare_exchange_weak(h_offset, el_offset));
+	}
+
+	// LRU_cache method
+	LRU_element *claim_free_mem(uint32_t ready_msg_count) {
+		LRU_element *first = NULL;
+		//
+		uint8_t *start = _region;
+		size_t step = _step;
+		//
+		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_next));
+		uint32_t h_offset = head->load(std::memory_order_relaxed);
+		if ( h_offset == UINT32_MAX ) {
+			_status = false;
+			_reason = "out of free memory: free count == 0";
+			return(UINT32_MAX);
+		}
+		//
+		// POP as many as needed
+		//
+		uint32_t reserved_offsets[ready_msg_count];
+		uint32_t n = ready_msg_count;
+		while ( n-- ) {  // consistently pop the free stack
+			uint32_t next_offset = UINT32_MAX;
+			uint32_t first_offset = UINT32_MAX;
+			do {
+				if ( h_offset == UINT32_MAX ) {
+					_status = false;
+					_reason = "out of free memory: free count == 0";
+					return(UINT32_MAX);			/// failed memory allocation...
+				}
+				first_offset = h_offset;
+				first = (LRU_element *)(start + first_offset);
+				next_offset = first->_next;
+			} while( !(head->compare_exchange_weak(h_offset, next_offset)) );  // link ctrl->next to new first
+			//
+			if (  next_offset < UINT32_MAX ) {
+				reserved_offsets[n] = first_offset;  // h_offset should have changed
+			}
+		}
+		//
+		first = (LRU_element *)(start + reserved_offsets[0]);
+		LRU_element *next = first;
+		next->_prev = UINT32_MAX;
+		n = ready_msg_count-1;
+		for ( uint32_t i = 1; i < n; i++ ) {
+			next->_next = reserved_offsets[i];
+			next->_prev = reserved_offsets[i-1];
+			next = (LRU_element *)(start + next->_next);
+		}
+		next->_next = UINT32_MAX;
+		//
+		return first;
+	}
+
+
+	// LRU_cache method
+	uint32_t hash_and_store(LRU_element *current,uint64_t hash64,char *data) {
+		//
+		char *store_el = (char *)(current + 1);
+		//
+		uint32_t new_el_offset = current->offset;
+		// in rare cases the hash table may be frozen even if the LRU is not full
+		//
+		uint64_t store_stat = this->store_in_hash(hash64,new_el_offset);  // STORE inlined member method
+		//
+		if ( store_stat == UINT64_MAX ) {
+			// run evictions here..... 
+			return(UINT32_MAX);
+		}
+		//
+		memset(store_el,0,_record_size);   // _record_size member variable..
+		size_t cpsz = min(_record_size,strlen(data));  // copy size
+		memcpy(store_el,data,cpsz);
+		//
+		return new_el_offset;
+	}
+
+
+
+
+
+	// At the app level obtain the LRU for the tier and work from there
+	int reader_operation(uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint16_t assigned_tier) {
 		if ( g_com_buffer == NULL  ) {    // com buffer not intialized
 			return -5; // plan error numbers: this error is huge problem cannot operate
 		}
 		if ( (proc_count > 0) && (assigned_tier >= 0) ) {
 			//
-			char **messages = new char *[proc_count];  // get this many addrs
+			LRU_cache *lru = g_tier_to_LRU[assigned_tier];
+			if ( lru == NULL ) {
+				return(-1);
+			}
+			//
+			char **messages = messages_reserved;  // get this many addrs if possible...
+			char **accesses = duplicate_reserved;
 			//
 			uint32_t condition_key = g_tier_to_CONDITION[tier];
 			ConditionHolder *cond = g_CONDITION_per_segment[condition_key];
@@ -1412,7 +1548,7 @@ namespace node_shm {
 				if ( cond->wait_on_timed(shared_state,DEFAULT_MICRO_TIMEOUT) ) {  // start working
 					// 
 					uint32_t ready_msg_count = 0;
-
+					// 		OP on com buff
 					// FIRST: gather messages that are aready for addition to shared data structures.
 					//
 					for ( uint32_t proc = 0; proc < proc_count; proc++ ) {
@@ -1422,22 +1558,64 @@ namespace node_shm {
 						char *read_marker = (access_point + OFFSET_TO_MARKER);
 						uint32_t *hash_parameter = (uint32_t *)(access_point + OFFSET_TO_HASH);
 						char *m_insert = (access_point + OFFSET_TO_MESSAGE);
-
+						//
 						if ( (COM_BUFFER_STATE)(*read_marker) == CLEARED_FOR_READ ) {
 							//
-							claim_for_read(read_marker)
+							claim_for_read(read_marker); // This is the atomic update of the write state
 							messages[ready_msg_count] = m_insert;
+							accesses[ready_msg_count] = access_point;
 							ready_msg_count++;
 							//
 						}
-
+						//
 					}
+					// rof; 
+					// 		OP on com buff
+					// SECOND: If duplicating, free the message slot, otherwise gather memory for storing new objecs
+					//
+					if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
 
+						// 	-- FILTER
+						pair<uint32_t,uint32_t> update = lru->filter_existence_check(messages,accesses,ready_msg_count);
+
+						ready_msg_count = update.first;
+						uint32_t duplicate_count = update.second
+						while ( duplicate_count-- > 0 ) {
+							char *access_point = accesses[duplicate_count];
+							if ( access_point != NULL ) {
+								char *read_marker = (access_point + OFFSET_TO_MARKER);
+								clear_for_write(read_marker);
+							}
+						}
+
+						if ( ready_msg_count > 0 ) {
+							// GET LIST FROM FREE MEMORY
+							LRU_element *first = lru->claim_free_mem(ready_msg_count,assigned_tier); // negotiate getting a list from free memory
+							//
+							// if there are elements, they are already removed from free memory and this basket belongs to this process..
+							if ( first ) {
+								LRU_element *current = first;
+								LRU_element *last = first;
+								while ( current ) {
+									// read from com buf
+									char *to_read = messages[--ready_msg_count];
+									uint64_t hash64 = (uint64_t *)(to_read);
+									//
+									lru->hash_and_store(current,hash64,to_read + sizeof(uint64_t));
+									//
+									char *read_marker = (to_read - OFFSET_TO_MESSAGE + OFFSET_TO_MARKER);
+									clear_for_write(read_marker);
+									//
+									last = current;
+									current = current->_next;
+								}
+
+								lru->attach_to_lru_list(first,last);  // attach to an LRU as a whole bucket...
+							}
+						}
+					}
 				}
 			}
-		}
-
-
 			return 0;
 		}
 

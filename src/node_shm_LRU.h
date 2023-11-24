@@ -23,6 +23,7 @@ using namespace std;
 #include <unordered_map>
 #include <list>
 #include <chrono>
+#include <atomic>
 
 
 
@@ -130,6 +131,11 @@ typedef struct LRU_ELEMENT_HDR {
 	time_t		_when;
 	uint32_t	_share_key;
 } LRU_element;
+
+
+
+// Interleaved free memory is a stack -- fixed sized elements
+//
 
 class LRU_cache {
 	//
