@@ -1366,9 +1366,9 @@ namespace node_shm {
 	// waiting for the state to be CLEAR_FOR_WRITE
 	//
 	inline bool wait_to_write(char *read_marker,uint16_t loops = MAX_WAIT_LOOPS,uint32_t delay = 2) {
-		auto p = static_cast<atomic<int>*>(read_marker);
+		auto p = static_cast<atomic<uint8_t>*>(read_marker);
 		uint16_t count = 0;
-		while ( p != 0 ) {
+		while ( true ) {
 			count++;
 			COM_BUFFER_STATE clear = (COM_BUFFER_STATE)(p->load(std::memory_order_relaxed));
 			if ( clear == CLEAR_FOR_WRITE ) break
@@ -1386,31 +1386,30 @@ namespace node_shm {
 
 	//
 	inline void clear_for_write(unsigned char *read_marker) {   // first and last
-		auto p = static_cast<atomic<int>*>(read_marker);
+		auto p = static_cast<atomic<uint8_t>*>(read_marker);
 		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),CLEAR_FOR_WRITE)
 						&& ((COM_BUFFER_STATE)(*read_marker) !== CLEAR_FOR_WRITE));
 	}
 
 	//
 	inline void cleared_for_alloc(unsigned char *read_marker) {
-		auto p = static_cast<atomic<int>*>(read_marker);
+		auto p = static_cast<atomic<uint8_t>*>(read_marker);
 		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),CLEARED_FOR_ALLOC)
 						&& ((COM_BUFFER_STATE)(*read_marker) !== CLEARED_FOR_ALLOC));
 	}
 
 	//
 	inline void claim_for_alloc(unsigned char *read_marker) {
-		auto p = static_cast<atomic<int>*>(read_marker);
-		auto p = static_cast<atomic<int>*>(read_marker);
+		auto p = static_cast<atomic<uint8_t>*>(read_marker);
 		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),LOCKED_FOR_ALLOC)
 						&& ((COM_BUFFER_STATE)(*read_marker) !== LOCKED_FOR_ALLOC));
 	}
 
 	//
 	inline bool await_write_offset(char *read_marker,uint16_t loops,uint32_t delay) {
-		auto p = static_cast<atomic<int>*>(read_marker);
+		auto p = static_cast<atomic<uint8_t>*>(read_marker);
 		uint32_t count = 0;
-		while ( p != 0 ) {
+		while ( true ) {
 			count++;
 			COM_BUFFER_STATE clear = (COM_BUFFER_STATE)(p->load(std::memory_order_relaxed));
 			if ( clear == CLEARED_FOR_COPY ) break
@@ -1426,8 +1425,7 @@ namespace node_shm {
 
 	//
 	inline void clear_for_copy(unsigned char *read_marker) {
-		auto p = static_cast<atomic<int>*>(read_marker);
-		auto p = static_cast<atomic<int>*>(read_marker);
+		auto p = static_cast<atomic<uint8_t>*>(read_marker);
 		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),CLEARED_FOR_COPY)
 						&& ((COM_BUFFER_STATE)(*read_marker) !== CLEARED_FOR_COPY));
 	}
@@ -1533,26 +1531,106 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 	}
 
 
+
 	// LRU_cache method
-	uint32_t hash_and_store(LRU_element *current,uint64_t hash64,char *data) {
+	atomic<uint32_t> *wait_on_tail(LRU_element *ctrl_tail,bool set_high = false) {
 		//
-		char *store_el = (char *)(current + 1);
+		auto flag_pos = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_share_key));
+		if ( set_high ) {
+			uint32_t check = UINT32_MAX;
+			while ( check !== 0 ) {
+				check = flag_pos->load(std::memory_order_relaxed);
+				if ( check != 0 )  {			// waiting until everyone is done with it
+					usleep(delay);
+				}
+			}
+			while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,UINT32_MAX)
+						&& (ctrl_tail->_share_key) !== UINT32_MAX));
+		} else {
+			uint32_t check = UINT32_MAX;
+			while ( check == UINT32_MAX ) {
+				check = flag_pos->load(std::memory_order_relaxed);
+				if ( check == UINT32_MAX )  {
+					usleep(delay);
+				}
+			}
+			while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,(check+1))
+						&& (ctrl_tail->_share_key < UINT32_MAX) );
+		}
+		return flag_pos;
+	}
+
+
+	// LRU_cache method
+	void done_with_tail(LRU_element *ctrl_tail,atomic<uint32_t> *flag_pos,bool set_high = false) {
+		if ( set_high ) {
+			while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,0)
+						&& (ctrl_tail->_share_key == UINT32_MAX));   // if some others have gone through OK
+		} else {
+			auto prev_val = flag_pos->load();
+			if ( prev_val == 0 ) return;  // don't go below zero
+			flag_pos->fetch_sub(ctrl_tail->_share_key,1);
+		}
+	}
+
+
+	// LRU_cache method
+	/**
+	 * Prior to attachment, the required space availability must be checked.
+	*/
+	void attach_to_lru_list(uint32_t *lru_element_offsets,uint32_t ready_msg_count) {
 		//
-		uint32_t new_el_offset = current->offset;
-		// in rare cases the hash table may be frozen even if the LRU is not full
+		uint32_t last = lru_element_offsets[(ready_msg_count - 1)];  // freed and assigned to hashes...
+		uint32_t first = lru_element_offsets[0];  // freed and assigned to hashes...
 		//
-		uint64_t store_stat = this->store_in_hash(hash64,new_el_offset);  // STORE inlined member method
+		uint8_t *start = _region;
+		size_t step = _step;
 		//
-		if ( store_stat == UINT64_MAX ) {
-			// run evictions here..... 
-			return(UINT32_MAX);
+		LRU_element *ctrl_hdr = (LRU_element *)start;
+		//
+		LRU_element *ctrl_tail = (LRU_element *)(start + step);
+		auto tail_block = wait_on_tail(ctrl_tail,false); // stops if the tail hash is set high ... this call does not set it
+
+		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_hdr->_next));
+		//
+		uint32_t next = head->exchange(first);  // ensure that some next (another basket first perhaps) is available for buidling the LRU
+		//
+		LRU_element *old_first = (LRU_element *)(start + next);  // this has been settled
+		//
+		old_first->_prev = last;			// ---- ---- ---- ---- ---- ---- ---- ----
+		//
+		// thread the list
+		for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
+			LRU_element *current_el = (LRU_element *)(start + lru_element_offsets[i]);
+			current_el->_prev = ( i > 0 ) ? lru_element_offsets[i-1] : 0;
+			current_el->_next = ((i+1) < ready_msg_count) ? lru_element_offsets[i+1] : next;
 		}
 		//
-		memset(store_el,0,_record_size);   // _record_size member variable..
-		size_t cpsz = min(_record_size,strlen(data));  // copy size
-		memcpy(store_el,data,cpsz);
+
+		done_with_tail(ctrl_tail,tail_block,false);
+	}
+
+	// LRU_cache method
+	inline uint32_t lru_remove_last() {
 		//
-		return new_el_offset;
+		uint8_t *start = _region;
+		size_t step = _step;
+		//
+		LRU_element *ctrl_tail = (LRU_element *)(start + step);
+		auto tail_block = wait_on_tail(ctrl_tail,true);   // usually this will happen only when memory becomes full
+		//
+		auto tail = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_prev));
+		uint32_t t_offset = tail->load();
+		//
+		LRU_element *leaving = (LRU_element *)(start + t_offset);
+		LRU_element *staying = (LRU_element *)(start + leaving->_prev);
+		//
+		staying->_next = step;  // this doesn't change
+		ctrl_tail->_prev = leaving->_prev;
+		//
+		done_with_tail(ctrl_tail,tail_block,true);
+		//
+		return t_offset;
 	}
 
 
@@ -1633,9 +1711,13 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 								uint8_t *start = lru->_region;
 								uint32_t offset = 0;
 								//
+								uint32_t N = ready_msg_count;
+								//
+								// map hashes to the offsets
+								//
 								while ( offset = *current++ ) {
 									// read from com buf
-									char *access_point = messages[--ready_msg_count];
+									char *access_point = messages[--N];
 									if ( access_point != nullptr ) {
 										uint32_t *write_offset_here = (access_point + OFFSET_TO_OFFSET);
 										uint64_t *hash_parameter = (uint64_t *)(access_point + OFFSET_TO_HASH);
@@ -1649,7 +1731,7 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 									}
 								}
 								//
-								lru->attach_to_lru_list(lru_element_offsets);  // attach to an LRU as a whole bucket...
+								lru->attach_to_lru_list(lru_element_offsets,ready_msg_count);  // attach to an LRU as a whole bucket...
 							}
 						}
 					}
