@@ -195,7 +195,7 @@ class LRU_cache {
 			size_t curr = ctrl_free->_next;
 			size_t next = 4*step;
 			
-			while ( curr < region_size ) {
+			while ( curr < region_size ) {   // all the ends are in the first three elements ... the rest is either free or part of the LRU
 				_count_free++;
 				LRU_element *next_free = (LRU_element *)(start + curr);
 				next_free->_prev = UINT32_MAX;  // singly linked free list
@@ -209,6 +209,9 @@ class LRU_cache {
 				curr += step;
 				next += step;
 			}
+
+			ctrl_free->_hash = _count_free;   // how many free elements avaible
+			ctrl_hdr->_hash = 0;
 
 		}
 

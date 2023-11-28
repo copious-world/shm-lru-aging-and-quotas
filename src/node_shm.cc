@@ -1431,6 +1431,53 @@ namespace node_shm {
 	}
 
 
+
+	void transfer_to_source_tier(char *temp_bloat,size_t rec_size,map<uint32_t,map<uint32_t,uint64_t> &moving_objects,uint32_t req_count,uint32_t source_tier) {
+		//
+		// transfer control to a thread managing the next tier
+		//
+		for ( auto p : moving_objects ) {{
+			uint32_t i = p.first;
+			uint64_t hash = p.second;
+			char *data = temp_bloat + rec_size*i;
+			thread_adds_data(source_tier+1,data,hash);
+		}}
+	}
+
+	bool run_evictions(LRU_cache *lru,uint32_t source_tier) {
+		//
+		// lru - is a source tier 
+		//
+		map<uint32_t,uint64_t> moving_objects;
+		//
+		uint8_t *start = _region;
+		size_t step = _step;
+		//
+		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+		_count_free = ctrl_free->_prev;  // using the hash field as the counter
+		//
+		uint32_t req_count = free_mem_requested();
+		if ( req_count == 0 ) return true;
+		//
+		char *temp_bloat = new char[_record_size*req_count]
+		char *tmp = temp_bloat;
+		//
+		for ( uint32_t i = 0; i < req_count; i++ ) {
+			pair<uint32_t,uint64_t> &p = lru->lru_remove_last();
+			uint32_t t_offset = p.first;
+			uint32_t hash = p.second;
+			LRU_element *moving = (LRU_element *)(start + t_offset);  // always the same each tier...
+			char *data = (char *)(moving + 1);
+			memcpy(data,tmp,_record_size);
+			tmp += _record_size;
+			return_to_free_mem(moving);
+			moving_objects[i] = hash;
+		}
+		//
+		transfer_to_source_tier(temp_bloat,_record_size,moving_objects,req_count,source_tier);
+		return true;
+	}
+
 	// messages_reserved is an area to store pointers to the messages that will be read.
 	// duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
 
@@ -1438,6 +1485,8 @@ namespace node_shm {
 	//  	attach_to_lru_list(LRU_element *first,LRU_element *last);
 	//		pair<uint32_t,uint32_t> filter_existence_check(messages,accesses,ready_msg_count);
 	//		LRU_element *claim_free_mem(ready_msg_count,assigned_tier)
+
+
 
 	// LRU_cache method
 	pair<uint32_t,uint32_t> filter_existence_check(char **messages,char **accesses,uint32_t ready_msg_count) {
@@ -1456,37 +1505,72 @@ namespace node_shm {
 
 
 /*
-// Member variable
-std::atomic_bool flag;
-
-// Before the critical section
-bool expected;
-do {
-    expected = false;
-} while (!flag.compare_exchange_weak(expected, true));
-
-// Critical section here
-    
-// Unlock at the end
-flag = false;
-
-*/
-
-
-/*
 Free memory is a stack with atomic var protection.
 If a basket of new entries is available, then claim a basket's worth of free nodes and return then as a 
 doubly linked list for later entry. Later, add at most two elements to the LIFO queue the LRU.
 */
+	// LRU_cache method
+	inline uint32_t free_mem_requested(void) {
+		//
+		uint8_t *start = _region;
+		size_t step = _step;
+		//
+		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+		//
+		auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
+		uint32_t total_requested = requested->load(std::memory_order_relaxed);
+
+		return total_requested;
+	}
+
+
+	// LRU_cache method
+	bool check_free_mem(uint32_t msg_count,bool add) {
+		//
+		uint8_t *start = _region;
+		size_t step = _step;
+		//
+		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+		_count_free = ctrl_free->_prev;  // using the hash field as the counter
+		//
+		auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
+		uint32_t total_requested = requested->load(std::memory_order_relaxed);
+		if ( add ) {
+			total_requested += msg_count;
+			requested->fetch_add(msg_count);
+		}
+		if ( _count_free < total_requested ) return false;
+		return true;
+	}
+
+	// LRU_cache method
+	void free_mem_claim_satisfied(uint32_t msg_count) {   // stop requesting the memory... 
+		uint8_t *start = _region;
+		size_t step = _step;
+		//
+		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+		auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
+		if ( requested->load() <= msg_count ) {
+			requested->store(0);
+		} else {
+			requested->fetch_sub(msg_count);
+		}
+	}
+	
 
 	// LRU_cache method
 	void return_to_free_mem(LRU_element *el) {				// a versions of push
+		uint8_t *start = _region;
+		size_t step = _step;
+		//
 		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
 		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_next));
+		auto count_free = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
 		//
 		uint32_t el_offset = (uint32_t)(el - start);
 		uint32_t h_offset = head->load(std::memory_order_relaxed);
 		while(!head->compare_exchange_weak(h_offset, el_offset));
+		count_free->fetch_add(1, std::memory_order_relaxed);
 	}
 
 	// LRU_cache method
@@ -1497,13 +1581,14 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 		size_t step = _step;
 		//
 		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_next));
+		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
 		uint32_t h_offset = head->load(std::memory_order_relaxed);
 		if ( h_offset == UINT32_MAX ) {
 			_status = false;
 			_reason = "out of free memory: free count == 0";
 			return(UINT32_MAX);
 		}
+		auto count_free = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
 		//
 		// POP as many as needed
 		//
@@ -1527,13 +1612,16 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 			}
 		}
 		//
+		count_free->fetch_sub(ready_msg_count, std::memory_order_relaxed);
+		free_mem_claim_satisfied(ready_msg_count);
+		//
 		return 0;
 	}
 
 
 
 	// LRU_cache method
-	atomic<uint32_t> *wait_on_tail(LRU_element *ctrl_tail,bool set_high = false) {
+	atomic<uint32_t> *wait_on_tail(LRU_element *ctrl_tail,bool set_high = false,uint32_t delay = 4) {
 		//
 		auto flag_pos = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_share_key));
 		if ( set_high ) {
@@ -1589,7 +1677,7 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 		LRU_element *ctrl_hdr = (LRU_element *)start;
 		//
 		LRU_element *ctrl_tail = (LRU_element *)(start + step);
-		auto tail_block = wait_on_tail(ctrl_tail,false); // stops if the tail hash is set high ... this call does not set it
+		auto tail_block = wait_on_tail(ctrl_tail,false); // WAIT :: stops if the tail hash is set high ... this call does not set it
 
 		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_hdr->_next));
 		//
@@ -1610,14 +1698,32 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 		done_with_tail(ctrl_tail,tail_block,false);
 	}
 
+
+
+	/*
+		Exclude tail pop op during insert, where insert can only be called 
+		if there is enough room in the memory section. Otherwise, one evictor will get busy evicting. 
+		As such, the tail op exclusion may not be necessary, but desirable.  Really, though, the tail operation 
+		necessity will be discovered by one or more threads at the same time. Hence, the tail op exclusivity 
+		will sequence evictors which may possibly share work.
+
+		The problem to be addressed is that the tail might start removing elements while an insert is attempting to attach 
+		to them. Of course, the eviction has to be happening at the same time elements are being added. 
+		And, eviction is supposed to happen when memory runs out so the inserters are waiting for memory and each thread having 
+		encountered the need for eviction has called for it and should simply be higher on the stack waiting for the 
+		eviction to complete. After that they get free memory independently.
+	*/
+
+
+
 	// LRU_cache method
-	inline uint32_t lru_remove_last() {
+	inline pair<uint32_t,uint32_t> lru_remove_last() {
 		//
 		uint8_t *start = _region;
 		size_t step = _step;
 		//
 		LRU_element *ctrl_tail = (LRU_element *)(start + step);
-		auto tail_block = wait_on_tail(ctrl_tail,true);   // usually this will happen only when memory becomes full
+		auto tail_block = wait_on_tail(ctrl_tail,true);   // WAIT :: usually this will happen only when memory becomes full
 		//
 		auto tail = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_prev));
 		uint32_t t_offset = tail->load();
@@ -1625,12 +1731,15 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 		LRU_element *leaving = (LRU_element *)(start + t_offset);
 		LRU_element *staying = (LRU_element *)(start + leaving->_prev);
 		//
+		uint64_t hash = leaving->_hash;
+		//
 		staying->_next = step;  // this doesn't change
 		ctrl_tail->_prev = leaving->_prev;
 		//
 		done_with_tail(ctrl_tail,tail_block,true);
 		//
-		return t_offset;
+		pair<uint32_t,uint64_t> p(t_offset,hash);
+		return p;
 	}
 
 
@@ -1697,6 +1806,15 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 						}
 						//
 						if ( ready_msg_count > 0 ) {
+							//
+							// Is there enough memory?
+							bool add = true;
+							while ( !(lru->check_free_mem(ready_msg_count,add)) ) {
+								if ( !run_evictions(lru,assigned_tier) ) {
+									return(-1);
+								}
+								add = false;
+							}
 							// GET LIST FROM FREE MEMORY 
 							//
 							uint32_t lru_element_offsets[ready_msg_count+1];  // should be on stack
@@ -1742,6 +1860,7 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 
 		return(-1)
 	}
+
 
 
 	/**
