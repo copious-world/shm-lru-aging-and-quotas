@@ -1359,6 +1359,11 @@ namespace node_shm {
 		CLEARED_FOR_COPY	// now let the writer copy the message into storage
 	} COM_BUFFER_STATE;
 
+	// The data storage table is arranged as an array of cells, where each cell has a header which may belong to a free list
+	// or to the LRU list data structure, which will allow for quick access to aged out entries. 
+
+	// There is one LRU per hash table group (pool), and the size of the LRU is at most 50% (maybe or) of all possible hash table
+	// entries summed across the pool entries. 
 
 
 	// only one process/thread should own this position. 
@@ -1444,6 +1449,7 @@ namespace node_shm {
 		}}
 	}
 
+
 	bool run_evictions(LRU_cache *lru,uint32_t source_tier) {
 		//
 		// lru - is a source tier 
@@ -1488,20 +1494,95 @@ namespace node_shm {
 
 
 
-	// LRU_cache method
+	// LRU_cache method - calls get -- 
 	pair<uint32_t,uint32_t> filter_existence_check(char **messages,char **accesses,uint32_t ready_msg_count) {
 		uint32_t new_count = 0;
 		uint32_t dup_count = 0;
 		while ( ready_msg_count-- >= 0 ) {
 			uint64_t hash = ((uint64_t *)(*messages))[0];
-			if ( _hmap_i->get(hash) == 0 ) {
-				accesses[dup_count++] = messages[ready_msg_count];
+			if ( _hmap_i->partition_get(hash) != 0 ) {
+				accesses[dup_count++] = messages[ready_msg_count];  // the message exists
 				messages[ready_msg_count] = NULL;
 			}
 		}
 		return pair<uint32_t,uint32_t>(new_count,dup_count);
 	}
 
+
+	// HH_map method - calls partition_get -- 
+	//
+	/**
+	 * the offset_value is taken from the memory allocation ... it is the index into the LRU array of objects
+	 * 
+	 * The contention here is not between the two threads that each examine different memory regions.
+	 * However, other processes may content for the same buckets that these threads attempt to manipulate.
+	 * 
+	*/
+	bool add_key_value(uint64_t hash64,uint32_t offset_value) {
+		//
+		HHash *T_1 = (HHash *)(&_h_tables[0]);
+		HHash *T_2 = (HHash *)(&_h_tables[1]);
+		//
+		uint32_t h_bucket = (uint32_t)(key & HASH_MASK);
+		
+		pair<uint16_t,uint16_t> counts = this->bucket_counts(h_bucket);
+		uint16_t count_1 = T_1->bucket_count(h_bucket);		// favor the least full bucket ... but in case something doesn't move try both
+		uint16_t count_2 = T_2->bucket_count(h_bucket);
+		//
+		uint8_t tfirst = 0;
+		uint8_t tsecond = 1;
+		if ( count_2 < count_1 ) {
+			tfirst = 1;
+			tsecond = 0;
+		} else if ( count_2 == count_1 ) {
+			tfirst = _pop_random_bits();
+			tsecond = (tfirst + 1) % 2;
+		}
+		// Threads from this process will not contend with each other.
+		// They will work on two different memory sections.
+		// The favored should set the value first. 
+		//			Check thread IDs in undecided state (can be atomic)
+		this->wait_on_threads_busy(); // just in case the owning process somehow interleaved with itself
+		// ....
+		_threads[tfirst].push_value(offset_value);
+		_threads[tfirst].signal(hash64);
+		this->tick();						// The favored should set the value first. (gets a head start)
+		_threads[tsecond].push_value(offset_value);
+		_threads[tsecond].signal(hash64);
+		// ....
+		uint8_t which_thread = 2;
+		while ( which_thread == 2 ) {
+			uint8_t which_thread = this->sleepy_atomic_load_thread_id();
+			if ( which_thread == 1 ) {
+				T_2->pin_value_and_incr();  // pin the last value ... increment buckt count
+				T_1->unpin_value();  // pin the last value
+			} else if ( which_thread == 0 ) {
+				T_1->pin_value_and_incr();  // pin the last value ... increment buckt count
+				T_2->unpin_value();  // pin the last value
+			}
+		}
+		// ....
+		this->threads_not_busy();
+		return which_thread;
+	}
+
+
+
+	// HH_map method - calls get -- 
+	//
+	uint32_t partition_get(uint64_t key,uint8_t selector) {
+		//
+		uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
+		HHash *T = (HHash *)(_region + _offsets[selector]);
+		//
+		uint32_t uniqueness_mask = this->_uniqueness_mask;   // default HASH_MASK
+		// The element id of its bucket is stored in the top half of the 64, with other control information.
+		//
+		uint32_t element_diff = (uint32_t)((key >> HALF) & uniqueness_mask);  // just unloads it (was index)
+		uint32_t hash = (uint32_t)(key & HASH_MASK); // this is the 32 bit hash of the data determined by the caller...
+		//
+		return (uint32_t)(get_hh_set(T, hash, element_diff) >> HALF); 
+	}
 
 
 /*
@@ -1649,6 +1730,31 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 	}
 
 
+/*
+template<typename T, typename OP>
+T manipulate_bit(std::atomic<T> &a, unsigned n, OP bit_op) {
+    static_assert(std::is_integral<T>::value, "atomic type not integral");
+
+    T val = a.load();
+    while (!a.compare_exchange_weak(val, bit_op(val, n)));
+
+    return val;
+}
+
+auto set_bit = [](auto val, unsigned n) { return val | (1 << n); };
+auto clr_bit = [](auto val, unsigned n) { return val & ~(1 << n); };
+auto tgl_bit = [](auto val, unsigned n) { return val ^ (1 << n); };
+
+int main() {
+    std::atomic<int> a{0x2216};
+    manipulate_bit(a, 3, set_bit);  // set bit 3
+    manipulate_bit(a, 7, tgl_bit);  // toggle bit 7
+    manipulate_bit(a, 13, clr_bit);  // clear bit 13
+    bool isset = (a.load() >> 5) & 1;  // testing bit 5
+}
+*/
+
+
 	// LRU_cache method
 	void done_with_tail(LRU_element *ctrl_tail,atomic<uint32_t> *flag_pos,bool set_high = false) {
 		if ( set_high ) {
@@ -1792,14 +1898,14 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 					// SECOND: If duplicating, free the message slot, otherwise gather memory for storing new objecs
 					//
 					if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
-						// 	-- FILTER
+						// 	-- FILTER - only allocate for new objects
 						pair<uint32_t,uint32_t> update = lru->filter_existence_check(messages,accesses,ready_msg_count);
 
 						ready_msg_count = update.first;
 						uint32_t duplicate_count = update.second
 						while ( duplicate_count-- > 0 ) {
 							char *access_point = accesses[duplicate_count];
-							if ( access_point != NULL ) {
+							if ( access_point != nullptr ) {
 								char *read_marker = (access_point + OFFSET_TO_MARKER);
 								clear_for_copy(read_marker);
 							}
@@ -1841,11 +1947,12 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 										uint64_t *hash_parameter = (uint64_t *)(access_point + OFFSET_TO_HASH);
 										uint64_t hash64 = hash_parameter[0];
 										//
-										lru->add_key_value(hash64,offset);			// add to the hash table...
-										write_offset_here[0] = offset;
-										//
-										char *read_marker = (access_point + OFFSET_TO_MARKER);
-										clear_for_copy(read_marker);
+										if ( lru->add_key_value(hash64,offset) ) { // add to the hash table...
+											write_offset_here[0] = offset;
+											//
+											char *read_marker = (access_point + OFFSET_TO_MARKER);
+											clear_for_copy(read_marker);
+										}		
 									}
 								}
 								//

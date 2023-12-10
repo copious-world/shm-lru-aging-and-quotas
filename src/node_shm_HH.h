@@ -13,8 +13,22 @@
 
 #include <iostream>
 #include <sstream>
+#include <thread>
+#include <ctime>
+#include <atomic>
+
 
 #include "hmap_interface.h"
+
+
+
+constexpr int SECS_TO_SLEEP = 3;
+constexpr int NSEC_TO_SLEEP = 3;
+
+struct timespec request {
+	SECS_TO_SLEEP, NSEC_TO_SLEEP
+}, remaining{SECS_TO_SLEEP, NSEC_TO_SLEEP};
+
 
 
 using namespace node;
@@ -52,11 +66,107 @@ const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 //
 typedef unsigned long ulong;
 
+
+
+// ---- ---- ---- ---- ---- ----  HHash
+// HHash <- HHASH
+
+
+const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
+
 typedef struct HHASH {
-  uint32_t _neighbor;		// Number of elements in a neighborhood
-  uint32_t _count;			// count of elements contained an any time
-  uint32_t _max_n;			// max elements that can be in a container
+	//
+	uint32_t _neighbor;		// Number of elements in a neighborhood
+	uint32_t _count;			// count of elements contained an any time
+	uint32_t _max_n;			// max elements that can be in a container
+	uint32_t _control_bits;
+
+	uint32_t _H_Offset;
+	uint32_t _V_Offset;
+	uint32_t _C_Offset;
+
+	/**
+	 * Accept the value in the hopscotch table
+	*/
+	void pin_value_and_incr() {
+
+	}
+
+	/**
+	 * 
+	*/
+	void unpin_value() {
+		//
+	}
+
+	uint16_t bucket_count(uint32_t h_bucket) {			// at most 255 in a bucket ... will be considerably less
+		uint32_t *controllers = (uint32_t *)(static_cast<char *>((void *)(this)) + sizof(struct HHASH) + _C_Offset);
+		uint16_t *controller = (uint16_t *)(&controllers[h_bucket]);
+		//
+		uint8_t my_word = _control_bits & 0x1;
+		uint16_t count = my_word ? controller[1] : controller[0];
+		return (count & COUNT_MASK);
+	}
+
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+	
+	uint8_t				 			*_region_C;			// controls
+	uint32_t		 				*_region_H;			// the bucket masks 
+	uint64_t		 				*_region_V;
+
 } HHash;
+
+
+
+class HH_map;
+
+/**
+ * Two threads will be given access to separate hopscotch tables... 
+*/
+class ThreadWrapper {
+
+
+	public:
+		ThreadWrapper() : wrapper(&ThreadWrapper::runner,this) {
+			_hh_container = nullptr;
+		}
+		virtual ~ThreadWrapper() {
+			wrapper.join();
+		}
+
+		/**
+		 * Push the value similarly to pushing onto a work queue.
+		*/
+		void push_value(uint64_t value) {
+
+		}
+
+		/**
+		 * 
+		*/
+		void signal(uint64_t hash) {  // awaken local threads and aprise them of the requested hash
+
+		}
+
+
+		void runner() {
+
+		}
+
+
+		void set_hh(HHash *hc) {
+			_hh_container = hc;		// may be nullptr
+		}
+
+
+	public:
+
+		Thread			wrapper;
+
+		HHash			*_hh_container;
+
+}
 
 
 
@@ -73,35 +183,128 @@ class HH_map : public HMap_interface {
 			_max_count = max_element_count;
 			uint8_t sz = sizeof(HHash);
 			uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
+			//
 			// initialize from constructor
-			this->setup_region(am_initializer,header_size,max_element_count);
+			this->setup_region(am_initializer,header_size,(max_element_count/2));
 		}
+
+
+
+		// THREAD CONTROL
+
+		void tick() {
+			nanosleep(&request, &remaining);
+		}
+
+		void sleepy_atomic_load_thread_id() {
+
+		}
+
+		void wait_on_threads_busy() {
+
+		}
+
+		void threads_not_busy() {
+
+		}
+
+
+		pair<uint16_t,uint16_t> bucket_counts(uint32_t h_bucket) {
+			//
+			pair<uint16_t,uint16_t> counts;
+			uint8_t *start = _region;
+
+			uint32_t c_offset = _C_Offset;
+			uint32_t *controllers = (uint32_t *)(start + sizof(struct HHASH) + c_offset);
+			uint16_t *controller = (uint16_t *)(&controllers[h_bucket]);
+			//
+			counts.first = controller[0] & COUNT_MASK;
+			counts.second = controller[1] & COUNT_MASK;
+			//
+			return (counts);
+		}
+
+		pair<uint16_t,uint16_t> counts = this->bucket_counts(h_bucket);
+		uint16_t count_1 = T_1->bucket_count(h_bucket);		// favor the least full bucket ... but in case something doesn't move try both
+		uint16_t count_2 = T_2->bucket_count(h_bucket);
+
+
+		// REGIONS...
 
 		// setup_region -- part of initialization if the process is the intiator..
 		void setup_region(bool am_initializer,uint8_t header_size,uint32_t max_count) {
-			//
+			// ----
 			uint8_t *start = _region;
 			HHash *T = (HHash *)start;
-			//
+
+			_h_tables[0] = T;			// ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+			// # 1
+			// ----
 			if ( am_initializer ) {
 				T->_count = 0;
 				T->_max_n = max_count;
 				T->_neighbor = FLS(max_count - 1);
+				T->_control_bits = 0;
 			} else {
 				max_count = T->_max_n;	// just in case
 			}
+
+			// # 1
 			//
-			_region_V = (uint64_t *)(start + header_size);  // start on word boundary
+			T->_region_V = (uint64_t *)(start + header_size);  // start on word boundary
 			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
 			//
-			_region_H = (uint32_t *)(start + header_size + v_regions_size);
+			T->_region_H = (uint32_t *)(start + header_size + v_regions_size);
+			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
+			//
+			if ( am_initializer ) {
+				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
+				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size ));
+			}
+
+			// # 2
+			// ----
+			T = _h_tables[1] = (HHash *)(start + h_regions_size + v_regions_size + c_regions_size);
+			start = (char *)(&_h_tables[1]);
+
+			if ( am_initializer ) {
+				T->_count = 0;
+				T->_max_n = max_count;
+				T->_neighbor = FLS(max_count - 1);
+				T->_control_bits = 1;
+			} else {
+				max_count = T->_max_n;	// just in case
+			}
+
+			// # 2
+			//
+			T->_region_V = (uint64_t *)(start + header_size);  // start on word boundary
+			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
+			//
+			T->_region_H = (uint32_t *)(start + header_size + v_regions_size);
 			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
 			//
 			if ( am_initializer ) {
 				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
 				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
 			}
+
+
+			_h_tables[0]->_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
+			_h_tables[1]->_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
+			//
+			_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
+
+			if ( am_initializer ) {
+				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
+				memset((void *)(_region + _C_Offset),0,((sizeof(uint32_t)*max_count));
+			}
+
 		}
+
+
+
 
 		bool ok(void) {
 			return(this->_status);
@@ -357,6 +560,11 @@ cout << endl;
 			return 0;
 		}
 
+
+
+		/**
+		 * Returns the value (for this use an offset into the data storage area.)
+		*/
 		uint64_t get_val_at_hh_hash(HHash *T, uint32_t h, uint32_t i) {
 			uint32_t offset = (h + i);		// offset from the hash position...
 			uint32_t N = T->_max_n;
@@ -367,8 +575,10 @@ cout << endl;
 
 		// SET OPERATION
 		// originailly called hunt for a set type...
+		// In this applicatoin k is a value comparison... and the k value is an offset into an array of stored objects 
+		//
 		uint64_t hunt_hash_set(HHash *T, uint32_t h, uint64_t k, bool kill) {
-			uint32_t i = _succ_hh_hash(T, h, 0);
+			uint32_t i = _succ_hh_hash(T, h, 0);   // i is the offset into the hash bucket.
 			while ( i != UINT32_MAX ) {
 				uint64_t x = get_val_at_hh_hash(T, h, i);  // get ith value matching this hash (collision)
 				if ( _cmp(k, x) ) {		// compare the discerning hash part of the values (in the case of map, hash of the stored value)
@@ -455,8 +665,12 @@ cout << endl;
 		uint32_t						_max_count;
 		const char 						*_reason;
 		uint8_t		 					*_region;
-		uint32_t		 				*_region_H;
-		uint64_t		 				*_region_V;
+		//
+
+		// threads ...
+
+		ThreadWrapper					_threads[2];
+		HHASH							*_h_tables[2];
 
 };
 

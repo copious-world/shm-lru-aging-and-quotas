@@ -31,6 +31,17 @@ using namespace std::chrono;
 
 
 #define MAX_BUCKET_FLUSH 12
+
+/**
+ * The 64 bit key stores a 32bit hash (xxhash or other) in the lower word.
+ * The top 32 bits stores a structured bit array. The top 1 bit will be
+ * the selector of the hash region where the key match will be found. The
+ * bottom 20 bits will store the element offset (an element number) to the position the
+ * element data is stored. 
+*/
+
+
+
 /*
 auto ms_since_epoch(std::int64_t m){
   return std::chrono::system_clock::from_time_t(time_t{0})+std::chrono::milliseconds(m);
@@ -393,9 +404,9 @@ class LRU_cache {
 
 
 		// check_for_hash
-		// either returns an offset to the data or return the UINT32_MAX.  (4,294,967,295)
+		// either returns an offset to the data or returns the UINT32_MAX.  (4,294,967,295)
 		uint32_t check_for_hash(uint64_t key) {
-			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl
+			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl -- means the table was not initialized to use shared memory
 				if ( _local_hash_table.find(key) != _local_hash_table.end() ) {
 					return(_local_hash_table[key]);
 				}
