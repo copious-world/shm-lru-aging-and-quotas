@@ -1525,9 +1525,20 @@ namespace node_shm {
 		//
 		uint32_t h_bucket = (uint32_t)(key & HASH_MASK);
 		
+		// Threads from this process will not contend with each other.
+		// They will work on two different memory sections.
+		// The favored should set the value first. 
+		//			Check thread IDs in undecided state (can be atomic)
+
+
+		// About waiting on threads from the current process. Two threads are assigned to the current table.
+		// The process will lock a mutex for just those two threads for the tier that has been called upon. 
+		// The mutex will lock more globally. It will not interfere with other processes requesting a conversation 
+		// with the threads, just current process threads at the curren tier.
+
 		pair<uint16_t,uint16_t> counts = this->bucket_counts(h_bucket);
-		uint16_t count_1 = T_1->bucket_count(h_bucket);		// favor the least full bucket ... but in case something doesn't move try both
-		uint16_t count_2 = T_2->bucket_count(h_bucket);
+		uint16_t count_1 = counts.first;		// favor the least full bucket ... but in case something doesn't move try both
+		uint16_t count_2 = counts.second;
 		//
 		uint8_t tfirst = 0;
 		uint8_t tsecond = 1;
@@ -1538,31 +1549,27 @@ namespace node_shm {
 			tfirst = _pop_random_bits();
 			tsecond = (tfirst + 1) % 2;
 		}
-		// Threads from this process will not contend with each other.
-		// They will work on two different memory sections.
-		// The favored should set the value first. 
-		//			Check thread IDs in undecided state (can be atomic)
-		this->wait_on_threads_busy(); // just in case the owning process somehow interleaved with itself
 		// ....
-		_threads[tfirst].push_value(offset_value);
+		_threads[tfirst].prep_value(offset_value);
 		_threads[tfirst].signal(hash64);
 		this->tick();						// The favored should set the value first. (gets a head start)
-		_threads[tsecond].push_value(offset_value);
+		_threads[tsecond].prep_value(offset_value);
 		_threads[tsecond].signal(hash64);
 		// ....
 		uint8_t which_thread = 2;
 		while ( which_thread == 2 ) {
-			uint8_t which_thread = this->sleepy_atomic_load_thread_id();
+			uint8_t which_thread = this->sleepy_atomic_load_winner_thread_id();
 			if ( which_thread == 1 ) {
-				T_2->pin_value_and_incr();  // pin the last value ... increment buckt count
 				T_1->unpin_value();  // pin the last value
+				T_2->pin_value();  // pin the last value ... increment buckt count
 			} else if ( which_thread == 0 ) {
-				T_1->pin_value_and_incr();  // pin the last value ... increment buckt count
 				T_2->unpin_value();  // pin the last value
+				T_1->pin_value();  // pin the last value ... increment buckt count
 			}
 		}
-		// ....
-		this->threads_not_busy();
+		//
+		this->bucket_count_incr(h_bucket,which_thread);
+
 		return which_thread;
 	}
 
@@ -1637,7 +1644,7 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 			requested->fetch_sub(msg_count);
 		}
 	}
-	
+
 
 	// LRU_cache method
 	void return_to_free_mem(LRU_element *el) {				// a versions of push

@@ -16,8 +16,18 @@
 #include <thread>
 #include <ctime>
 #include <atomic>
+#include <thread>
+#include <mutex>
 
+#include <random>
+#include <bitset>
 
+#include <map>
+#include <unordered_map>
+#include <list>
+#include <vector>
+
+ 
 #include "hmap_interface.h"
 
 
@@ -31,14 +41,20 @@ struct timespec request {
 
 
 
+/*
+static const std::size_t S_CACHE_PADDING = 128;
+static const std::size_t S_CACHE_SIZE = 64;
+std::uint8_t padding[S_CACHE_PADDING - (sizeof(Object) % S_CACHE_PADDING)];
+*/
+
+
+
+// USING
 using namespace node;
 using namespace v8;
 using namespace std;
 
 
-#include <map>
-#include <unordered_map>
-#include <list>
 
 
 // Bringing in code from libhhash  // until further changes...
@@ -63,6 +79,7 @@ const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 //
 #define BitsPerByte 8
 #define HALF (sizeof(uint32_t)*BitsPerByte)  // should be 32
+#define QUARTER (sizeof(uint16_t)*BitsPerByte) // should be 16
 //
 typedef unsigned long ulong;
 
@@ -73,6 +90,10 @@ typedef unsigned long ulong;
 
 
 const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
+const uint32_t HI_COUNT_MASK = (COUNT_MASK<<16);
+const uint32_t HOLD_BIT_MASK = (0x1 << 7);
+const uint32_t FREE_BIT_MASK = ~HOLD_BIT_MASK;
+const uint32_t LOW_WORD = 0xFFFF;
 
 typedef struct HHASH {
 	//
@@ -88,7 +109,7 @@ typedef struct HHASH {
 	/**
 	 * Accept the value in the hopscotch table
 	*/
-	void pin_value_and_incr() {
+	void pin_value() {
 
 	}
 
@@ -98,6 +119,8 @@ typedef struct HHASH {
 	void unpin_value() {
 		//
 	}
+
+
 
 	uint16_t bucket_count(uint32_t h_bucket) {			// at most 255 in a bucket ... will be considerably less
 		uint32_t *controllers = (uint32_t *)(static_cast<char *>((void *)(this)) + sizof(struct HHASH) + _C_Offset);
@@ -109,11 +132,6 @@ typedef struct HHASH {
 	}
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-	
-	uint8_t				 			*_region_C;			// controls
-	uint32_t		 				*_region_H;			// the bucket masks 
-	uint64_t		 				*_region_V;
 
 } HHash;
 
@@ -128,30 +146,51 @@ class ThreadWrapper {
 
 
 	public:
-		ThreadWrapper() : wrapper(&ThreadWrapper::runner,this) {
+		ThreadWrapper() : _stopped(false), _ready(false), _lk(_mtx), _w_thread(&ThreadWrapper::runner,this) {
 			_hh_container = nullptr;
 		}
 		virtual ~ThreadWrapper() {
-			wrapper.join();
+			_stopped = true;
+			_cv.notify_one();
+			_w_thread.join();
 		}
 
 		/**
-		 * Push the value similarly to pushing onto a work queue.
+		 * Prepare the thread (should not be busy) with the value that it will store once it can place the value with
+		 * the future hash
 		*/
-		void push_value(uint64_t value) {
-
+		void prep_value(uint32_t value) {
+			lock_guard _lk(_mtx);
+			_last_value = value;
 		}
 
 		/**
 		 * 
 		*/
 		void signal(uint64_t hash) {  // awaken local threads and aprise them of the requested hash
-
+			_hash = hash;
+			_ready = true
+			_cv.notify_one();
 		}
 
-
+		/**
+		 * 
+		*/
 		void runner() {
+			while (true) {
+				_lk.lock();
+				cv.wait(_lk, []{ return _ready || _stopped; });
+				if ( _stopped ) break;
+				else _ready = false;
+				//
+				uint64_t hash = _hash;
+				uint32_t value = _last_value;
 
+				if ( _hh_container != nullptr ) {
+					// adding the value to the table... in this region...
+				}
+				_lk.unlock();
+			}
 		}
 
 
@@ -162,15 +201,89 @@ class ThreadWrapper {
 
 	public:
 
-		Thread			wrapper;
+		thread				_w_thread;
+		mutex				_mtx;
+		condition_variable	_cv;
+		unique_lock 		_lk;
+		bool				_ready;
+		bool				_stopped;
 
-		HHash			*_hh_container;
+		uint64_t			_hash;
+		uint32_t			_last_value;
+		HHash				*_hh_container;
+		
 
 }
 
+#define  BITS_GEN_COUNT_LAPSE (3)
+
+class Random_bits_generator {
+
+    bernoulli_distribution	_distribution;
+	list<uint32_t>			_bits;
+
+	mt19937 				_engine;
+	uint32_t				_last_bits;
+	uint8_t					_bcount;
+	uint8_t					_gen_count;
+
+public:
+
+	Random_bits_generator() : _bcount(0), _gen_count(0) {
+		_create_random_bits();
+	}
+
+public:
 
 
-class HH_map : public HMap_interface {
+	uint32_t generate_word() {
+		uint32_t bits = 0;
+		for ( uint8_t i = 0; i < 32; i++ ) {
+			bool bit = _distribution(_engine);
+			bits = (bits << 1) | (bit ? 1 : 0);
+		}
+		return bits;
+	}
+
+    template <typename OutputIt>
+    void generate(OutputIt first, OutputIt last)
+    {
+        while ( first != last ) {
+			uint32_t bits = generate_word();
+            *first++ = bits;
+        }
+    }
+
+
+	void _create_random_bits() {
+		_bits.resize(256);   // fr list ??
+		generate(_bits.begin(), _bits.end());
+	}
+
+	uint8_t pop_bit() {
+		//
+		if ( _bcount == 0 ) {
+			_last_bits = _bits.pop_front();
+			_gen_count = (_gen_count + 1) % BITS_GEN_COUNT_LAPSE;
+			if ( _gen_count == 0 ) {
+				for ( uint8_t i = 0; i < BITS_GEN_COUNT_LAPSE; i++ ) {
+					_bits.push_back(generate_word());
+				}
+			}
+		}
+		//
+		_bcount = _bcount++ % 32;
+		uint8_t the_bit = _last_bits & 0x1;
+		_last_bits = (_last_bits >> 1);
+		//
+		return the_bit;
+	}
+
+
+};
+
+
+class HH_map : public HMap_interface, public Random_bits_generator {
 	//
 	public:
 
@@ -183,7 +296,6 @@ class HH_map : public HMap_interface {
 			_max_count = max_element_count;
 			uint8_t sz = sizeof(HHash);
 			uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
-			//
 			// initialize from constructor
 			this->setup_region(am_initializer,header_size,(max_element_count/2));
 		}
@@ -196,19 +308,62 @@ class HH_map : public HMap_interface {
 			nanosleep(&request, &remaining);
 		}
 
-		void sleepy_atomic_load_thread_id() {
-
-		}
-
-		void wait_on_threads_busy() {
-
-		}
-
-		void threads_not_busy() {
+		void sleepy_atomic_load_winner_thread_id() {
 
 		}
 
 
+
+
+
+/*
+
+
+template< size_t size>
+typename std::bitset<size> random_bitset( double p = 0.5) {
+
+    typename std::bitset<size> bits;
+    std::random_device rd;
+    std::mt19937 gen( rd());
+    std::bernoulli_distribution d( p);
+
+    for( int n = 0; n < size; ++n) {
+        bits[ n] = d( gen);
+    }
+
+    return bits;
+}
+
+
+template <typename Engine = std::mt19937>
+class random_bits_generator
+{
+    std::bernoulli_distribution distribution;
+public:
+    template <typename OutputIt>
+    void operator()(OutputIt first, OutputIt last)
+    {
+        while (first != last)
+        {
+            *first++ = distribution(engine);
+        }
+    }
+
+    Engine get()
+    {
+        return engine;
+    }
+};
+*/
+
+		_pop_random_bits() {
+			return pop_bit();
+		}
+
+
+		/**
+		 * 
+		*/
 		pair<uint16_t,uint16_t> bucket_counts(uint32_t h_bucket) {
 			//
 			pair<uint16_t,uint16_t> counts;
@@ -216,17 +371,54 @@ class HH_map : public HMap_interface {
 
 			uint32_t c_offset = _C_Offset;
 			uint32_t *controllers = (uint32_t *)(start + sizof(struct HHASH) + c_offset);
-			uint16_t *controller = (uint16_t *)(&controllers[h_bucket]);
 			//
-			counts.first = controller[0] & COUNT_MASK;
-			counts.second = controller[1] & COUNT_MASK;
+			auto controller = static_cast<atomic<uint32_t>*>(&controllers[h_bucket]);
+			//
+			uint32_t controls = controller->load(std::memory_order_consume);
+			while ( controls & HOLD_BIT_MASK ) {  // while some other process is using this count bucket
+				controls = controller->load(std::memory_order_consume);
+			}
+			//
+			while ( !controller->compare_exchange_weak(controls,(controls | HOLD_BIT_MASK)) && !(controls & HOLD_BIT_MASK) );
+			//
+			counts.first = controls & COUNT_MASK;
+			counts.second = (controls>>QUARTER) & COUNT_MASK;
 			//
 			return (counts);
 		}
 
-		pair<uint16_t,uint16_t> counts = this->bucket_counts(h_bucket);
-		uint16_t count_1 = T_1->bucket_count(h_bucket);		// favor the least full bucket ... but in case something doesn't move try both
-		uint16_t count_2 = T_2->bucket_count(h_bucket);
+		/**
+		 * 
+		*/
+		void bucket_count_incr(uint32_t h_bucket,uint8_t which_thread) {
+			uint8_t *start = _region;
+			//
+			uint32_t c_offset = _C_Offset;
+			uint32_t *controllers = (uint32_t *)(start + sizof(struct HHASH) + c_offset);
+			//
+			auto controller = static_cast<atomic<uint32_t>*>(&controllers[h_bucket]);
+			//
+			uint32_t controls = controller->load(std::memory_order_consume);
+			if ( !(controls & HOLD_BIT_MASK) ) {	// should be the only one able to get here on this bucket.
+				this->_status = -1;
+				return;
+			}
+			//
+			uint16_t counter = 0;
+			if ( which_thread == 0 ) {
+				counter = controls & COUNT_MASK;
+				counter++;
+				controls = (controls & ~COUNT_MASK) | (COUNT_MASK & counter);
+			} else {
+				counter = (controls>>QUARTER) & COUNT_MASK;
+				counter++;
+				uint32_t update = (counter) << QUARTER) & HI_COUNT_MASK;
+				controls = (controls & ~HI_COUNT_MASK) | update;
+			}
+			//
+			controller->store(controls & FREE_BIT_MASK,std::memory_order_release);
+		}
+
 
 
 		// REGIONS...
