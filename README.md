@@ -52,3 +52,9 @@ Clients will have access to methods for changing configurations. Each change wil
 ## Get going
 
 
+## Some Refs
+
+* *Balanced Allocations*, Azar et. al. - Reasoning leading to a preferenced for double hashing.
+* Two-way Linear Probing Revisited - Again double hashing
+
+* RDCSS - 
