@@ -41,6 +41,10 @@ using namespace std;
 namespace concurrent_data_structures {
 
 
+
+static const size_t KCASShift = 2;
+
+
 // Control regions contain reference to value locations in the value region
 //
 struct DescriptorEntry {
@@ -120,10 +124,23 @@ class KCASEntry {
       ibu._raw_bits = raw_bits;
       return ibu._item;
     }
+
+    static Type value_from_raw_bits(const uint64_t raw_bits) {
+      ItemBitsUnion ibu;
+      ibu._raw_bits = (raw_bits >> KCASShift);
+      return ibu._item;
+    }
+
     static uint64_t to_raw_bits(const Type &inner) {
       ItemBitsUnion ibu;
       ibu._item = inner;
       return ibu._raw_bits;
+    }
+
+    static uint64_t to_descriptor_bits(const Type &inner) {
+      ItemBitsUnion ibu;
+      ibu._item = inner;
+      return (ibu._raw_bits << KCASShift);
     }
 
   public:
@@ -237,24 +254,23 @@ class KCASDescriptor {
     }
 
 
-  bool copy_entries_from(KCASDescriptor * snapshot_target,uint64_t sequence_number) {
-    //
-    const size_t num_entries = snapshot_target->_num_entries;
-    //
-    for ( size_t i = 0; i < num_entries; i++ ) {
-      this->_entries[i] = snapshot_target->_entries[i];
+    bool copy_entries_from(KCASDescriptor *snapshot_target,uint64_t sequence_number) {
+        //
+        const size_t num_entries = snapshot_target->_num_entries;
+        //
+        for ( size_t i = 0; i < num_entries; i++ ) {
+            this->_entries[i] = snapshot_target->_entries[i];
+        }
+        //
+        const KCASDescriptorStatus after_status = snapshot_target->load_status();
+        //
+        if ( after_status.seq_different(sequence_number) ) {
+            return false;
+        } else {
+            _num_entries = num_entries;
+            return true;
+        }
     }
-    //
-    const KCASDescriptorStatus after_status = snapshot_target->load_status();
-    //
-    if ( after_status.seq_different(sequence_number) ) {
-      return false;
-    } else {
-        _num_entries = num_entries;
-        return true;
-    }
-  }
-
 
 
 
