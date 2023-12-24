@@ -46,6 +46,8 @@ static const size_t S_NUM_THREADS = 144;
 static const uint64_t S_NO_TAG = 0x0;
 static const uint64_t S_KCAS_TAG = 0x1;
 static const uint64_t S_RDCSS_TAG = 0x2;
+static const uint64_t S_EITHER_RDCSS_OR_KCAS_TAG = 0x3;
+
 
 // 8 Bits
 static const uint64_t S_THREAD_ID_SHIFT = 2;
@@ -158,6 +160,20 @@ static const uint64_t S_SEQUENCE_MASK = (~(uint64_t(1) << 54));
       return !is_kcas(tagptr) && !is_rdcss(tagptr);
     }
 
+
+    // type of bits is cleared -- not in use for descriptor purposes
+    static bool not_bits(const TaggedPointer tagptr) {
+      return (tagptr._raw_bits & S_EITHER_RDCSS_OR_KCAS_TAG) != S_NO_TAG;
+    }
+
+
+    bool operator!=(TaggedPointer &b) {
+      return _raw_bits != b._raw_bits;
+    }
+
+    bool operator==(TaggedPointer &b) {
+      return _raw_bits == b._raw_bits;
+    }
 
   };
 

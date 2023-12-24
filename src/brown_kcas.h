@@ -5,6 +5,7 @@ Implementation of fast K-CAS by
 "Reuse, don't Recycle: Transforming Lock-Free Algorithms that Throw Away
 Descriptors."
 Copyright (C) 2018  Robert Kelly
+Changes by Richard Leddy 2023
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
@@ -17,7 +18,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-#define FOREVER  while (true)
+#define FOREVER_check  while (true)
 
 //
 #include <algorithm>
@@ -47,17 +48,130 @@ namespace concurrent_data_structures {
 // 4. 
 
 template <class Allocator, size_t N>
-class Brown_KCAS {
+class Brown_RDCSS {
+  //
+  public: 
+
+    Brown_RDCSS(const size_t thread_id,RDCSSDescriptor *rdcss_area) : _thread_id(thread_id) {
+        _rdcss_descs = rdcss_area;
+        _own_rdcss_descs + _thread_id;
+    }
+
+
+  
+
+  protected:
+
+    // _rdcss_descriptor_from
+    //
+    RDCSSDescriptor *_rdcss_descriptor_from(TaggedPointer ptr) {
+      const uint64_t thread_id = TaggedPointer::get_thread_id(ptr);
+      RDCSSDescriptor *snapshot_target = _rdcss_descs + thread_id;
+      return snapshot_target;
+    }
+
+    RDCSSDescriptor *rdcss_descs() {
+      return _own_rdcss_descs;
+    }
+    
+    TaggedPointer rdcss_ptr_from(size_t new_sequence) {
+      return TaggedPointer::make_rdcss(_thread_id, new_sequence);  // set type flag
+    }
+
+
+    //  
+    // rdcss_read PRIVATE
+    //
+    TaggedPointer rdcss_read(const atomic<TaggedPointer> *location, const std::memory_order memory_order = std::memory_order_seq_cst) {
+      //
+      TaggedPointer current = location->load(memory_order);
+      bool is_rdcss = TaggedPointer::is_rdcss(current)
+      while ( is_rdcss ) {
+        rdcss_try_snapshot(current);
+        current = location->load(memory_order);
+        is_rdcss = TaggedPointer::is_rdcss(current)
+      };
+      return current;
+    }
+
+    //  _rdcss_complete PRIVATE
+    //
+    void _rdcss_complete(RDCSSDescriptor *snapshot, TaggedPointer ptr) {
+      // Old 1 and address 1.
+      const uint64_t sequence_number = TaggedPointer::get_sequence_number(snapshot->_kcas_tagptr);
+      const KCASDescriptorStatus status = snapshot->atom_load_kcas_descr();     // STATUS
+      //
+      if ( status.seq_same(sequence_number) && status.still_undecided() ) {  // UNDECIDED
+        snapshot->location_update(ptr,snapshot->_kcas_tagptr);
+      } else {
+        snapshot->location_update(ptr,snapshot->_before);
+      }
+    }
+
+
+
+    // TRY SNAPSHOT
+
+    void rdcss_try_snapshot(const TaggedPointer tagptr, bool help = false) {
+      RDCSSDescriptor *snapshot_target = _rdcss_descriptor_from(ptr);  // offset to descriptor region from thread id
+      //
+      RDCSSDescriptor descriptor_snapshot;
+      if ( descriptor_snapshot.try_snapshot(snapshot_target, tagptr) ) {
+        _rdcss_complete(&descriptor_snapshot, tagptr);
+      }
+    }
+
+
+    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+    // 
+    // rdcss PROTECTED
+    //
+    TaggedPointer _rdcss(TaggedPointer ptr) {  // assert(TaggedPointer::is_rdcss(ptr));
+      //
+      RDCSSDescriptor *rdcss_desc = _rdcss_descriptor_from(ptr);  // offset to descriptor region from thread id
+      //
+      bool success = false;
+      while ( !success ) {
+        //
+        TaggedPointer current = rdcss_desc->atomic_load_data();  // current descriptor data
+        // 
+        if ( TaggedPointer::is_rdcss(current) ) {
+          rdcss_try_snapshot(current);
+        } else {
+          if ( current != rdcss_desc->_before ) {
+            return current;
+          }
+          success = rdcss_desc->location_update(current,ptr);
+        }
+        //
+      }
+      //
+      _rdcss_complete(rdcss_desc, ptr);
+      return rdcss_desc->_before;
+    }
+
+
+  protected:
+
+    RDCSSDescriptor                   *_rdcss_descs;
+    RDCSSDescriptor                   *_own_rdcss_descs;
+    size_t                            _thread_id;
+
+};
+
+
+template <class Allocator, size_t N>
+class Brown_KCAS : public Brown_RDCSS {
   //
   public: // CONSTRUCTOR
 
-    Brown_KCAS(const size_t thread_id,KCASDescriptor *kcas_area, RDCSSDescriptor *rdcss_area,const size_t N_procs,bool am_initializer) : _thread_id(thread_id) {
+    Brown_KCAS(const size_t thread_id,KCASDescriptor *kcas_area, RDCSSDescriptor *rdcss_area,const size_t N_procs,bool am_initializer) {
+      //
+      super(thread_id,rdcss_area);
       //
       _kcas_descs = kcas_area;
-      _rdcss_descs = rdcss_area;
-      //
       _own_kcas_descs = kcas_area + _thread_id;
-      _own_rdcss_descs + _thread_id;
       //
       if ( am_initializer ) {
         KCASDescriptor *end_kcas_area = kcas_area + N_procs;
@@ -74,7 +188,6 @@ class Brown_KCAS {
 
   public: // METHODS
 
-
     // create_descriptor
     //
     KCASDescriptor *create_descriptor(void) {
@@ -86,15 +199,6 @@ class Brown_KCAS {
 
   private:
 
-
-    // _rdcss_descriptor_from
-    //
-    RDCSSDescriptor *_rdcss_descriptor_from(TaggedPointer ptr) {
-      const uint64_t thread_id = TaggedPointer::get_thread_id(ptr);
-      RDCSSDescriptor *snapshot_target = _rdcss_descs + thread_id;
-      return snapshot_target;
-    }
-
     // _kcas_descriptor_from
     //
     KCASDescriptor *_kcas_descriptor_from(TaggedPointer ptr) {
@@ -103,17 +207,44 @@ class Brown_KCAS {
       return snapshot_target;
     }
 
-    RDCSSDescriptor *rdcss_descs() {
-      return _own_rdcss_descs;
-    }
-    
-    TaggedPointer rdcss_ptr_from(size_t new_sequence) {
-      return TaggedPointer::make_rdcss(_thread_id, new_sequence);  // set type flag
-    }
-
     TaggedPointer kcas_ptr_from(size_t new_sequence) {
       return TaggedPointer::make_kcas(_thread_id, new_sequence);  // set type flag
     }
+
+
+
+    template <class ValType>
+    bool update_if_rdcss_kcas(TaggedPointer &before_desc, KCASEntry<ValType> *location, std::memory_order fail = std::memory_order_seq_cst) {
+      //
+      if ( TaggedPointer::is_rdcss(before_desc) ) {
+        _cas_try_snapshot(before_desc, true);
+        before_desc = location->atomic_load(fail);
+        return true;
+      }
+      // Could still be a K-CAS descriptor.
+      if ( TaggedPointer::is_kcas(before_desc) ) {
+        _cas_try_snapshot(before_desc, true);
+        before_desc = location->atomic_load(fail);
+        return true;
+      }
+      //
+      return false
+    }
+
+    /**
+     * _loop_until_bits calls upone update_if_rdcss_kcas (which MUST prevent an infinit loop)
+    */
+    template <class ValType>
+    bool _loop_until_bits(ValType *expected, TaggedPointer &a_desc, KCASEntry<ValType> *location, std::memory_order fail = std::memory_order_seq_cst) {
+      while ( TaggedPointer::not_bits(a_desc) ) {
+        if ( update_if_rdcss_kcas(a_desc,location,fail) == false) {
+          *expected = KCASEntry<ValType>::value_from_raw_bits(a_desc);
+          return;
+        }
+      }
+      *expected = KCASEntry<ValType>::value_from_raw_bits(a_desc);
+    }
+
 
 
   public: // METHODS
@@ -121,56 +252,60 @@ class Brown_KCAS {
     // CAS
     // Brown_KCAS::cas
     //
-    bool cas(KCASDescriptor *desc) {
+    bool cas(KCASDescriptor *desc) {                //     CAS CAS CAS
+      //
       desc->sort_kcas_entries();
       desc->increment_sequence();  // Init descriptor...
 
       TaggedPointer ptr =  kcas_ptr_from(desc->load_status(std::memory_order_relaxed)._sequence_number));
-      return cas_internal(ptr, desc);
+      return _cas_internal(ptr, desc);
     }
 
     // READ ---
     //
-    // Brown_KCAS::read_value
+    // Brown_KCAS::read_value   -- a CAS read .. so it tries until it has all the locations
     //
     template <class ValType>
     ValType read_value(const KCASEntry<ValType> *location,const std::memory_order memory_order = std::memory_order_seq_cst) {
                                   // static_assert(!std::is_pointer<ValType>::value, "Type is not a value.");
-      FOREVER {
-        TaggedPointer tp_desc = this->rdcss_read(location->entry_ref(), memory_order);
-        // Could still be a K-CAS descriptor.
-        if ( TaggedPointer::is_kcas(tp_desc) ) {
-          cas_try_snapshot(tp_desc, true);
-        } else {                                      // assert(TaggedPointer::is_bits(tp_desc));
-          return KCASEntry<ValType>::value_from_raw_bits(tp_desc._raw_bits);
-        }
+      // read
+      TaggedPointer tp_desc = this->rdcss_read(location->entry_ref(), memory_order);
+      // test
+      bool its_kcas = TaggedPointer::is_kcas(tp_desc);
+      while ( its_kcas ) {   // Could still be a K-CAS descriptor.
+        _cas_try_snapshot(tp_desc, true);
+        its_kcas = TaggedPointer::is_kcas(tp_desc);
+        if ( !its_kcas ) break;
+        else { tp_desc = this->rdcss_read(location->entry_ref(), memory_order); } // read again
       }
+      return KCASEntry<ValType>::value_from_raw_bits(tp_desc);
     }
 
 
-    // Brown_KCAS::read_ptr
+    // Brown_KCAS::read_ptr    -- a CAS read .. so it tries until it has all the locations
+    //
     template <class PtrType>
     PtrType read_ptr(const KCASEntry<PtrType> *location,const std::memory_order memory_order = std::memory_order_seq_cst) {
-      FOREVER {
-        TaggedPointer tp_desc = this->rdcss_read(location, memory_order);
-        // Could still be a K-CAS descriptor.
-        if ( TaggedPointer::is_kcas(tp_desc) ) {
-          cas_try_snapshot(tp_desc, true);
-        } else {
-          assert(TaggedPointer::is_bits(desc));
-          return KCASEntry<PtrType>::from_raw_bits(desc);
-        }
+      // read
+      TaggedPointer tp_desc = this->rdcss_read(location, memory_order);
+      // test
+      bool its_kcas = TaggedPointer::is_kcas(tp_desc);
+      while ( its_kcas ) {   // Could still be a K-CAS descriptor.
+        _cas_try_snapshot(tp_desc, true);
+        its_kcas = TaggedPointer::is_kcas(tp_desc);
+        if ( !its_kcas ) break;
+        else { tp_desc = this->rdcss_read(location, memory_order); } // read again
       }
+      return KCASEntry<PtrType>::from_raw_bits(tp_desc);
     }
 
-
-
     // WRITE
+    //
     // Brown_KCAS::write_value
     template <class ValType>
     void write_value(KCASEntry<ValType> *location, const ValType &val, const memory_order memory_order = std::memory_order_seq_cst) {
                                                           //static_assert(!std::is_pointer<ValType>::value, "Type is not a value.");
-      TaggedPointer desc = raw_tps_shift_ptr(val);        //assert(TaggedPointer::is_bits(desc));
+      TaggedPointer desc = raw_tp_shift_ptr(val);        //assert(TaggedPointer::is_bits(desc));
       location->atomic_store(desc, memory_order);
     }
 
@@ -179,7 +314,7 @@ class Brown_KCAS {
     template <class PtrType>
     void write_ptr(KCASEntry<PtrType> *location, const PtrType &ptr, const memory_order memory_order = std::memory_order_seq_cst) {
                                                           // static_assert(std::is_pointer<PtrType>::value, "Type is not a pointer.");
-      TaggedPointer desc = raw_tps_ptr(ptr);              //assert(TaggedPointer::is_bits(desc));
+      TaggedPointer desc = KCASEntry<PtrType>::raw_tp_ptr(ptr);              //assert(TaggedPointer::is_bits(desc));
       location->atomic_store(desc, memory_order);
     }
 
@@ -189,14 +324,15 @@ class Brown_KCAS {
 
     template <class ValType>
     bool compare_exchange_weak_value(KCASEntry<ValType> *location, ValType &expected, const ValType &desired,
-                                                  std::memory_order success = std::memory_order_seq_cst,
-                                                  std::memory_order fail = std::memory_order_seq_cst) {
-      TaggedPointer before_desc = raw_tps_ptr(expected);
-      TaggedPointer desired_desc = raw_tps_ptr(desired);
+                                                    std::memory_order success = std::memory_order_seq_cst,
+                                                    std::memory_order fail = std::memory_order_seq_cst) {
+      TaggedPointer before_desc = KCASEntry<ValType>::raw_tp_ptr(expected);
+      TaggedPointer desired_desc = KCASEntry<ValType>::raw_tp_ptr(desired);
       //
       bool ret = location->compare_exchange_weak(before_desc, desired_desc, success, fail);
       if (!ret) {
-        return loop_until_bits(&expected,before_desc,location,fail);
+        _loop_until_bits(&expected,before_desc,location,fail);
+        return false;
       }
       return true;
     }
@@ -206,12 +342,13 @@ class Brown_KCAS {
     bool compare_exchange_weak_ptr(KCASEntry<PtrType> *location, PtrType &expected, const PtrType &desired,
                                                     std::memory_order success = std::memory_order_seq_cst,
                                                     std::memory_order fail = std::memory_order_seq_cst) {
-      TaggedPointer before_desc = raw_tps_ptr(expected);
-      TaggedPointer desired_desc = raw_tps_ptr(desired);
+      TaggedPointer before_desc = KCASEntry<PtrType>::raw_tp_ptr(expected);
+      TaggedPointer desired_desc = KCASEntry<PtrType>::raw_tp_ptr(desired);
       //
       bool ret = location->compare_exchange_weak(before_desc, desired_desc, success, fail);
       if (!ret) {
-        return loop_until_bits(&expected,before_desc,location,fail);
+        _loop_until_bits(&expected,before_desc,location,fail);
+        return false;
       }
       return true;
     }
@@ -220,62 +357,50 @@ class Brown_KCAS {
 
     template <class ValType>
     bool compare_exchange_strong_value(KCASEntry<ValType> *location, ValType &expected, const ValType &desired,
-                                            std::memory_order success = std::memory_order_seq_cst,
-                                            std::memory_order fail = std::memory_order_seq_cst) {
-      TaggedPointer before_desc = raw_tps_ptr(expected);
-      TaggedPointer desired_desc = raw_tps_ptr(desired);
+                                                    std::memory_order success = std::memory_order_seq_cst,
+                                                    std::memory_order fail = std::memory_order_seq_cst) {
+      TaggedPointer before_desc = KCASEntry<ValType>::raw_tp_ptr(expected);
+      TaggedPointer desired_desc = KCASEntry<ValType>::raw_tp_ptr(desired);
       //
       bool ret = location->compare_exchange_strong(before_desc, desired_desc, success, fail);
       if (!ret) {
-        return loop_until_bits(&expected,before_desc,location,fail);
+        _loop_until_bits(&expected,before_desc,location,fail);
+        return false
       }
       return true;
     }
 
 
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
   private:
 
-    //  
-    // rdcss_read PRIVATE
-    //
-    TaggedPointer rdcss_read(const atomic<TaggedPointer> *location, const std::memory_order memory_order = std::memory_order_seq_cst) {
-      FOREVER {
-        TaggedPointer current = location->load(memory_order);
-        if ( TaggedPointer::is_rdcss(current) ) {
-          rdcss_try_snapshot(current);
-        } else {
-          return current;
-        }
-      }
-    }
+    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-    //  rdcss_complete PRIVATE
-    //
-    void rdcss_complete(RDCSSDescriptor *snapshot, TaggedPointer ptr) {
-      // Old 1 and address 1.
-      const uint64_t sequence_number = TaggedPointer::get_sequence_number(snapshot->_kcas_tagptr);
-      const KCASDescriptorStatus status = snapshot->atom_load_kcas_descr();
+    // TRY SNAPSHOT
+    // snapshot - thread state (including locking)
+    // ptr -- the annotated ptr telling the state of some other thread than the calling thread
+    // my_thread_id -- local calling thread.
+
+
+    void _cas_try_snapshot(const TaggedPointer tagptr, bool help = false) {
+      KCASDescriptor *snapshot_target = _kcas_descriptor_from(ptr);   // offset to descriptor region from thread id
       //
-      if ( status.seq_same(sequence_number) && status.still_undecided() ) {  // UNDECIDED
-        snapshot->location_update(ptr,snapshot->_kcas_tagptr);
-      } else {
-        snapshot->location_update(ptr,snapshot->_before);
+      KCASDescriptor descriptor_snapshot;
+      if ( descriptor_snapshot.try_snapshot(snapshot_target, tagptr) ) {
+        _cas_internal(&descriptor_snapshot, tagptr,  help);
       }
     }
 
 
 
-
-    // Brown_KCAS::cas_internal -- PRIVATE called only by methods in this class...  see Brown_KCAS::cas
+    // Brown_KCAS::_cas_internal -- PRIVATE called only by methods in this class...  see Brown_KCAS::cas
     //
 
-    bool cas_internal(KCASDescriptor *descriptor_snapshot, const TaggedPointer tagptr, bool help = false) {
+    bool _cas_internal(KCASDescriptor *kc_desc_snapshot, const TaggedPointer tagptr, bool help = false) {
       //
       // Kelly: This is the descriptor we're trying to complete.
       // We also have a snapshot of it as an argument.
-      KCASDescriptor *original_desc = _kcas_descriptor_from(tagptr);
+      KCASDescriptor *original_desc = _kcas_descriptor_from(tagptr);  // offset to descriptor region from thread id
 
       // We have two windows into the state:
       // The first is the tagptr which has a state embeded within it.
@@ -293,7 +418,7 @@ class Brown_KCAS {
         return false;
       }
       //
-      const size_t num_entries = descriptor_snapshot->_num_entries;
+      const size_t num_entries = kc_desc_snapshot->_num_entries;
       //
       if ( current_status.still_undecided() ) {   // UNDECIDED
         //
@@ -303,26 +428,27 @@ class Brown_KCAS {
         //
         for ( size_t i = help ? 1 : 0; ((i < num_entries) && succeeded(status) ); i++ ) {
           //
-          FOREVER {
+          bool its_kcas = true;
+          TaggedPointer maybe_value{0};
+          do {
             // Give us a new descriptor.
-            rdcss_desc->copy_from_kcas(descriptor_snapshot,original_desc,tagptr,i);
+            rdcss_desc->copy_from_kcas(kc_desc_snapshot,original_desc,tagptr,i);
             // Make it initialised.
             size_t new_sequence = rdcss_desc->increment_sequence();
             //
             TaggedPointer rdcss_ptr = this->rdcss_ptr_from(new_sequence);
-            TaggedPointer value = this->rdcss(rdcss_ptr);
+            maybe_value = _rdcss(rdcss_ptr);
             //
-            if ( !(TaggedPointer::is_kcas(value)) ) {
-              if ( value._raw_bits != rdcss_desc->_before._raw_bits ) {
-                status = KCASDescStat::FAILED;
-              }
-              break;
-            } else if ( value._raw_bits != tagptr._raw_bits ) {
-              cas_try_snapshot(value,true);
+            its_kcas = TaggedPointer::is_kcas(maybe_value);
+            if ( its_kcas && (maybe_value != tagptr) ) {
+              _cas_try_snapshot(value,true);
             }
             //
+          } while ( its_kcas );   // elihw od
+          // 
+          if ( maybe_value != rdcss_desc->_before ) {
+            status = KCASDescStat::FAILED;
           }
-
         }  // rof
 
         // Try change descriptor status.
@@ -338,140 +464,20 @@ class Brown_KCAS {
       KCASDescriptorStatus new_status = original_desc->load_status(std::memory_order_seq_cst);
       if ( new_status.seq_same(tagptr_sequence_number) ) {
         succeeded = new_status.succeeded();
-        descriptor_snapshot->update_entries(tagptr,succeeded);
+        kc_desc_snapshot->update_entries(tagptr,succeeded);
       }
       //
       return succeeded;
     }
 
 
-    template <class ValType>
-    bool update_if_rdcss_kcas(TaggedPointer &before_desc, KCASEntry<ValType> *location, std::memory_order fail = std::memory_order_seq_cst) {
-      //
-      if ( TaggedPointer::is_rdcss(before_desc) ) {
-        cas_try_snapshot(before_desc, true);
-        before_desc = location->atomic_load(fail);
-        return true;
-      }
-      // Could still be a K-CAS descriptor.
-      if ( TaggedPointer::is_kcas(before_desc) ) {
-        cas_try_snapshot(before_desc, true);
-        before_desc = location->atomic_load(fail);
-        return true;
-      }
-      //
-      return false
-    }
-
-
-
-    /**
-     * loop_until_bits calls upone update_if_rdcss_kcas (which MUST prevent an infinit loop)
-    */
-
-    template <class ValType>
-    bool loop_until_bits(ValType *expected, TaggedPointer &a_desc, KCASEntry<ValType> *location, std::memory_order fail = std::memory_order_seq_cst) {
-      FOREVER {
-        if ( TaggedPointer::is_bits(a_desc) ) {
-          *expected = KCASEntry<ValType>::value_from_raw_bits(a_desc._raw_bits);
-          return false;
-        }
-        // a_desc updates
-        if ( update_if_rdcss_kcas(a_desc,location,fail) == false) {
-          *expected = KCASEntry<ValType>::value_from_raw_bits(a_desc._raw_bits);
-          return false;
-        }
-      }
-    }
-
-
-
-
-    template <class PtrType>
-    TaggedPointer raw_tps_ptr(PtrType value) {
-      uint64_t some_raw_bits = KCASEntry<PtrType>::to_raw_bits(value);
-      TaggedPointer a_desc{some_raw_bits};
-      return a_desc;
-    }
-
-    template <class ValType>
-    TaggedPointer raw_tps_shift_ptr(ValType value) {
-      uint64_t descr_bits = KCASEntry<ValType>::to_descriptor_bits(value);
-      TaggedPointer a_desc{descr_bits};
-      return a_desc;
-    }
-
-
-
-   
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-    // TRY SNAPSHOT
-    // snapshot - thread state (including locking)
-    // ptr -- the annotated ptr telling the state of some other thread than the calling thread
-    // my_thread_id -- local calling thread.
-
-    // TRY SNAPSHOT
-
-    void rdcss_try_snapshot(const TaggedPointer tagptr, bool help = false) {
-      RDCSSDescriptor descriptor_snapshot;
-      RDCSSDescriptor *snapshot_target = _rdcss_descriptor_from(ptr);
-      if ( descriptor_snapshot.try_snapshot(snapshot_target, tagptr) ) {
-        rdcss_complete(&descriptor_snapshot, tagptr);
-      }
-    }
-
-
-    void cas_try_snapshot(const TaggedPointer tagptr, bool help = false) {
-      KCASDescriptor descriptor_snapshot;
-      KCASDescriptor *snapshot_target = _kcas_descriptor_from(ptr);
-      if ( descriptor_snapshot.try_snapshot(snapshot_target, tagptr) ) {
-        cas_internal(&descriptor_snapshot, tagptr,  help);
-      }
-    }
-
-
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-    // 
-    // rdcss PRIVATE
-    //
-    TaggedPointer rdcss(TaggedPointer ptr) {  // assert(TaggedPointer::is_rdcss(ptr));
-      //
-      RDCSSDescriptor *rdcss_desc = _rdcss_descriptor_from(ptr);
-      //
-      bool success = false;
-      while ( !success ) {
-        //
-        TaggedPointer current = rdcss_desc->atomic_load_data();
-        if ( TaggedPointer::is_rdcss(current) ) {
-          rdcss_try_snapshot(current);
-        } else {
-          //
-          if ( current._raw_bits != rdcss_desc->_before._raw_bits ) {
-            return current;
-          }
-          //
-          success = rdcss_desc->location_update(current,ptr);
-        }
-        //
-      }
-      //
-      rdcss_complete(rdcss_desc, ptr);
-      return rdcss_desc->_before;
-    }
-
-  private:
+  private:  // DATA
 
 
     // TWO TYPES OF DESCRIPTORS
 
     KCASDescriptor                    *_kcas_descs;
-    RDCSSDescriptor                   *_rdcss_descs;
-    //
     KCASDescriptor                    *_own_kcas_descs;
-    RDCSSDescriptor                   *_own_rdcss_descs;
-    size_t                            _thread_id;
 
 
 };

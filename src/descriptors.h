@@ -103,9 +103,8 @@ struct KCASDescriptorStatus {
 //
 // Class to wrap around the types being KCAS'd
 template <class Type>
-class KCASEntry {
+struct KCASEntry {
   //
-  private:
     //
     union ItemBitsUnion {
       ItemBitsUnion() : _raw_bits(0) {}
@@ -115,8 +114,6 @@ class KCASEntry {
     //
 
     atomic<TaggedPointer> _entry;
-
-  public:
 
     // METHODS
     static Type from_raw_bits(const uint64_t raw_bits) {
@@ -143,8 +140,12 @@ class KCASEntry {
       return (ibu._raw_bits << KCASShift);
     }
 
-  public:
 
+    static Type value_from_raw_bits(TaggedPointer &tp_desc) {
+      return value_from_raw_bits(tp_desc._raw_bits)
+    }
+
+    
     atomic<TaggedPointer> *entry_ref() {
       return &_entry;
     }
@@ -157,16 +158,28 @@ class KCASEntry {
       _entry.store(desc, const std::memory_order memory_order = std::memory_order_seq_cst);
     }
 
-    bool compare_exchange_weak(TaggedPointer &expected, const TaggedPointer &desired,
+    inline bool compare_exchange_weak(TaggedPointer &expected, const TaggedPointer &desired,
                                                             std::memory_order success, std::memory_order fail) {
       return _entry.compare_exchange_weak(expected, desired, success, fail);
     }
 
-    bool compare_exchange_strong(TaggedPointer &expected, const TaggedPointer &desired,
+    inline bool compare_exchange_strong(TaggedPointer &expected, const TaggedPointer &desired,
                                                             std::memory_order success, std::memory_order fail) {
       return _entry.compare_exchange_strong(expected, desired, success, fail);
     }
 
+
+    static TaggedPointer raw_tp_ptr(Type value) {
+      uint64_t some_raw_bits = KCASEntry<PtrType>::to_raw_bits(value);
+      TaggedPointer a_desc{some_raw_bits};
+      return a_desc;
+    }
+
+    static TaggedPointer raw_tp_shift_ptr(Type value) {
+      uint64_t descr_bits = KCASEntry<Type>::to_descriptor_bits(value);
+      TaggedPointer a_desc{descr_bits};
+      return a_desc;
+    }
 
 };
 
@@ -300,7 +313,6 @@ class KCASDescriptor {
   public:
 
     friend class Brown_KCAS;
-    template <class T> friend class CachePadded;
 };
 
 
@@ -315,10 +327,12 @@ struct RDCSSDescriptor {
     atomic<TaggedPointer>         *_data_location;
     atomic<KCASDescriptorStatus>  *_status_location;
     //
-    TaggedPointer         _before;
-    TaggedPointer         _kcas_tagptr;
+    TaggedPointer                 _before;
+    TaggedPointer                 _kcas_tagptr;
 
     //
+    // -----
+
     inline size_t increment_sequence() {   // inline understood 
         return _sequence_bits.fetch_add(1, std::memory_order_acq_rel);
     }
@@ -335,7 +349,11 @@ struct RDCSSDescriptor {
         return _status_location->load(std::memory_order_relaxed);
     }
 
+    // -----
     //
+    /**
+     * copy_from_kcas
+    */
     template<typename N>
     void copy_from_kcas(KCASDescriptor<N> *descriptor_snapshot,KCASDescriptor<N> *original_desc, const TaggedPointer tagptr,size_t i) {
         this->increment_sequence();
@@ -346,6 +364,9 @@ struct RDCSSDescriptor {
     }
 
     //
+    /**
+     * copy_from_rdcss_descriptor
+    */
     void copy_from_rdcss_descriptor(RDCSSDescriptor *from,const size_t before_sequence) {
         this->_sequence_bits.store(before_sequence, std::memory_order_relaxed);
         this->_data_location = from->_data_location;
@@ -355,11 +376,16 @@ struct RDCSSDescriptor {
     }
 
 
+    /**
+     * location_update
+    */
     inline bool location_update(TaggedPointer &expected, TaggedPointer new_value) {
         return _data_location->compare_exchange_strong(expected, new_value, std::memory_order_relaxed,std::memory_order_relaxed);
     }
 
-
+    /**
+     * try_snapshot
+    */
     bool try_snapshot(RDCSSDescriptor *snapshot_target, TaggedPointer ptr) {
         //
         const uint64_t sequence_number = TaggedPointer::get_sequence_number(ptr);   // sequence_number - what we think it is
