@@ -677,7 +677,7 @@ namespace node_shm {
 		Utf8String data_arg(info[3]);
 		//
 		// originally full_hash is the whole 32 bit hash and hash_bucket is the modulus of it by the number of buckets
-		uint64_t hash64 = (((uint64_t)full_hash << HALF) | (uint64_t)hash_bucket);
+		// uint64_t hash64 = (((uint64_t)full_hash << HALF) | (uint64_t)hash_bucket);
 		//
 
 		// First check to see if a buffer was every allocated
@@ -691,9 +691,9 @@ namespace node_shm {
 		} else {
 			char *data = *data_arg;
 			// is the key already assigned ?  >> check_for_hash 
-			uint32_t offset = lru_cache->check_for_hash(hash64);
+			uint32_t offset = lru_cache->check_for_hash(full_hash,hash_bucket);
 			if ( offset == UINT32_MAX ) {  // no -- go ahead and add a new element  >> add_el
-				offset = lru_cache->add_el(data,hash64);
+				offset = lru_cache->add_el(data,full_hash,hash_bucket);
 				if ( offset == UINT32_MAX ) {
 					info.GetReturnValue().Set(Nan::New<Boolean>(false));
 				} else {

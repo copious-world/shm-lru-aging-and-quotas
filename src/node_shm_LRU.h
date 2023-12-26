@@ -249,7 +249,15 @@ class LRU_cache {
 		//	add_el moves the element from the free list to the list of allocated positions. These are doubly linked lists.
 		//	Each element of the list as a time of insertion, which add_el records.
 		//
-		 uint32_t add_el(char *data,uint64_t hash64) {
+
+		uint32_t add_el(char *data,uint64_t hash64) {
+			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
+			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
+			add_el(data, full_hash, hash_bucket);
+		}
+
+
+		uint32_t add_el(char *data,uint32_t full_hash,uint32_t hash_bucket) {
 			//
 			uint8_t *start = _region;
 			size_t step = _step;
@@ -264,7 +272,7 @@ class LRU_cache {
 			uint32_t new_el_offset = ctrl_free->_next;
 			// in rare cases the hash table may be frozen even if the LRU is not full
 			//
-			uint64_t store_stat = this->store_in_hash(hash64,new_el_offset);  // STORE
+			uint64_t store_stat = this->store_in_hash(full_hash,hash_bucket,new_el_offset);  // STORE
 			//
 			if ( store_stat == UINT64_MAX ) {
 				return(UINT32_MAX);
@@ -391,11 +399,12 @@ class LRU_cache {
 
 		}
 
-		uint64_t store_in_hash(uint64_t key64,uint32_t new_el_offset) {
+		uint64_t store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
 			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl
+				uint64_t hash64 = (((uint64_t)key << HALF) | (uint64_t)bucket);				
 				_local_hash_table[key64] = new_el_offset;
 			} else {
-				uint64_t result = _hmap_i->store(key64,new_el_offset); //UINT64_MAX
+				uint64_t result = _hmap_i->store(hash_bucket,full_hash,new_el_offset); //UINT64_MAX
 				//count << "store_in_hash: " << result << endl;
 				return result;
 			}
@@ -412,6 +421,21 @@ class LRU_cache {
 				}
 			} else {
 				uint32_t result = _hmap_i->get(key);
+				if ( result != 0 ) return(result);
+			}
+			return(UINT32_MAX);
+		}
+
+		// check_for_hash
+		// either returns an offset to the data or returns the UINT32_MAX.  (4,294,967,295)
+		uint32_t check_for_hash(uint32_t key,uint32_t bucket) {    // full_hash,hash_bucket  :: key == full_hash
+			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl -- means the table was not initialized to use shared memory
+					uint64_t hash64 = (((uint64_t)key << HALF) | (uint64_t)bucket);
+				if ( _local_hash_table.find(hash64) != _local_hash_table.end() ) {
+					return(_local_hash_table[hash64]);
+				}
+			} else {
+				uint32_t result = _hmap_i->get(key,bucket);
 				if ( result != 0 ) return(result);
 			}
 			return(UINT32_MAX);

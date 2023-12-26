@@ -75,7 +75,7 @@ inline bool failed(uint64_t stat_var) { return stat_var == FAILED; }
 struct KCASDescriptorStatus {
   //
   uint64_t _status : 8;
-  uint64_t _sequence_number : 54;
+  uint64_t _sequence_number : 54;   // total 64 bits
   //
   explicit KCASDescriptorStatus() noexcept : _status(uint64_t(UNDECIDED)), _sequence_number(0) {}
 
@@ -92,14 +92,16 @@ struct KCASDescriptorStatus {
   inline bool seq_same(const KCASDescriptorStatus &kcdesc) { return kcdesc._sequence_number == _sequence_number; }
 
   inline bool seq_different(const uint64_t sequence_number) { return sequence_number != _sequence_number; }
-
-
 };
+
+
+// sizeof(KCASDescriptorStatus) should be 8 bytes
 
 
 
 // ---
-// KCASEntry
+// KCASEntry  -- defined for  KCASDescriptor
+//
 //
 // Class to wrap around the types being KCAS'd
 template <class Type>
@@ -191,7 +193,19 @@ struct KCASEntry {
 // contains size ... 
 
 template<typename N>
-class KCASDescriptor {
+struct KCASDescMembers {
+    size_t                        _num_entries;              // incremented in ADD methods
+    atomic<KCASDescriptorStatus>  _status;
+    DescriptorEntry               _entries[N];  // N - template parameter ---- 
+};
+
+template<typename N>
+#define KCASMEMSIZE (sizeof(concurrent_data_structures::KCASDescMembers<N>))
+constexpr bool DO_ADD_KCAS_MEM_SIZE() { return (KCASMEMSIZE%(sizeof(uint64_t)) != 0); }
+
+
+template<typename N>
+class KCASDescriptor : public KCASDescMembers<N> {
 
   public:
 
@@ -200,18 +214,18 @@ class KCASDescriptor {
     KCASDescriptor &operator=(const KCASDescriptor &rhs) = delete;
     KCASDescriptor &operator=(KCASDescriptor &&rhs) = delete;
 
+  public:
+
+    inline KCASDescriptorStatus load_status(std::memory_order prefered = std::memory_order_acquire) {
+      return _status.load(prefered);
+    }
+
     // KCASDescriptor method -- increment_sequence
     //
     void increment_sequence() {
       KCASDescriptorStatus current_status = load_status(std::memory_order_relaxed);
       _status.store(KCASDescriptorStatus{KCASDescStat::UNDECIDED, current_status._sequence_number + 1},
                               std::memory_order_release);
-    }
-
-  public:
-
-    inline KCASDescriptorStatus load_status(std::memory_order prefered = std::memory_order_acquire) {
-      return _status.load(prefered);
     }
 
     inline void status_compare_exchange(KCASDescriptorStatus &expected_status,uint64_t status, uint64_t sequence_number) {
@@ -226,39 +240,32 @@ class KCASDescriptor {
                     });
     }
 
-    template <class ValType>
-    void add_value(KCASEntry<ValType> *location, const ValType &before, const ValType &desired) {
-      //
-      TaggedPointers before_desc = raw_tps_shift_ptr(before);         assert(TaggedPointer::is_bits(before_desc));
-      TaggedPointers desired_desc = raw_tps_shift_ptr(desired);       assert(TaggedPointer::is_bits(desired_desc));
-      //
+    template <class T>
+    void _adder(KCASEntry<T> *location,TaggedPointers before_desc,TaggedPointers desired_desc) {
       const size_t cur_entry = _num_entries++;
-      //
       _entries[cur_entry]._before = before_desc;
       _entries[cur_entry]._desired = desired_desc;
       _entries[cur_entry]._location = location->entry_ref();
-      //
+    }
+
+    template <class ValType>
+    void add_value(KCASEntry<ValType> *location, const ValType &before, const ValType &desired) {
+      TaggedPointers before_desc = raw_tp_shift_ptr(before);         assert(TaggedPointer::is_bits(before_desc));
+      TaggedPointers desired_desc = raw_tp_shift_ptr(desired);       assert(TaggedPointer::is_bits(desired_desc));
+      _adder(location,before_desc,desired_desc);
     }
 
     template <class PtrType>
     void add_ptr(const KCASEntry<PtrType> *location, const PtrType &before, const PtrType &desired) {
-      //        
-      TaggedPointers before_desc = raw_tps_ptr(before);       assert(TaggedPointer::is_bits(before_desc));
-      TaggedPointers desired_desc = raw_tps_ptr(desired);     assert(TaggedPointer::is_bits(desired_desc));
-      //
-      const size_t cur_entry = _num_entries++;
-      //
-      _entries[cur_entry]._before = before_desc;
-      _entries[cur_entry]._desired = desired_desc;
-      _entries[cur_entry]._location = location->entry_ref();
-      //
+      TaggedPointers before_desc = raw_tp_ptr(before);       assert(TaggedPointer::is_bits(before_desc));
+      TaggedPointers desired_desc = raw_tp_ptr(desired);     assert(TaggedPointer::is_bits(desired_desc));
+      _adder(location,before_desc,desired_desc);
     }
 
     void update_entries(TaggedPointer tagptr,bool succeeded) {
       size_t num_entries = _num_entries;
       for ( size_t i = 0; i < num_entries; i++ ) {
-        TaggedPointer new_value = succeeded ? this->_entries[i]._desired
-                                            : this->_entries[i]._before;
+        TaggedPointer new_value = succeeded ? this->_entries[i]._desired : this->_entries[i]._before;
         {
           TaggedPointer expected = tagptr;
           this->_entries[i].location_update(expected, new_value);
@@ -305,32 +312,38 @@ class KCASDescriptor {
 
 
   private:
-  
-    size_t                        _num_entries;              // incremented in ADD methods
-    atomic<KCASDescriptorStatus>  _status;
-    DescriptorEntry               _entries[N];  // N - template parameter ---- 
 
-  public:
+    if constexpr(DO_ADD_KCAS_MEM_SIZE()) {
+#define KCASMEMSIZE (sizeof(concurrent_data_structures::KCASDescMembers<N>))
+      constexpr bool ADDED_KCAS_MEM_SIZE() { return KCASMEMSIZE%(sizeof(uint64_t)); }
+      uint8_t extra_bytes[ADDED_KCAS_MEM_SIZE()];
+    }
 
-    friend class Brown_KCAS;
+
 };
 
 
 
 
-
-// 3. RDCSSDescriptor -- double compare single swap... descriptor    PRIVATE
-// atomics e.g. state information and shared value location which the compiler will use CAS type ops to manipulate
-struct RDCSSDescriptor {
-    //
+struct RDCSSDescMembers {
     atomic_size_t                 _sequence_bits;           // seq or counter... atomic
     atomic<TaggedPointer>         *_data_location;
     atomic<KCASDescriptorStatus>  *_status_location;
     //
     TaggedPointer                 _before;
-    TaggedPointer                 _kcas_tagptr;
+    TaggedPointer                 _kcas_tagptr;   // should be 40 bytes (otherwise 32 bytes)
+};
 
-    //
+
+#define RDCSSMEMSIZE (sizeof(concurrent_data_structures::RDCSSDescMembers))
+constexpr bool DO_ADD_RDCSS_MEM_SIZE() { return (RDCSSMEMSIZE%(sizeof(uint64_t)) != 0); }
+
+
+
+// 3. RDCSSDescriptor -- double compare single swap... descriptor    PRIVATE
+// atomics e.g. state information and shared value location which the compiler will use CAS type ops to manipulate
+struct RDCSSDescriptor : public RDCSSDescMembers {
+
     // -----
 
     inline size_t increment_sequence() {   // inline understood 
@@ -411,9 +424,15 @@ struct RDCSSDescriptor {
         return true;
     }
 
+private:
+
+    if constexpr(DO_ADD_RDCSS_MEM_SIZE())  {
+#define RDCSSMEMSIZE (sizeof(concurrent_data_structures::RDCSSDescMembers))
+      constexpr bool ADDED_RDCSS_MEM_SIZE() { return RDCSSMEMSIZE%(sizeof(uint64_t)); }
+      uint8_t extra_bytes[ADDED_RDCSS_MEM_SIZE()];
+    }
 
 };
-
 
 
 }

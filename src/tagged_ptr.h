@@ -51,11 +51,11 @@ static const uint64_t S_EITHER_RDCSS_OR_KCAS_TAG = 0x3;
 
 // 8 Bits
 static const uint64_t S_THREAD_ID_SHIFT = 2;
-static const uint64_t S_THREAD_ID_MASK = (~(uint64_t(1) << 8));
+static const uint64_t S_THREAD_ID_MASK = (0x03FC);  // 8 bits shifted by S_THREAD_ID_SHIFT == b0011_1111_1100
 
-// 54 bits
+// 54 bits  :: 54 + (8 + 2) = 64
 static const uint64_t S_SEQUENCE_SHIFT = 10;
-static const uint64_t S_SEQUENCE_MASK = (~(uint64_t(1) << 54));
+static const uint64_t S_SEQUENCE_MASK = (0xFFFFFFFFFFFFFC00);  // 10 bits up
 
 
 
@@ -75,9 +75,8 @@ static const uint64_t S_SEQUENCE_MASK = (~(uint64_t(1) << 54));
     }
 
     explicit TaggedPointer(const uint64_t tag_bits, const uint64_t thread_id, const uint64_t sequence_number)
-        : _raw_bits(  tag_bits  | (thread_id << S_THREAD_ID_SHIFT) 
-                                | (sequence_number << S_SEQUENCE_SHIFT)) {}
-
+        : _raw_bits(  tag_bits  | ((thread_id << S_THREAD_ID_MASK) & S_SEQUENCE_MASK)
+                                | ((sequence_number << S_SEQUENCE_SHIFT) & S_SEQUENCE_MASK) ) {}
 
 
 
@@ -95,11 +94,11 @@ static const uint64_t S_SEQUENCE_MASK = (~(uint64_t(1) << 54));
     // THREAD ID AND SEQUENCE NUMBER
 
     static const uint64_t get_thread_id(const TaggedPointer tagptr) {
-      return (tagptr._raw_bits >> S_THREAD_ID_SHIFT) & S_THREAD_ID_MASK;
+      return (tagptr._raw_bits & S_THREAD_ID_MASK) >> S_THREAD_ID_SHIFT;
     }
 
     static const uint64_t get_sequence_number(const TaggedPointer tagptr) {
-      return (tagptr._raw_bits >> S_SEQUENCE_SHIFT) & S_SEQUENCE_MASK;
+      return (tagptr._raw_bits & S_SEQUENCE_MASK) >> S_SEQUENCE_SHIFT;
     }
 
 
@@ -107,17 +106,17 @@ static const uint64_t S_SEQUENCE_MASK = (~(uint64_t(1) << 54));
     // TAGGED copy - generic tag bits
 
     static inline TaggedPointer make_tagged(const uint64_t tag_bits, const TaggedPointer tagptr) {
-        uint64_t thread_id = get_thread_id(tagptr);
-        uint64_t sequence_number = get_sequence_number(tagptr);
-        uint64_t bits = (tag_bits  | (thread_id << S_THREAD_ID_SHIFT) | (sequence_number << S_SEQUENCE_SHIFT));
-        return TaggedPointer{bits};
+      // or together the 2 bit type and the previously possitioned thread and sequence
+      uint64_t bits = (tag_bits  | (tagptr._raw_bits & S_THREAD_ID_MASK) | (tagptr._raw_bits & S_SEQUENCE_MASK));
+      return TaggedPointer{bits};
     }
 
 
-
+/*
     static TaggedPointer mask_bits(const TaggedPointer tagptr) {
       return make_tagged(S_NO_TAG, tagptr);
     }
+*/
 
     
     // Pointers to descriptors
@@ -125,18 +124,22 @@ static const uint64_t S_SEQUENCE_MASK = (~(uint64_t(1) << 54));
       return TaggedPointer{S_RDCSS_TAG, thread_id, sequence_number};
     }
 
+/*
     static TaggedPointer make_rdcss(const TaggedPointer tagptr) {
       return make_tagged(S_RDCSS_TAG, tagptr);
     }
+*/
 
 
     static TaggedPointer make_kcas(const uint64_t thread_id, const uint64_t sequence_number) {
       return TaggedPointer{S_KCAS_TAG, thread_id, sequence_number};
     }
 
+/*
     static TaggedPointer make_kcas(const TaggedPointer tagptr) {
       return make_tagged(S_KCAS_TAG, tagptr);
     }
+*/
 
 
 
@@ -157,7 +160,7 @@ static const uint64_t S_SEQUENCE_MASK = (~(uint64_t(1) << 54));
 
     // type of bits is cleared -- not in use for descriptor purposes
     static bool is_bits(const TaggedPointer tagptr) {
-      return !is_kcas(tagptr) && !is_rdcss(tagptr);
+      return (tagptr._raw_bits & S_EITHER_RDCSS_OR_KCAS_TAG) == S_NO_TAG;
     }
 
 
