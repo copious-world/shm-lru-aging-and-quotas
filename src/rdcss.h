@@ -50,6 +50,9 @@ namespace concurrent_data_structures {
 
 // Used interchangeably are shapshots and descriptor. Really the decriptor 
 
+
+// THhe RDCSS class provides method used by just KCAS 
+
 template <class Allocator, size_t N>
 class Brown_RDCSS {
   //

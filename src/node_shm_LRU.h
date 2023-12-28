@@ -32,6 +32,7 @@ using namespace std::chrono;
 
 #define MAX_BUCKET_FLUSH 12
 
+
 /**
  * The 64 bit key stores a 32bit hash (xxhash or other) in the lower word.
  * The top 32 bits stores a structured bit array. The top 1 bit will be
@@ -221,7 +222,7 @@ class LRU_cache {
 				next += step;
 			}
 
-			ctrl_free->_hash = _count_free;   // how many free elements avaible
+			ctrl_free->_hash = _count_free;   // how many free elements avaibale
 			ctrl_hdr->_hash = 0;
 
 		}
@@ -253,7 +254,7 @@ class LRU_cache {
 		uint32_t add_el(char *data,uint64_t hash64) {
 			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
 			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
-			add_el(data, full_hash, hash_bucket);
+			return add_el(data, full_hash, hash_bucket);
 		}
 
 
@@ -289,6 +290,7 @@ class LRU_cache {
 			header->_next = new_el_offset;
 			//
 			new_el->_when = epoch_ms();
+			uint64_t hash64 = (((uint64_t)full_hash << HALF) | (uint64_t)hash_bucket);	
 			new_el->_hash = hash64;
 			char *store_el = (char *)(new_el + 1);
 			//
@@ -401,7 +403,7 @@ class LRU_cache {
 
 		uint64_t store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
 			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl
-				uint64_t hash64 = (((uint64_t)key << HALF) | (uint64_t)bucket);				
+				uint64_t key64 = (((uint64_t)full_hash << HALF) | (uint64_t)hash_bucket);				
 				_local_hash_table[key64] = new_el_offset;
 			} else {
 				uint64_t result = _hmap_i->store(hash_bucket,full_hash,new_el_offset); //UINT64_MAX
@@ -409,6 +411,13 @@ class LRU_cache {
 				return result;
 			}
 			return 0;
+		}
+
+
+		uint64_t store_in_hash(uint64_t hash64,uint32_t new_el_offset) {
+			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
+			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
+			return store_in_hash(full_hash,hash_bucket,new_el_offset);
 		}
 
 

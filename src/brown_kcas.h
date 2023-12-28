@@ -74,9 +74,9 @@ class Brown_KCAS : public Brown_RDCSS {
 
   public: // METHODS
 
-    // create_descriptor
+    // reuse_descriptor
     //
-    KCASDescriptor *create_descriptor(void) {
+    KCASDescriptor *reuse_descriptor(void) {       // reuse descriptor
       KCASDescriptor *kcas_desc = _own_kcas_descs;
       kcas_desc->increment_sequence();   // Increment the status sequence number.
       kcas_desc->_num_entries = 0;
@@ -155,10 +155,12 @@ class Brown_KCAS : public Brown_RDCSS {
     ValType read_value(const KCASEntry<ValType> *location,const std::memory_order memory_order = std::memory_order_seq_cst) {
                                   // static_assert(!std::is_pointer<ValType>::value, "Type is not a value.");
       // read
+      // get the entry of the tagged ptr (_entry field), which may be a KCAS entry or not... 
+      // 
       TaggedPointer tp_desc = this->rdcss_read(location->entry_ref(), memory_order);
       // test
       bool its_kcas = TaggedPointer::is_kcas(tp_desc);
-      while ( its_kcas ) {   // Could still be a K-CAS descriptor.
+      while ( its_kcas ) {   // Could still be a K-CAS descriptor.  (very likely this is never called in the hopscotch app)
         _cas_try_snapshot(tp_desc, true);
         its_kcas = TaggedPointer::is_kcas(tp_desc);
         if ( !its_kcas ) break;
@@ -269,7 +271,7 @@ class Brown_KCAS : public Brown_RDCSS {
 
 
     void _cas_try_snapshot(const TaggedPointer tagptr, bool help = false) {
-      KCASDescriptor *snapshot_target = _kcas_descriptor_from(ptr);   // offset to descriptor region from thread id
+      KCASDescriptor *snapshot_target = _kcas_descriptor_from(tagptr);   // offset to descriptor region from thread id
       //
       KCASDescriptor descriptor_snapshot;
       if ( descriptor_snapshot.try_snapshot(snapshot_target, tagptr) ) {
@@ -315,39 +317,40 @@ class Brown_KCAS : public Brown_RDCSS {
         for ( size_t i = help ? 1 : 0; ((i < num_entries) && succeeded(status) ); i++ ) {
           //
           bool its_kcas = true;
-          TaggedPointer maybe_value;
+          TaggedPointer maybe_value_state;
           do {        // {(DO)}
-            rdcss_desc->copy_from_kcas(kc_desc_snapshot,original_desc,tagptr,i);  // Give us a new descriptor.
+            rdcss_desc->copy_from_kcas_entry(kc_desc_snapshot,i,original_desc,tagptr);  // Give us a new descriptor.
             TaggedPointer rdcss_ptr = _construct_rdcss_ptr( rdcss_desc->increment_sequence() ); // Make it initialised.
             //
-            maybe_value = _rdcss(rdcss_ptr);
+            maybe_value_state = _rdcss(rdcss_ptr);
             //
-            its_kcas = TaggedPointer::is_kcas(maybe_value);
-            if ( its_kcas && (maybe_value != tagptr) ) {
-              _cas_try_snapshot(value,true);
+            its_kcas = TaggedPointer::is_kcas(maybe_value_state);
+            if ( its_kcas && (maybe_value_state != tagptr) ) {      // possibly a tree of CAS (depth first lockdown)
+              _cas_try_snapshot(maybe_value_state,true);
             }
             //
           } while ( its_kcas );   // w-{(OD)}
           // 
-          if ( maybe_value != rdcss_desc->_before ) {
+          if ( maybe_value_state != rdcss_desc->_before ) {   // don't have access to the raw bits governed by this tagptr
             status = KCASDescStat::FAILED;
           }
         }  // rof
 
         // Try change descriptor status.
-        KCASDescriptorStatus expected_status = current_status;
-        KCASDescriptorStatus original_status = original_desc->load_status(std::memory_order_relaxed);
+        KCASDescriptorStatus expected_status = current_status;  // this entire CAS status before trying locks
+        KCASDescriptorStatus original_status = original_desc->load_status(std::memory_order_relaxed);  // where the status is now
         //
-        if ( original_status.seq_same(expected_status) && original_status.still_undecided() ) {
+        if ( original_status.seq_same(expected_status) && original_status.still_undecided() ) {  // this proc controls the status
+          // set it to whatever we got locking down the entries ... the status word made of new value... 
           original_desc->status_compare_exchange(expected_status,status,current_status._sequence_number);
         }
       }
       // Phase 2.
       bool succeeded = false; 
-      KCASDescriptorStatus new_status = original_desc->load_status(std::memory_order_seq_cst);
-      if ( new_status.seq_same(tagptr_sequence_number) ) {
-        succeeded = new_status.succeeded();
-        kc_desc_snapshot->update_entries(tagptr,succeeded);
+      KCASDescriptorStatus new_status = original_desc->load_status(std::memory_order_seq_cst);  // where the status is now (once again)
+      if ( new_status.seq_same(tagptr_sequence_number) ) {  // 'on the same page'
+        succeeded = new_status.succeeded();                 // if we were able to set it, this is what we set it to
+        kc_desc_snapshot->update_entries(tagptr,succeeded); // now make changes to the _entry at the _location (addr) of each entry set by the app
       }
       //
       return succeeded;

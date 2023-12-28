@@ -46,6 +46,10 @@ static const size_t KCASShift = 2;
 
 
 // Control regions contain reference to value locations in the value region
+// 
+//  DescriptorEntry -- location will be a reference to the _entry of a KCASEntry, which is a tagged pointer.
+//  The KCASEntry is provided by the application wishing to perform cooperative operations.
+//  
 //
 struct DescriptorEntry {
   atomic<TaggedPointer>   *_location;    // current value stored in _location
@@ -75,7 +79,7 @@ inline bool failed(uint64_t stat_var) { return stat_var == FAILED; }
 struct KCASDescriptorStatus {
   //
   uint64_t _status : 8;
-  uint64_t _sequence_number : 54;   // total 64 bits
+  uint64_t _sequence_number : 54;   // total 64 bits - 2
   //
   explicit KCASDescriptorStatus() noexcept : _status(uint64_t(UNDECIDED)), _sequence_number(0) {}
 
@@ -101,6 +105,7 @@ struct KCASDescriptorStatus {
 
 // ---
 // KCASEntry  -- defined for  KCASDescriptor
+//  -- the application passes this in for management in the CAS table...
 //
 //
 // Class to wrap around the types being KCAS'd
@@ -147,12 +152,30 @@ struct KCASEntry {
       return value_from_raw_bits(tp_desc._raw_bits)
     }
 
-    
+    static TaggedPointer raw_tp_ptr(Type value) {
+      uint64_t some_raw_bits = KCASEntry<Type>::to_raw_bits(value);
+      TaggedPointer a_desc{some_raw_bits};
+      return a_desc;
+    }
+
+    static TaggedPointer raw_tp_shift_ptr(Type value) {
+      uint64_t descr_bits = KCASEntry<Type>::to_descriptor_bits(value);
+      TaggedPointer a_desc{descr_bits};
+      return a_desc;
+    }
+
+
+    // Atomic ref
+
+
     atomic<TaggedPointer> *entry_ref() {
       return &_entry;
     }
 
-    inline TaggedPointer atomic_load(std::memory_order fail) {
+
+    // Atomic operations ...
+
+    inline TaggedPointer atomic_load(std::memory_order fail = std::memory_order_seq_cst) {
       return _entry.load(fail)
     }
 
@@ -168,19 +191,6 @@ struct KCASEntry {
     inline bool compare_exchange_strong(TaggedPointer &expected, const TaggedPointer &desired,
                                                             std::memory_order success, std::memory_order fail) {
       return _entry.compare_exchange_strong(expected, desired, success, fail);
-    }
-
-
-    static TaggedPointer raw_tp_ptr(Type value) {
-      uint64_t some_raw_bits = KCASEntry<PtrType>::to_raw_bits(value);
-      TaggedPointer a_desc{some_raw_bits};
-      return a_desc;
-    }
-
-    static TaggedPointer raw_tp_shift_ptr(Type value) {
-      uint64_t descr_bits = KCASEntry<Type>::to_descriptor_bits(value);
-      TaggedPointer a_desc{descr_bits};
-      return a_desc;
     }
 
 };
@@ -210,6 +220,7 @@ class KCASDescriptor : public KCASDescMembers<N> {
   public:
 
     KCASDescriptor() : _num_entries(0), _status(KCASDescriptorStatus{}) {}
+    // can only call the basic constructor....
     KCASDescriptor(const KCASDescriptor &rhs) = delete;
     KCASDescriptor &operator=(const KCASDescriptor &rhs) = delete;
     KCASDescriptor &operator=(KCASDescriptor &&rhs) = delete;
@@ -223,11 +234,15 @@ class KCASDescriptor : public KCASDescMembers<N> {
     // KCASDescriptor method -- increment_sequence
     //
     void increment_sequence() {
+      // make use of the existing status value (load it) for the sake of its sequence number
       KCASDescriptorStatus current_status = load_status(std::memory_order_relaxed);
-      _status.store(KCASDescriptorStatus{KCASDescStat::UNDECIDED, current_status._sequence_number + 1},
+      // now reset the status (UNDECIDED) and >> add to the seq number... making this different than it was before 
+      _status.store(KCASDescriptorStatus{KCASDescStat::UNDECIDED, current_status._sequence_number + 1},  // values bless the addressed memory with KCASDescriptorStatus
                               std::memory_order_release);
     }
 
+    // status_compare_exchange
+    // if you know what the existing status is, you can set your own status {UNDECIDED,SUCEEDED, FAILED} and sequence_number
     inline void status_compare_exchange(KCASDescriptorStatus &expected_status,uint64_t status, uint64_t sequence_number) {
       _status.compare_exchange_strong(expected_status,KCASDescriptorStatus{status,sequence_number},
                   std::memory_order_relaxed, std::memory_order_relaxed);
@@ -245,8 +260,12 @@ class KCASDescriptor : public KCASDescMembers<N> {
       const size_t cur_entry = _num_entries++;
       _entries[cur_entry]._before = before_desc;
       _entries[cur_entry]._desired = desired_desc;
-      _entries[cur_entry]._location = location->entry_ref();
+      _entries[cur_entry]._location = location->entry_ref();  // from the address of the KCASEntry to its member _entry
     }
+
+
+
+    // 
 
     template <class ValType>
     void add_value(KCASEntry<ValType> *location, const ValType &before, const ValType &desired) {
@@ -261,6 +280,8 @@ class KCASDescriptor : public KCASDescMembers<N> {
       TaggedPointers desired_desc = raw_tp_ptr(desired);     assert(TaggedPointer::is_bits(desired_desc));
       _adder(location,before_desc,desired_desc);
     }
+
+    
 
     void update_entries(TaggedPointer tagptr,bool succeeded) {
       size_t num_entries = _num_entries;
@@ -365,10 +386,10 @@ struct RDCSSDescriptor : public RDCSSDescMembers {
     // -----
     //
     /**
-     * copy_from_kcas
+     * copy_from_kcas_entry
     */
     template<typename N>
-    void copy_from_kcas(KCASDescriptor<N> *descriptor_snapshot,KCASDescriptor<N> *original_desc, const TaggedPointer tagptr,size_t i) {
+    void copy_from_kcas_entry(KCASDescriptor<N> *descriptor_snapshot,size_t i,KCASDescriptor<N> *original_desc, const TaggedPointer tagptr) {
         this->increment_sequence();
         this->_data_location = descriptor_snapshot->_entries[i]._location;  // copy pointer ... reference
         this->_before = descriptor_snapshot->_entries[i]._before;

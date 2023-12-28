@@ -759,7 +759,7 @@ public:
 		// walk through the list of position occupied by bucket members. (Those are the ones with the positional bit set.)
 		//
 		uint64_t hunt_hash_set(HHash *T, uint32_t h_bucket, uint64_t key_null, bool kill) {
-			uint32_t i = _succ_hh_hash(T, h, 0);   // i is the offset into the hash bucket.
+			uint32_t i = _succ_hh_hash(T, h_bucket, 0);   // i is the offset into the hash bucket.
 			while ( i != UINT32_MAX ) {
 				// x is from the value region..
 				uint64_t x = get_val_at_hh_hash(T, h_bucket, i);  // get ith value matching this hash (collision)
