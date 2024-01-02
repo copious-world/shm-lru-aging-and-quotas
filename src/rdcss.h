@@ -85,45 +85,53 @@ class Brown_RDCSS {
       return TaggedPointer::make_rdcss(_thread_id, new_sequence);  // set type flag
     }
 
-    //  
-    // rdcss_read PRIVATE
-    //
-    TaggedPointer rdcss_read(const atomic<TaggedPointer> *location, const std::memory_order memory_order = std::memory_order_seq_cst) {
-      //
-      TaggedPointer current = location->load(memory_order);
-      bool is_rdcss = TaggedPointer::is_rdcss(current)
-      while ( is_rdcss ) {
-        rdcss_try_snapshot(current);
-        current = location->load(memory_order);
-        is_rdcss = TaggedPointer::is_rdcss(current)
-      };
-      return current;
-    }
+    // TRY SNAPSHOT
 
     //  _rdcss_complete PRIVATE
     //
     inline void _rdcss_complete(RDCSSDescriptor *snapshot, TaggedPointer ptr) {
       // Old 1 and address 1.
+      // this is the second part of the rdcss (second value)
       const uint64_t sequence_number = TaggedPointer::get_sequence_number(snapshot->_kcas_tagptr);
-      const KCASDescriptorStatus status = snapshot->atom_load_kcas_descr();     // STATUS
+      const KCASDescriptorStatus status = snapshot->atom_load_refd_status();     // STATUS
       //
       if ( status.seq_same(sequence_number) && status.still_undecided() ) {  // UNDECIDED
         snapshot->location_update(ptr,snapshot->_kcas_tagptr);   // put in the kcas control word, no contention for this position
       } else {
-        snapshot->location_update(ptr,snapshot->_before);
+        snapshot->location_update(ptr,snapshot->_before);  // someone else wrote the value... put it back the way it was
       }
     }
 
     // TRY SNAPSHOT
-
-    void rdcss_try_snapshot(const TaggedPointer tagptr, bool help = false) {
+    // rdcss_try_snapshot
+    //
+    void rdcss_try_snapshot(const TaggedPointer tagptr) {
         //
-      RDCSSDescriptor *snapshot_target = _rdcss_descriptor_from(ptr);  // offset to descriptor region from thread id
+      RDCSSDescriptor *snapshot_target = _rdcss_descriptor_from(tagptr);  // offset to descriptor region from thread id of some proc/thread
       //
-      RDCSSDescriptor descriptor_snapshot;
-      if ( descriptor_snapshot.try_snapshot(snapshot_target, tagptr) ) {
+      RDCSSDescriptor descriptor_snapshot;                    // tagpptr controls if the copy will happen
+      if ( descriptor_snapshot.try_snapshot(snapshot_target, tagptr) ) {  // if values can be coppied into the given descriptor
         _rdcss_complete(&descriptor_snapshot, tagptr);
       }
+    }
+
+    //  
+    // rdcss_read PRIVATE
+    //  look at the control word (_entry) and see if someone is using it in and rdcss (2-CAS)
+    //  If it is, try to clear out the operation by helping.
+    //  Especially, if someone is using it, then it will refer to another process's rdcss descriptor.
+    // 
+    //
+    TaggedPointer rdcss_read(const atomic<TaggedPointer> *to_entry_field, const std::memory_order memory_order = std::memory_order_seq_cst) {
+      //
+      TaggedPointer current = to_entry_field->load(memory_order);  //  c++ atomic load .. local process has this reference
+      bool is_rdcss = TaggedPointer::is_rdcss(current)   // is_rdcss :: someone else use the same entry and is currently holding it
+      while ( is_rdcss ) {
+        rdcss_try_snapshot(current);  // helping if possible.  
+        current = to_entry_field->load(memory_order);     // given the op has completed .. proceed with the current value (check again)
+        is_rdcss = TaggedPointer::is_rdcss(current)
+      };
+      return current;    // now the current value fits this process...
     }
 
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----

@@ -38,6 +38,9 @@ using namespace std;
 
 namespace concurrent_data_structures {
 
+
+
+
 // strongly suggesting to do inlines... although it should be the default
 
 // N ia number of entries... 
@@ -100,7 +103,7 @@ class Brown_KCAS : public Brown_RDCSS {
 
 
     template <class ValType>
-    bool update_if_rdcss_kcas(TaggedPointer &before_desc, KCASEntry<ValType> *location, std::memory_order fail = std::memory_order_seq_cst) {
+    bool _update_if_rdcss_kcas(TaggedPointer &before_desc, KCASEntry<ValType> *location, std::memory_order fail = std::memory_order_seq_cst) {
       //
       if ( TaggedPointer::is_rdcss(before_desc) ) {
         _cas_try_snapshot(before_desc, true);
@@ -118,12 +121,12 @@ class Brown_KCAS : public Brown_RDCSS {
     }
 
     /**
-     * _loop_until_bits calls upone update_if_rdcss_kcas (which MUST prevent an infinit loop)
+     * _loop_until_bits calls upone _update_if_rdcss_kcas (which MUST prevent an infinit loop)
     */
     template <class ValType>
     bool _loop_until_bits(ValType *expected, TaggedPointer &a_desc, KCASEntry<ValType> *location, std::memory_order fail = std::memory_order_seq_cst) {
       while ( TaggedPointer::not_bits(a_desc) ) {
-        if ( update_if_rdcss_kcas(a_desc,location,fail) == false) {
+        if ( _update_if_rdcss_kcas(a_desc,location,fail) == false) {
           *expected = KCASEntry<ValType>::value_from_raw_bits(a_desc);
           return;
         }
@@ -140,31 +143,32 @@ class Brown_KCAS : public Brown_RDCSS {
     //
     bool cas(KCASDescriptor *desc) {                //     CAS CAS CAS
       //
-      desc->sort_kcas_entries();
-      desc->increment_sequence();  // Init descriptor...
+      desc->sort_kcas_entries();    // 
+      desc->increment_sequence();   // Init descriptor...
 
+      // ket a kcas marked tagged pointer (a value) from this Brown_KCASS descriptor (and using just the sequence number)
       TaggedPointer ptr =  kcas_ptr_from(desc->load_status(std::memory_order_relaxed)._sequence_number));
-      return _cas_internal(ptr, desc);
+      return _cas_internal(desc,ptr);
     }
 
     // READ ---
     //
-    // Brown_KCAS::read_value   -- a CAS read .. so it tries until it has all the locations
+    // Brown_KCAS::read_value   -- a rdcss read
     //
     template <class ValType>
-    ValType read_value(const KCASEntry<ValType> *location,const std::memory_order memory_order = std::memory_order_seq_cst) {
+    ValType read_value(const KCASEntry<ValType> *app_entry,const std::memory_order memory_order = std::memory_order_seq_cst) {
                                   // static_assert(!std::is_pointer<ValType>::value, "Type is not a value.");
       // read
       // get the entry of the tagged ptr (_entry field), which may be a KCAS entry or not... 
       // 
-      TaggedPointer tp_desc = this->rdcss_read(location->entry_ref(), memory_order);
+      TaggedPointer tp_desc = this->rdcss_read(app_entry->entry_ref(), memory_order);   // rdcss is a 2-CASS always
       // test
       bool its_kcas = TaggedPointer::is_kcas(tp_desc);
       while ( its_kcas ) {   // Could still be a K-CAS descriptor.  (very likely this is never called in the hopscotch app)
         _cas_try_snapshot(tp_desc, true);
         its_kcas = TaggedPointer::is_kcas(tp_desc);
         if ( !its_kcas ) break;
-        else { tp_desc = this->rdcss_read(location->entry_ref(), memory_order); } // read again
+        else { tp_desc = this->rdcss_read(app_entry->entry_ref(), memory_order); } // read again
       }
       return KCASEntry<ValType>::value_from_raw_bits(tp_desc);
     }
@@ -310,6 +314,7 @@ class Brown_KCAS : public Brown_RDCSS {
       //
       if ( current_status.still_undecided() ) {   // UNDECIDED
         //
+        // use rdcss to get the values for the entries..
         RDCSSDescriptor *rdcss_desc = this->theads_own_rdcss_descs();   // the rdcss descriptor for this process
         //
         uint64_t status = KCASDescStat::SUCCEEDED;    // status
@@ -319,9 +324,10 @@ class Brown_KCAS : public Brown_RDCSS {
           bool its_kcas = true;
           TaggedPointer maybe_value_state;
           do {        // {(DO)}
-            rdcss_desc->copy_from_kcas_entry(kc_desc_snapshot,i,original_desc,tagptr);  // Give us a new descriptor.
-            TaggedPointer rdcss_ptr = _construct_rdcss_ptr( rdcss_desc->increment_sequence() ); // Make it initialised.
+            // get the next loaded entry                      ith entry
+            rdcss_desc->copy_from_kcas_entry(kc_desc_snapshot,i,original_desc,tagptr);
             //
+            TaggedPointer rdcss_ptr = _construct_rdcss_ptr( rdcss_desc->increment_sequence() ); // Make it initialised.
             maybe_value_state = _rdcss(rdcss_ptr);
             //
             its_kcas = TaggedPointer::is_kcas(maybe_value_state);

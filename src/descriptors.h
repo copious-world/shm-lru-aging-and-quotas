@@ -52,14 +52,14 @@ static const size_t KCASShift = 2;
 //  
 //
 struct DescriptorEntry {
-  atomic<TaggedPointer>   *_location;    // current value stored in _location
+  atomic<TaggedPointer>   *_location_atm;    // current value stored in _location_atm
   TaggedPointer           _before;       // expected value
   TaggedPointer           _desired;      // new value 
 
-  inline void location_update(TaggedPointer &expected, TaggedPointer new_value) {
-    _location->compare_exchange_strong(expected, new_value, std::memory_order_relaxed,std::memory_order_relaxed);
+  inline void descr_location_update(TaggedPointer &expected, TaggedPointer new_value) {
+    _location_atm->compare_exchange_strong(expected, new_value, std::memory_order_relaxed,std::memory_order_relaxed);
   }
-};          
+};
 
 
 typedef enum {
@@ -112,86 +112,87 @@ struct KCASDescriptorStatus {
 template <class Type>
 struct KCASEntry {
   //
-    //
-    union ItemBitsUnion {
-      ItemBitsUnion() : _raw_bits(0) {}
-      Type              _item;
-      uint64_t          _raw_bits;
-    };
-    //
+  union ItemBitsUnion {
+    ItemBitsUnion() : _raw_bits(0) {}   /// most likely the Type and the _raw_bits will be the same.
+    Type              _item;
+    uint64_t          _raw_bits;
+  };
+  //
 
-    atomic<TaggedPointer> _entry;
+  atomic<TaggedPointer> _entry;
 
-    // METHODS
-    static Type from_raw_bits(const uint64_t raw_bits) {
-      ItemBitsUnion ibu;
-      ibu._raw_bits = raw_bits;
-      return ibu._item;
-    }
+  // METHODS
+  static Type from_raw_bits(const uint64_t raw_bits) {
+    ItemBitsUnion ibu;
+    ibu._raw_bits = raw_bits;
+    return ibu._item;
+  }
 
-    static Type value_from_raw_bits(const uint64_t raw_bits) {
-      ItemBitsUnion ibu;
-      ibu._raw_bits = (raw_bits >> KCASShift);
-      return ibu._item;
-    }
+  static Type value_from_raw_bits(const uint64_t raw_bits) {
+    ItemBitsUnion ibu;
+    ibu._raw_bits = (raw_bits >> KCASShift);
+    return ibu._item;
+  }
 
-    static uint64_t to_raw_bits(const Type &inner) {
-      ItemBitsUnion ibu;
-      ibu._item = inner;
-      return ibu._raw_bits;
-    }
+  static uint64_t to_raw_bits(const Type &inner) {
+    ItemBitsUnion ibu;
+    ibu._item = inner;
+    return ibu._raw_bits;
+  }
 
-    static uint64_t to_descriptor_bits(const Type &inner) {
-      ItemBitsUnion ibu;
-      ibu._item = inner;
-      return (ibu._raw_bits << KCASShift);
-    }
-
-
-    static Type value_from_raw_bits(TaggedPointer &tp_desc) {
-      return value_from_raw_bits(tp_desc._raw_bits)
-    }
-
-    static TaggedPointer raw_tp_ptr(Type value) {
-      uint64_t some_raw_bits = KCASEntry<Type>::to_raw_bits(value);
-      TaggedPointer a_desc{some_raw_bits};
-      return a_desc;
-    }
-
-    static TaggedPointer raw_tp_shift_ptr(Type value) {
-      uint64_t descr_bits = KCASEntry<Type>::to_descriptor_bits(value);
-      TaggedPointer a_desc{descr_bits};
-      return a_desc;
-    }
+  static uint64_t to_descriptor_bits(const Type &inner) {
+    ItemBitsUnion ibu;
+    ibu._item = inner;
+    return (ibu._raw_bits << KCASShift);
+  }
 
 
-    // Atomic ref
+  static Type value_from_raw_bits(TaggedPointer &tp_desc) {
+    return value_from_raw_bits(tp_desc._raw_bits)
+  }
+
+  static TaggedPointer raw_tp_ptr(Type value) {
+    uint64_t some_raw_bits = KCASEntry<Type>::to_raw_bits(value);
+    TaggedPointer a_desc{some_raw_bits};
+    return a_desc;
+  }
+
+  // put the value in a value in the region above the bottom two bits (which may hold status)
+  // return the tagged pointer associated with it.
+  static TaggedPointer raw_tp_shift_ptr(Type value) {
+    uint64_t descr_bits = KCASEntry<Type>::to_descriptor_bits(value);  // shift
+    TaggedPointer a_desc{descr_bits};
+    return a_desc;
+  }
 
 
-    atomic<TaggedPointer> *entry_ref() {
-      return &_entry;
-    }
+  // Atomic ref
 
 
-    // Atomic operations ...
+  atomic<TaggedPointer> *entry_ref() {
+    return &_entry;
+  }
 
-    inline TaggedPointer atomic_load(std::memory_order fail = std::memory_order_seq_cst) {
-      return _entry.load(fail)
-    }
 
-    inline void atomic_store(TaggedPointer desc, const std::memory_order memory_order = std::memory_order_seq_cst) {
-      _entry.store(desc, const std::memory_order memory_order = std::memory_order_seq_cst);
-    }
+  // Atomic operations ...
 
-    inline bool compare_exchange_weak(TaggedPointer &expected, const TaggedPointer &desired,
-                                                            std::memory_order success, std::memory_order fail) {
-      return _entry.compare_exchange_weak(expected, desired, success, fail);
-    }
+  inline TaggedPointer atomic_load(std::memory_order fail = std::memory_order_seq_cst) {
+    return _entry.load(fail)
+  }
 
-    inline bool compare_exchange_strong(TaggedPointer &expected, const TaggedPointer &desired,
-                                                            std::memory_order success, std::memory_order fail) {
-      return _entry.compare_exchange_strong(expected, desired, success, fail);
-    }
+  inline void atomic_store(TaggedPointer desc, const std::memory_order memory_order = std::memory_order_seq_cst) {
+    _entry.store(desc, const std::memory_order memory_order = std::memory_order_seq_cst);
+  }
+
+  inline bool compare_exchange_weak(TaggedPointer &expected, const TaggedPointer &desired,
+                                                          std::memory_order success, std::memory_order fail) {
+    return _entry.compare_exchange_weak(expected, desired, success, fail);
+  }
+
+  inline bool compare_exchange_strong(TaggedPointer &expected, const TaggedPointer &desired,
+                                                          std::memory_order success, std::memory_order fail) {
+    return _entry.compare_exchange_strong(expected, desired, success, fail);
+  }
 
 };
 
@@ -251,22 +252,29 @@ class KCASDescriptor : public KCASDescMembers<N> {
     inline void sort_kcas_entries() {
         sort(&_entries[0], &_entries[_num_entries],   // begin,end (of entries)
                     [](const DescriptorEntry &lhs, const DescriptorEntry &rhs) -> bool {
-                      return lhs._location < rhs._location;
+                      return lhs._location_atm < rhs._location_atm;
                     });
     }
 
+
+
+    // Adds an entry to the descriptor for both the pointer and value methods. 
+    // 
     template <class T>
     void _adder(KCASEntry<T> *location,TaggedPointers before_desc,TaggedPointers desired_desc) {
       const size_t cur_entry = _num_entries++;
       _entries[cur_entry]._before = before_desc;
       _entries[cur_entry]._desired = desired_desc;
-      _entries[cur_entry]._location = location->entry_ref();  // from the address of the KCASEntry to its member _entry
+      _entries[cur_entry]._location_atm = location->entry_ref();  // from the address of the KCASEntry to its member _entry
     }
 
 
-
-    // 
-
+    // Add a value into the descriptor's entries. 
+    // Called by the application.
+    // saves up the value. There is no contention for a spot a this point. The descriptor belongs to a single thread/proc.
+    // places values before, desired (which there is hope that the value will reside in the tagged pointer at the location's _entry cell)
+    // and location into an entry
+    //
     template <class ValType>
     void add_value(KCASEntry<ValType> *location, const ValType &before, const ValType &desired) {
       TaggedPointers before_desc = raw_tp_shift_ptr(before);         assert(TaggedPointer::is_bits(before_desc));
@@ -289,13 +297,13 @@ class KCASDescriptor : public KCASDescMembers<N> {
         TaggedPointer new_value = succeeded ? this->_entries[i]._desired : this->_entries[i]._before;
         {
           TaggedPointer expected = tagptr;
-          this->_entries[i].location_update(expected, new_value);
+          this->_entries[i].descr_location_update(expected, new_value);
         }
       }
     }
 
 
-    bool copy_entries_from(KCASDescriptor *snapshot_target,uint64_t sequence_number) {
+    bool _copy_entries_from(KCASDescriptor *snapshot_target,uint64_t sequence_number) {
         //
         const size_t num_entries = snapshot_target->_num_entries;
         //
@@ -327,7 +335,7 @@ class KCASDescriptor : public KCASDescMembers<N> {
       if ( before_status.seq_different(sequence_number) ) {
         return false;
       } else {
-        return this->copy_entries_from(snapshot_target,sequence_number);
+        return this->_copy_entries_from(snapshot_target,sequence_number);
       }
     }
 
@@ -379,7 +387,7 @@ struct RDCSSDescriptor : public RDCSSDescMembers {
         return _data_location->load(std::memory_order_relaxed);
     }
 
-    inline KCASDescriptorStatus atom_load_kcas_descr() {
+    inline KCASDescriptorStatus atom_load_refd_status() {
         return _status_location->load(std::memory_order_relaxed);
     }
 
@@ -389,12 +397,12 @@ struct RDCSSDescriptor : public RDCSSDescMembers {
      * copy_from_kcas_entry
     */
     template<typename N>
-    void copy_from_kcas_entry(KCASDescriptor<N> *descriptor_snapshot,size_t i,KCASDescriptor<N> *original_desc, const TaggedPointer tagptr) {
+    void copy_from_kcas_entry(KCASDescriptor<N> *from,size_t i,KCASDescriptor<N> *original_desc, const TaggedPointer tagptr) {
         this->increment_sequence();
-        this->_data_location = descriptor_snapshot->_entries[i]._location;  // copy pointer ... reference
-        this->_before = descriptor_snapshot->_entries[i]._before;
+        this->_data_location = from->_entries[i]._location_atm;  // copy pointer ... reference
+        this->_before = from->_entries[i]._before;
         this->_kcas_tagptr = tagptr;
-        this->_status_location = &original_desc->_status;
+        this->_status_location = &(original_desc->_status);
     }
 
     //
@@ -402,7 +410,7 @@ struct RDCSSDescriptor : public RDCSSDescMembers {
      * copy_from_rdcss_descriptor
     */
     void copy_from_rdcss_descriptor(RDCSSDescriptor *from,const size_t before_sequence) {
-        this->_sequence_bits.store(before_sequence, std::memory_order_relaxed);
+        this->_sequence_bits.store(before_sequence, std::memory_order_relaxed);  // atomic store
         this->_data_location = from->_data_location;
         this->_before = from->_before;
         this->_kcas_tagptr = from->_kcas_tagptr;
@@ -433,16 +441,17 @@ struct RDCSSDescriptor : public RDCSSDescMembers {
 
         // Snapshot - the snapshot passed (whose is it?) that thread now gets the bits stored by the other thread
         // so ... copy all fields
-        this->copy_from_rdcss_descriptor(snapshot_target,before_sequence);
+        // (this) has been allocated on the stack and basically contains nothing .. this line initializes it
+        this->copy_from_rdcss_descriptor(snapshot_target,before_sequence);   // put the existing values into this descriptor
         // should now have a grasp of reality
 
         // Check our sequence number again.
-        const size_t after_sequence = snapshot_target->atomic_load_sequence();
+        const size_t after_sequence = snapshot_target->atomic_load_sequence();  // check if control is lost
         if ( after_sequence != sequence_number ) {
             return false;
         }
 
-        return true;
+        return true;  // we have some agreement on the sequence number...
     }
 
 private:
