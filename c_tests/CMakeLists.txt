@@ -11,3 +11,10 @@ file(GLOB SOURCE_FILES "src/*.cc" "src/*.h")
 add_executable(atests ${SOURCE_FILES})
 
 
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+set(CMAKE_CXX_FLAGS "-Wall -Wextra")
+set(CMAKE_CXX_FLAGS_DEBUG "-g")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3")

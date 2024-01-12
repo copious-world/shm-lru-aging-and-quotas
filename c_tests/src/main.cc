@@ -10,8 +10,15 @@
 
 #include <deque>
 #include <map>
+#include <ctime>
+
+
+
+#include <chrono>
+
 
 using namespace std;
+using namespace std::chrono;
 
 
 // Experiment with atomics for completing hash table operations.
@@ -25,63 +32,9 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 
 // 
 
-// should be sorted from largest to smallest
-//
-inline pair<uint32_t,uint32_t> *bin_search_with_blackouts_increasing(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t N) {
-	if ( key_val == nullptr ) return nullptr;
-	else {
-		pair<uint32_t,uint32_t> *beg = key_val;
-		pair<uint32_t,uint32_t> *end = key_val + N;
-		//
-		while ( ( beg < end) && (beg->first == UINT32_MAX) ) beg++;
-		while ( (end > beg ) && ((end-1)->first == UINT32_MAX)) end--;
-		//
-		if ( beg == end ) return nullptr;
-		//
-		if ( key > (end-1)->first ) return nullptr;   // largest to smallest
-		if ( key < beg->first ) return nullptr;   // largest to smallest
-		//
-		//
-		while ( (end > beg) && (N > 0) ) {
-			if ( key == beg->first ) return beg;
-			if ( key == (end-1)->first ) return (end-1);
-			N = N >> 1;
-			pair<uint32_t,uint32_t> *mid_u = beg + N; // smaller values are in upper
-			pair<uint32_t,uint32_t> *mid_l = mid_u;
-			while ( (mid_u->first == UINT32_MAX) && (mid_u < end) ) mid_u++;
-			while ( (mid_l->first == UINT32_MAX) && (mid_l > beg) ) mid_l--;
-			//
-			if ( mid_u < end ) {  
-				uint32_t mky = mid_u->first;
-				if ( key == mky ) return mid_u;
-				if ( key > mky ) {   // smaller values are in upper
-					beg = mid_u;
-					continue;
-				}
-			}
-			if ( mid_l > beg ) {
-				uint32_t mky = mid_l->first;
-				if ( key == mky ) return mid_l;
-				if ( key < mky ) {  // larger values are in lower
-					end = mid_l;
-					continue;
-				}
-			}
-			// at this point the key is between the upper and lower parts 
-			// but blackouts are stored in these areas, go ahead and use one
-			uint64_t distance = ((uint64_t)mid_u - (uint64_t)mid_l)/(sizeof(uint64_t)*2);
-			if ( ( mid_u < end ) && ( mid_l > beg ) && distance > 0 ) {
-				if ( distance == 1 ) {
-					return mid_l;
-				} else {
-					return mid_l + distance/2;
-				}
-			} else break;    // nothing found and no room to put it.
-		}
-		//
-	}
-	return nullptr;
-}
+
+// -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
+
 
 inline pair<uint32_t,uint32_t> max_min(pair<uint32_t,uint32_t> *beg,pair<uint32_t,uint32_t> *end) {
 	pair<uint32_t,uint32_t> p;
@@ -102,32 +55,9 @@ inline pair<uint32_t,uint32_t> max_min(pair<uint32_t,uint32_t> *beg,pair<uint32_
 	return p;
 }
 
+// -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
 
-inline void sort_small_mostly_increasing(pair<uint32_t,uint32_t> *beg,pair<uint32_t,uint32_t> *end) {
-	pair<uint32_t,uint32_t> *start = beg;
-	while ( beg < (end-1) ) {
-		if ( beg->first > (beg+1)->first ) break;
-		beg++;
-	}
-	if ( beg < end ) {
-		sort(beg,end,[](pair<uint32_t,uint32_t> &a, pair<uint32_t,uint32_t> &b) {
-			return a.first < b.first;
-		});
-		if ( (start < beg) && ((beg-1)->first > beg->first) ) {
-			pair<uint32_t,uint32_t> *rscout = beg-1;
-			while ( (rscout > start) && (rscout->first > beg->first) ) {
-				rscout--;
-			}
-			pair<uint32_t,uint32_t> *fscout = beg+1;
-			while ( (fscout < end) && (fscout->first < (beg-1)->first) ) {
-				fscout++;
-			}
-			sort(rscout,fscout,[](pair<uint32_t,uint32_t> &a, pair<uint32_t,uint32_t> &b) {
-				return a.first < b.first;
-			});
-		}
-	}
-}
+
 
 
 class UpdateSource {
@@ -159,151 +89,184 @@ class UpdateSource {
 
 
 
-inline uint32_t merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,pair<uint32_t,uint32_t> *output,uint32_t N,uint32_t M,UpdateSource &us)  {
+
+
+
+#include <bitset>
+#include <random>
+
+template<uint32_t N>
+unsigned int hamming(bitset<N> &a,bitset<N> &b) {
+    bitset<N> diff = a ^ b;
+    return diff.count();
+}
+
+random_device rdv;  // a seed source for the random number engine
+mt19937 gen_v(rdv()); // mersenne_twister_engine seeded with rd()
+
+
+
+// ---- ---- ---- ---- ----
+//
+template<const uint32_t MAX_ENTRIES>
+void print_stored(pair<uint32_t,uint32_t> *primary_storage,uint32_t print_max = INT32_MAX) {
 	//
-	if ( N == 0 ) return UINT32_MAX;
+	auto N = min(MAX_ENTRIES,print_max);
+	for ( uint32_t i = 0; i < N; i++ ) {
+		cout << primary_storage[i].first << "\t" << primary_storage[i].second << endl;
+	}
+	//
+}
+
+
+
+
+// -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
+
+
+pair<uint32_t,uint32_t> *
+b_search(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t N) {
+
+	cout << "b_search" << endl;
+
 	pair<uint32_t,uint32_t> *beg = key_val;
 	pair<uint32_t,uint32_t> *end = key_val + N;
-	pair<uint32_t,uint32_t> *new_vals = key_val + N;
-	pair<uint32_t,uint32_t> *new_vals_end = key_val + N + M;
+	if ( beg->first == key ) return beg;
+	beg++; N--;
+	if ( (end-1)->first == key ) return (end-1);
+	end--; N--;
 	//
-	while ( ( beg < end) && (beg->first == UINT32_MAX) ) beg++;
-	while ( ( end > beg ) && ((end-1)->first == UINT32_MAX)) end--;
-	//
-	sort_small_mostly_increasing(new_vals,new_vals_end);
-	//
-	if ( beg == end ) {  // just copy the new vals to the 
-		memcpy(output,new_vals,M*sizeof(pair<uint32_t,uint32_t>));
-		return M;
-	} else {
-		uint32_t late_arrivals = 0;
-		//
-		pair<uint32_t,uint32_t> *next = beg;
-		//
-		// three-way merge
-		//
-		while ( next < end ) {
-			uint32_t val = next->first;
-			while ( (val == UINT32_MAX) && (next < end) ) { // move ahead past the blackouts
-				next++; val = next->first;
-				N--;
+	while ( beg < end ) {
+		N = N >> 1;
+		if ( N == 0 ) {
+			while ( beg < end ) {
+				if ( beg->first == key ) return beg;
+				beg++;
 			}
-			if ( next < end ) {
-				uint32_t val = next->first;
-				if ( val > us._min_value ) {
-					pair<uint32_t,uint32_t> p = us.release_min();  // might have to shift right to accommodate
-					output->first = p.first;
-					output->second = p.second;
-					late_arrivals++;
-				} else if ( (new_vals < new_vals_end) && (val > new_vals->first) ) {
-					output->first = new_vals->first;
-					output->second = new_vals->second;
-					new_vals++;
-				} else {
-					output->first = next->first;
-					output->second = next->second;
-					next++;
-				}
-				output++;
-			}
+			break;
 		}
+		pair<uint32_t,uint32_t> *mid = beg + N;
+		if ( mid >= end ) break;
 		//
-		while ( new_vals < new_vals_end ) {
-			uint32_t val = new_vals->first;
-			if ( val > us._min_value ) {
-				pair<uint32_t,uint32_t> p = us.release_min();  // might have to shift right to accommodate
-				output->first = p.first;
-				output->second = p.second;
-			} else {
-				output->first = new_vals->first;
-				output->second = new_vals->second;
-				new_vals++;
-			}
-			output++;
-		}
-		//
-		return M + N + late_arrivals;
-
+		if ( key == mid->first ) return mid;
+		if ( key > mid->first ) beg = mid;
+		else end = mid;
 	}
-
-	return 0;
+	return nullptr;
 }
 
 
 
-// makes a hole where the old entry is...
-inline uint32_t entry_upate(uint32_t key,uint32_t key_update,pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t maybe_value = UINT32_MAX) {
+uint32_t
+u32b_search(uint32_t key,uint32_t *buckets,uint32_t N) {
+
+	uint32_t *beg = buckets;
+	uint32_t *end = buckets + N;
+	if ( (beg[0] <= key) && (key < beg[1]) ) return 0;
+	beg++; N--;
 	//
-	pair<uint32_t,uint32_t> *p = bin_search_with_blackouts_increasing(key,key_val, N);
-	if ( p == nullptr ) {
-		p = key_val + N;
-		pair<uint32_t,uint32_t> *end = p + M;
-		while ( p < end ) {
-			if ( p->first == key ) {
-				p->first = key_update;
-				if ( maybe_value != UINT32_MAX ) p->second = maybe_value;
-				return M;
+	if ( (end-1)[0] <= key ) return N-1;
+	end--; N--;
+	//
+	while ( beg < end ) {
+		N = N >> 1;
+		if ( N == 0 ) {
+			while ( beg < end ) {
+				if ( (beg[0] <= key) && (key < beg[1]) ) return (uint32_t)(beg - buckets);
+				beg++;
 			}
+			break;
 		}
-		if ( maybe_value != UINT32_MAX ) {
-			p->first = key;
-			p->second = maybe_value;
-			return M + 1;
-		}
+		uint32_t *mid = beg + N;
+		if ( mid >= end ) break;
+		//
+		if ( (mid[0] <= key) && (key < mid[1]) ) return (uint32_t)(mid - buckets);
+		if ( key >= mid[1] ) beg = mid;
+		else end = mid;
 	}
-	//
-	if ( p != nullptr ) {
-		if ( p->first == key ) {
-			uint32_t value = p->second;
-			p->first = UINT32_MAX;
-			p->second = UINT32_MAX;
-			(key_val + N + M)->first = key_update;
-			(key_val + N + M)->second = value;
-			return M + 1;
-		} else if ( p->first == UINT32_MAX ) {
-			p->first = key_update;
-			p->second = maybe_value;
-			return M;
-		}
-	} else if ( maybe_value != UINT32_MAX ) {
-		p = (key_val + N + M);
-		p->first = key_update;
-		p->second = maybe_value;
-		return M + 1;
-	}
-	return 0;
-}
-
-
-
-
-// makes a hole where the old entry is...
-inline uint32_t entry_remove(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M) {
-	//
-	pair<uint32_t,uint32_t> *p = bin_search_with_blackouts_increasing(key,key_val, N);
-	if ( (p == nullptr) && (M > 0) ) {
-		p = key_val + N;
-		pair<uint32_t,uint32_t> *end = p + M;
-		while ( p < end ) {
-			if ( p->first == key ) {
-				p->first = (end-1)->first;
-				p->second = (end-1)->second;
-				return M-1;
-			}
-		}
-	}
-	//
-	if ( p != nullptr ) {
-		if ( p->first == key ) {
-			uint32_t value = p->second;
-			p->first = UINT32_MAX;
-			p->second = UINT32_MAX;
-			return M;
-		}
-	}
-	//
 	return UINT32_MAX;
 }
+
+
+
+pair<uint32_t,uint32_t> *buffer_seek(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t N) {
+	for ( uint32_t i = 0;  i < N; i++ ) {
+		pair<uint32_t,uint32_t> *p = key_val + i;
+		if ( p->first == key ) return p;
+	}
+	return nullptr;
+}
+
+
+inline pair<uint32_t,uint32_t>  * return_point(int i) {
+	cout << "RT: " << i << endl;
+	return nullptr;
+}
+
+//
+inline pair<uint32_t,uint32_t> *bin_search_with_blackouts_increasing(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t N) {
+	if ( N == 0 ) return nullptr;
+	if ( key_val == nullptr ) return nullptr;
+	else {
+		pair<uint32_t,uint32_t> *beg = key_val;
+		pair<uint32_t,uint32_t> *end = key_val + N;
+		//
+		while ( ( beg < end) && (beg->first == UINT32_MAX) ) beg++;
+		while ( (end > beg ) && ((end-1)->first == UINT32_MAX)) end--;
+		//
+		if ( beg == end ) return nullptr;
+		//
+		if ( key > (end-1)->first ) return nullptr;	// smallest to largest
+		if ( key < beg->first ) return nullptr;   	//
+		//
+		//
+		while ( (end > beg) && (N > 0) ) {
+			if ( key == beg->first ) return beg;
+			if ( key == (end-1)->first ) return (end-1);
+			N = N >> 1;
+			pair<uint32_t,uint32_t> *mid_u = beg + N; // smaller values are in upper
+			pair<uint32_t,uint32_t> *mid_l = mid_u;
+			while ( (mid_u->first == UINT32_MAX) && (mid_u < end) ) mid_u++;
+			while ( (mid_l->first == UINT32_MAX) && (mid_l > beg) ) mid_l--;
+			//
+			if ( mid_u < end ) {  
+				uint32_t mky = mid_u->first;
+				if ( key == mky ) return mid_u;
+				if ( key > mky ) {   // smaller values are in upper
+					beg = mid_u + 1;
+					continue;
+				}
+			}
+			if ( mid_l >= beg ) {
+				uint32_t mky = mid_l->first;
+				if ( key == mky ) return mid_l;
+				if ( key < mky ) {  // larger values are in lower
+					end = mid_l;
+					continue;
+				}
+			}
+			// at this point the key is between the upper and lower parts 
+			// but blackouts are stored in these areas, go ahead and use one
+			uint64_t distance = ((uint64_t)mid_u - (uint64_t)mid_l)/(sizeof(uint64_t)*2);
+			if ( ( mid_u < end ) && ( mid_l >= beg ) && (distance > 0) ) {
+				if ( distance == 1 ) {
+					return mid_l;
+				} else {
+					return mid_l + distance/2;
+				}
+			} break;    // nothing found and no room to put it.
+		}
+		//
+	cout << beg->first << "," << (beg+1)->first << "," << (beg+2)->first << " (" << (end - beg) << ") "  << N << endl;
+	}
+
+	return nullptr;
+}
+
+
+//
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
 
@@ -329,7 +292,11 @@ class KeyValueManager {
 
 		inline bool add_entry(uint32_t key,uint32_t value) {
 			if ( _N + _M >= _MAX ) return false;
-			manage_update(key,key,value);
+			uint32_t MCheck = entry_add(key,value,_key_val,_N,_M);
+			if ( MCheck == UINT32_MAX ) {
+				return false;
+			}
+			_M = MCheck;
 			return true;
 		}
 
@@ -340,7 +307,11 @@ class KeyValueManager {
 		}
 
 		inline bool remove_entry(uint32_t key) {
-			uint32_t update_count = entry_remove(key,_key_val,_N,_M);
+			if ( (_blackout_count == 0) && (_M > 0) ) {
+				_N += _M;
+				_M = 0;
+			}
+			uint32_t update_count = entry_remove(key,_key_val,_N,_M,(_blackout_count != 0));
 			if ( update_count < UINT32_MAX ) {
 				if ( _M != update_count ) _M = update_count;
 				else _blackout_count++;
@@ -387,10 +358,204 @@ class KeyValueManager {
 			}
 		}
 
-	private:
+
+	// ----
+		inline void sort_small_mostly_increasing(pair<uint32_t,uint32_t> *beg,pair<uint32_t,uint32_t> *end) {
+			pair<uint32_t,uint32_t> *start = beg;
+			while ( beg < (end-1) ) {
+				if ( beg->first > (beg+1)->first ) break;
+				beg++;
+			}
+			if ( beg < end ) {
+				sort(beg,end,[](pair<uint32_t,uint32_t> &a, pair<uint32_t,uint32_t> &b) {
+					return a.first < b.first;
+				});
+				if ( (start < beg) && ((beg-1)->first > beg->first) ) {
+					pair<uint32_t,uint32_t> *rscout = beg-1;
+					while ( (rscout > start) && (rscout->first > beg->first) ) {
+						rscout--;
+					}
+					pair<uint32_t,uint32_t> *fscout = beg+1;
+					while ( (fscout < end) && (fscout->first < (beg-1)->first) ) {
+						fscout++;
+					}
+					sort(rscout,fscout,[](pair<uint32_t,uint32_t> &a, pair<uint32_t,uint32_t> &b) {
+						return a.first < b.first;
+					});
+				}
+			}
+		}
+
+
+		inline uint32_t merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,pair<uint32_t,uint32_t> *output,uint32_t N,uint32_t M,UpdateSource &us)  {
+			//
+			if ( N == 0 ) return UINT32_MAX;
+			pair<uint32_t,uint32_t> *beg = key_val;
+			pair<uint32_t,uint32_t> *end = key_val + N;
+			pair<uint32_t,uint32_t> *new_vals = key_val + N;
+			pair<uint32_t,uint32_t> *new_vals_end = key_val + N + M;
+			//
+			while ( ( beg < end) && (beg->first == UINT32_MAX) ) beg++;
+			while ( ( end > beg ) && ((end-1)->first == UINT32_MAX)) end--;
+			//
+			sort_small_mostly_increasing(new_vals,new_vals_end);
+			//
+			if ( beg == end ) {  // just copy the new vals to the 
+				memcpy(output,new_vals,M*sizeof(pair<uint32_t,uint32_t>));
+				return M;
+			} else {
+				uint32_t late_arrivals = 0;
+				//
+				pair<uint32_t,uint32_t> *next = beg;
+				//
+				// three-way merge
+				//
+				while ( next < end ) {
+					uint32_t val = next->first;
+					while ( (val == UINT32_MAX) && (next < end) ) { // move ahead past the blackouts
+						next++; val = next->first;
+						N--;
+					}
+					if ( next < end ) {
+						uint32_t val = next->first;
+						if ( val > us._min_value ) {
+							pair<uint32_t,uint32_t> p = us.release_min();  // might have to shift right to accommodate
+							output->first = p.first;
+							output->second = p.second;
+							late_arrivals++;
+						} else if ( (new_vals < new_vals_end) && (val > new_vals->first) ) {
+							output->first = new_vals->first;
+							output->second = new_vals->second;
+							new_vals++;
+						} else {
+							output->first = next->first;
+							output->second = next->second;
+							next++;
+						}
+						output++;
+					}
+				}
+				//
+				while ( new_vals < new_vals_end ) {
+					uint32_t val = new_vals->first;
+					if ( val > us._min_value ) {
+						pair<uint32_t,uint32_t> p = us.release_min();  // might have to shift right to accommodate
+						output->first = p.first;
+						output->second = p.second;
+					} else {
+						output->first = new_vals->first;
+						output->second = new_vals->second;
+						new_vals++;
+					}
+					output++;
+				}
+				//
+				return M + N + late_arrivals;
+
+			}
+
+			return 0;
+		}
+
+		inline uint32_t entry_add(uint32_t key,uint32_t value,pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M) {
+			if ( N == 0 ) {
+				pair<uint32_t,uint32_t> *p = key_val + M;
+				p->first = key;
+				p->second = value;
+				return (M+1);
+			} else {
+				pair<uint32_t,uint32_t> *check = key_val + N - 1;
+				if ( key < check->first ) {
+					return UINT32_MAX;
+				}
+				pair<uint32_t,uint32_t> *p = key_val + N + M;
+				p->first = key;
+				p->second = value;
+				return (M+1);
+			}
+		}
+
+
+		// makes a hole where the old entry is...
+		inline uint32_t entry_upate(uint32_t key,uint32_t key_update,pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t maybe_value = UINT32_MAX) {
+			//
+
+			pair<uint32_t,uint32_t> *p = bin_search_with_blackouts_increasing(key,key_val, N);
+			if ( p == nullptr ) {
+				p = key_val + N;
+				pair<uint32_t,uint32_t> *end = p + M;
+				while ( p < end ) {
+					if ( p->first == key ) {
+						p->first = key_update;
+						if ( maybe_value != UINT32_MAX ) p->second = maybe_value;
+						return M;
+					}
+				}
+				if ( maybe_value != UINT32_MAX ) {
+					p->first = key;
+					p->second = maybe_value;
+					return M + 1;
+				}
+			}
+			//
+			if ( p != nullptr ) {
+				if ( p->first == key ) {
+					uint32_t value = p->second;
+					p->first = UINT32_MAX;
+					p->second = UINT32_MAX;
+					(key_val + N + M)->first = key_update;
+					(key_val + N + M)->second = value;
+					return M + 1;
+				} else if ( p->first == UINT32_MAX ) {
+					p->first = key_update;
+					p->second = maybe_value;
+					return M;
+				}
+			} else if ( maybe_value != UINT32_MAX ) {
+				p = (key_val + N + M);
+				p->first = key_update;
+				p->second = maybe_value;
+				return M + 1;
+			}
+			return 0;
+		}
+
+
+		// makes a hole where the old entry is...
+		inline uint32_t entry_remove(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,bool has_holes) {
+			//
+			pair<uint32_t,uint32_t> *p = has_holes ? bin_search_with_blackouts_increasing(key,key_val, N) : 
+											b_search(key,key_val,N);
+			if ( (p == nullptr) && (M > 0) ) {
+				p = key_val + N;
+				pair<uint32_t,uint32_t> *end = p + M;
+				while ( p < end ) {
+					if ( p->first == key ) {		// going on the assumption that the 'late' added elements are not sorted, generally.
+						p->first = (end-1)->first;
+						p->second = (end-1)->second;
+						return M-1;
+					}
+				}
+			}
+			//
+			if ( p != nullptr ) {
+				if ( p->first == key ) {
+					uint32_t value = p->second;
+					p->first = UINT32_MAX;
+					p->second = UINT32_MAX;
+					return M;
+				}
+			}
+			//
+			return UINT32_MAX;
+		}
+
+
+
+	public:
 
 		UpdateSource			_proc_queue;
-
+		//
 		pair<uint32_t,uint32_t> *_key_val;
 		pair<uint32_t,uint32_t> *_output;
 		pair<uint32_t,uint32_t> *_key_val_A;
@@ -400,11 +565,81 @@ class KeyValueManager {
 		uint32_t				_N;
 		uint32_t				_M;
 		uint32_t				_blackout_count;
-
+		//
 		uint16_t				_proc_count;
 };
 
 
+
+
+
+void try_searching(time_t key, KeyValueManager &tester) {
+	cout << "SEARCH" << endl; //
+    uniform_int_distribution<uint32_t> pdist(0,160);
+
+	tester._N += tester._M; tester._M = 0;
+
+	cout << tester._N << endl; 
+	/*
+	for ( uint8_t i = 0; i < 100; i++ ) {
+		uint32_t k = pdist(gen_v) % tester._N;
+		cout << k << " :: "; cout.flush();
+		pair<uint32_t,uint32_t> *p = b_search((key + k),tester._key_val,tester._N);
+		if ( p != nullptr ) {
+			cout << "k: " << k << " " << p->second << endl;
+		} else {
+			cout << "could not find: " << k << endl;
+		}
+	}
+	//
+	for ( int i = 0; i < 198; i++ ) {
+		cout << primary_storage[i].first << "\t" << primary_storage[i].second << " k: " << i << endl;
+		pair<uint32_t,uint32_t> *p = b_search((key + i),tester._key_val,tester._N);
+		if ( p != nullptr ) {
+			cout << p->first << "\t" << p->second << " k: " << i << endl;
+		} else {
+			cout << "could not find: " << i << endl;
+		}
+	}
+	*/
+
+	cout << "---------try_searching--------(3)---" << endl;
+	cout << tester._N << endl; 
+	for ( uint8_t i = 0; i < 100; i++ ) {
+		uint8_t jj = (i+3);
+		uint32_t k = pdist(gen_v) % jj;
+		cout << k << " :: "; cout.flush();
+		pair<uint32_t,uint32_t> *p = b_search((key + k),tester._key_val,(i+3));
+		if ( p != nullptr ) {
+			cout << "k: " << k << " " << p->second << endl;
+		} else {
+			cout << "could not find: " << k << endl;
+		}
+	}
+
+}
+
+
+template<const uint32_t MAX_ENTRIES>
+void try_removing(time_t key, KeyValueManager &tester) {
+	//
+	auto start = high_resolution_clock::now();
+	//
+	tester.remove_entry(key + 20);
+	tester.remove_entry(key + 15);
+	tester.remove_entry(key + 120);
+	tester.remove_entry(key + 120);
+	tester.remove_entry(key + 120);
+	tester.remove_entry(key + 16);
+	for ( uint32_t i = 0; i < MAX_ENTRIES; i++ ) {
+		tester.remove_entry(key + i);
+	}
+	//
+	auto stop = high_resolution_clock::now();
+	auto duration = duration_cast<microseconds>(stop - start);
+	cout << "REMOVE" << (double)(duration.count())/(1000000.0) << " seconds" << endl;
+
+}
 
 
 
@@ -454,11 +689,46 @@ void probabilities_likely_size_for_end_sorts(void) {
 	cout << ">>>>" << endl;
 }
 
+/// ---------------
 
+
+void test_buckets() {
+
+	uint32_t buckets[21];
+	//
+	uint32_t delta = 20;
+	for ( int i = 0; i < 21; i++ ) {
+		buckets[i] = delta*i;
+	}
+
+	for ( int i = 0; i < 21; i++ ) {
+		cout << buckets[i] << ", ";
+	}
+
+	cout << endl;
+
+	//
+	auto last = buckets[20];
+	for ( uint32_t key = 0; key < last; key++ ) {
+		auto index = u32b_search( key, buckets, 21);
+		cout << " .. " << key << " bucket # " << index << " " << (( index < 21 ) ? buckets[index] : -1 ) << endl;
+	}
+	//
+
+}
+
+
+uint32_t search_epoch(uint32_t key, uint32_t *epoch_list, uint32_t step_size, uint32_t N) {
+	auto index = u32b_search( key, epoch_list, N);
+	return index*step_size;
+}
+
+
+const uint32_t TEST_SIZE = 100000;
 
 int main(int arcg, char **argv) {
 	//
-	uint32_t count_size = 200;
+	uint32_t count_size = TEST_SIZE;
 	pair<uint32_t,uint32_t> primary_storage[count_size];
 	pair<uint32_t,uint32_t> secondary_storage[count_size];
 	uint16_t expected_proc_max = 8;
@@ -466,5 +736,90 @@ int main(int arcg, char **argv) {
 
 	KeyValueManager tester(primary_storage, secondary_storage, count_size, shared_queue,  expected_proc_max);
 	//
+	time_t key = time(nullptr);
+	cout << key << endl;
+	cout << "------------------------------" << endl;
+	uint32_t value = 1;
+	//
+	tester.add_entry(key,value);
+	cout << primary_storage[0].first << endl;
+	cout << "----------------------------->>-" << endl;
+
+	for ( int i = 1; i < 10; i++ ) {
+		tester.add_entry(key + i,i+1);
+	}
+	//
+	tester._N = 10;
+	tester._M = 0;
+	//
+	for ( uint32_t i = 10; i < (count_size-2); i++ ) {
+		tester.add_entry(key + i,i+1);
+	}
+
+	//print_stored(primary_storage);
+	//try_searching(key,tester,primary_storage);
+
+	/*
+
+	tester._N = (count_size-2);
+	tester._M = 0;
+	try_removing<TEST_SIZE>(key,tester);
+
+	*/
+
+	tester._N = (count_size-2);
+	tester._M = 0;
+    uniform_int_distribution<uint32_t> pdist(0,160);
+	//
+	auto start = high_resolution_clock::now();
+	uint32_t delta = pdist(gen_v);
+	//
+
+	uint32_t step_size = 1000;
+	uint32_t EN = count_size/step_size;
+
+	//
+	cout << "EN: " << EN << endl;
+
+	uint32_t epoch_list[EN + 1];
+	for ( uint32_t i = 0; i < EN; i++ ) {
+		pair<uint32_t,uint32_t> *p = tester._key_val + i*step_size;
+		epoch_list[i] = p->first;
+	}
+
+	auto tail_count = count_size - EN*step_size;
+	cout << tail_count << endl;
+
+	//
+	for ( uint32_t j = 0; j < 100; j++ ) {
+		for ( uint32_t i = 0; i < (count_size-10); i++  ) {
+			//
+			auto k = (i + delta) % (count_size-100);
+
+			auto kk = (key + k);
+			auto epoch_offset = search_epoch(kk,epoch_list,step_size,EN);
+
+			pair<uint32_t,uint32_t> *p = bin_search_with_blackouts_increasing(kk,tester._key_val + epoch_offset, step_size);
+			/*
+			if ( (p != nullptr) && (i == (j%190)) ) {
+				cout << i << ") " << (key + k) << " = " << p->first << " " << p->second << endl;
+			} else if ( i == (j%190) ){
+				p = buffer_seek((key + k),tester._key_val,198);
+				cout << i << ") " << "not found: " << (key + k) << " -=- " << k << " " << p->first << " :: " << p->second << endl;
+			}
+			*/
+			//
+		}
+	}
+	cout << endl;
+	//
+	auto stop = high_resolution_clock::now();
+	auto duration = duration_cast<microseconds>(stop - start);
+	cout << (double)(duration.count())/(1000000.0) << " seconds" << endl;
+
+
+	//print_stored(primary_storage);
+
     return(0);
 }
+
