@@ -1,7 +1,6 @@
 
 //
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -12,9 +11,11 @@
 #include <map>
 #include <ctime>
 
-
+#include <thread>
+#include <atomic>
 
 #include <chrono>
+#include <iostream>
 
 
 using namespace std;
@@ -126,9 +127,6 @@ void print_stored(pair<uint32_t,uint32_t> *primary_storage,uint32_t print_max = 
 
 pair<uint32_t,uint32_t> *
 b_search(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t N) {
-
-	cout << "b_search" << endl;
-
 	pair<uint32_t,uint32_t> *beg = key_val;
 	pair<uint32_t,uint32_t> *end = key_val + N;
 	if ( beg->first == key ) return beg;
@@ -204,7 +202,7 @@ inline pair<uint32_t,uint32_t>  * return_point(int i) {
 }
 
 //
-inline pair<uint32_t,uint32_t> *bin_search_with_blackouts_increasing(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t N) {
+pair<uint32_t,uint32_t> *bin_search_with_blackouts_increasing(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t N) {
 	if ( N == 0 ) return nullptr;
 	if ( key_val == nullptr ) return nullptr;
 	else {
@@ -257,7 +255,7 @@ inline pair<uint32_t,uint32_t> *bin_search_with_blackouts_increasing(uint32_t ke
 			} break;    // nothing found and no room to put it.
 		}
 		//
-	cout << beg->first << "," << (beg+1)->first << "," << (beg+2)->first << " (" << (end - beg) << ") "  << N << endl;
+	//cout << beg->first << "," << (beg+1)->first << "," << (beg+2)->first << " (" << (end - beg) << ") "  << N << endl;
 	}
 
 	return nullptr;
@@ -267,7 +265,26 @@ inline pair<uint32_t,uint32_t> *bin_search_with_blackouts_increasing(uint32_t ke
 //
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+/*
+// a test after the first sort in 
+auto test = start;
+auto base = start->first;
+uint16_t test_i = 0;
+while ( test++ < (stop+10) ) {
+	cout << ++test_i << ">> " << (test->first - base) << " @: " << (test->second) << endl;
+}
 
+// cout << "start: " << (start-1)->first << " < " << start->first << " is " << ((start-1)->first < start->first) << endl;
+// cout << "stop: "  << (stop-1)->first << " < " << (stop)->first << " is " << ((stop-1)->first < (stop)->first) << endl;
+// cout << "true/false rscout < fscout: " << (rscout < fscout) << endl;
+
+// while ( rscout < fscout ) {
+// 	rscout++;
+// 	cout << (rscout->first - (rscout-1)->first) << endl;
+// }
+
+
+*/
 
 
 class KeyValueManager {
@@ -334,7 +351,8 @@ class KeyValueManager {
 			_proc_count = P;
 		}
 
-	protected:
+	//protected:
+	public:
 
 		inline void manage_update(uint32_t key,uint32_t key_update,uint32_t maybe_value = UINT32_MAX) {
 			_M = entry_upate(key,key_update,_key_val,_N,_M,maybe_value);
@@ -362,27 +380,47 @@ class KeyValueManager {
 	// ----
 		inline void sort_small_mostly_increasing(pair<uint32_t,uint32_t> *beg,pair<uint32_t,uint32_t> *end) {
 			pair<uint32_t,uint32_t> *start = beg;
-			while ( beg < (end-1) ) {
-				if ( beg->first > (beg+1)->first ) break;
-				beg++;
+			while ( start < (end-1) ) {
+				if ( start->first >= (start+1)->first ) break;
+				start++;
 			}
-			if ( beg < end ) {
-				sort(beg,end,[](pair<uint32_t,uint32_t> &a, pair<uint32_t,uint32_t> &b) {
+			if ( start < end ) {
+				for ( int i = 0; (i < 3) && ( start > beg ); i++ ) start--;
+				//
+				pair<uint32_t,uint32_t> *min_stop = start+1; 
+				pair<uint32_t,uint32_t> *stop = end; 
+				while ( --stop > min_stop ) {
+					if ( stop->first < (stop-1)->first ) break;
+				}
+				for ( int i = 0; (i < 4) && ( stop < end ); i++ ) stop++;
+				//
+
+				sort(start,stop,[](pair<uint32_t,uint32_t> &a, pair<uint32_t,uint32_t> &b) {
 					return a.first < b.first;
 				});
-				if ( (start < beg) && ((beg-1)->first > beg->first) ) {
-					pair<uint32_t,uint32_t> *rscout = beg-1;
-					while ( (rscout > start) && (rscout->first > beg->first) ) {
+
+
+				if ( ((start >= beg) && ((start-1)->first > start->first))
+						|| ((stop < end) && ((stop-1)->first > stop->first)) ) { // sorted the section, but it had problems globally
+					// what is the least position the smallest element comes before?
+					pair<uint32_t,uint32_t> *rscout = start-1;  // reverse scout
+					auto start_key = start->first;
+					while ( (rscout > beg) && (rscout->first > start_key) ) {
 						rscout--;
 					}
-					pair<uint32_t,uint32_t> *fscout = beg+1;
-					while ( (fscout < end) && (fscout->first < (beg-1)->first) ) {
+					// 
+					pair<uint32_t,uint32_t> *fscout = stop-1;
+					auto stop_key = fscout->first;
+					fscout = stop;
+					while ( (fscout < end) && (fscout->first < stop_key) ) {
 						fscout++;
 					}
-					sort(rscout,fscout,[](pair<uint32_t,uint32_t> &a, pair<uint32_t,uint32_t> &b) {
+					if ( fscout < end ) fscout++;
+					sort(rscout,fscout+1,[](pair<uint32_t,uint32_t> &a, pair<uint32_t,uint32_t> &b) {
 						return a.first < b.first;
 					});
 				}
+
 			}
 		}
 
@@ -718,19 +756,75 @@ void test_buckets() {
 }
 
 
+
 uint32_t search_epoch(uint32_t key, uint32_t *epoch_list, uint32_t step_size, uint32_t N) {
 	auto index = u32b_search( key, epoch_list, N);
 	return index*step_size;
 }
 
 
-const uint32_t TEST_SIZE = 100000;
+void tryout_bin_search(KeyValueManager &tester,uint32_t key,uint32_t *epoch_list,uint32_t count_size,uint32_t step_size,uint32_t EN) {
+	//
+    uniform_int_distribution<uint32_t> pdist(0,160);
+	uint32_t delta = pdist(gen_v);
+	//
+	//
+	for ( uint32_t j = 0; j < 1000; j++ ) {
+		for ( uint32_t i = 0; i < (count_size-10); i++  ) {
+			//
+			auto k = (i + delta) % (count_size-100);
+			auto kk = (key + k);
+
+			//auto top_epoch_offset = search_epoch(kk,top_epoch_list,epic_step,top_EN);
+	// + top_epoch_offset
+			auto epoch_offset = search_epoch(kk,epoch_list,step_size,EN); //epic_step);
+			//epoch_offset += top_epoch_offset*step_size;
+
+			// if ( epoch_offset < (EN/2) ) {
+			// 	uint8_t can_write = 0;
+			// 	while ( !lock_values[0].compare_exchange_weak(can_write,0) && (can_write != 0) );
+			// 	thread_KS[0]= kk;
+			// 	epoch_offsets[0] = epoch_offset;
+			// 	lock_values[0].store(2);
+			// } else {
+			// 	uint8_t can_write = 0;
+			// 	while ( !lock_values[0].compare_exchange_weak(can_write,0) && (can_write != 0) );
+			// 	thread_KS[1]= kk;
+			// 	epoch_offsets[1] = epoch_offset;
+			// 	lock_values[1].store(2);
+			// }
+
+			//pair<uint32_t,uint32_t> *p = b_search(kk,tester._key_val + epoch_offset, step_size);
+
+			pair<uint32_t,uint32_t> *p = bin_search_with_blackouts_increasing(kk,tester._key_val + epoch_offset, step_size);
+			//pair<uint32_t,uint32_t> *p = bin_search_with_blackouts_increasing(kk,tester._key_val, tester._N);
+		
+			// if ( (p != nullptr) && (i == (j%190)) ) {
+			// 	cout << i << ") " << (key + k) << " = " << p->first << " " << p->second << endl;
+			// } else if ( i == (j%190) ){
+			// 	p = buffer_seek((key + k),tester._key_val,198);
+			// 	cout << i << ") " << "not found: " << (key + k) << " -=- " << k << " " << p->first << " :: " << p->second << endl;
+			// }
+		
+			//
+		}
+	}
+}
+
+
+
+const uint32_t TEST_SIZE = 750000;
+
+// 7500000 @ 44(+/-) sec. | 75000 @ 0.44 | 7500 @ 0.035 sec | 750000 @ 3.9 sec 
+// no threads...
+
+
 
 int main(int arcg, char **argv) {
 	//
 	uint32_t count_size = TEST_SIZE;
-	pair<uint32_t,uint32_t> primary_storage[count_size];
-	pair<uint32_t,uint32_t> secondary_storage[count_size];
+	pair<uint32_t,uint32_t> *primary_storage = new pair<uint32_t,uint32_t>[count_size];
+	pair<uint32_t,uint32_t> *secondary_storage = new pair<uint32_t,uint32_t>[count_size];
 	uint16_t expected_proc_max = 8;
 	pair<uint32_t,uint32_t> shared_queue[expected_proc_max];
 
@@ -771,52 +865,173 @@ int main(int arcg, char **argv) {
 	tester._M = 0;
     uniform_int_distribution<uint32_t> pdist(0,160);
 	//
-	auto start = high_resolution_clock::now();
 	uint32_t delta = pdist(gen_v);
 	//
 
-	uint32_t step_size = 1000;
+	uint32_t step_size = 750;
 	uint32_t EN = count_size/step_size;
 
 	//
-	cout << "EN: " << EN << endl;
+	cout << "count_size: " << count_size << " step_size: " << step_size << "(count_size/step_size) == EN: " << EN << endl;
 
-	uint32_t epoch_list[EN + 1];
+	uint32_t *epoch_list = new uint32_t[EN + 1];
 	for ( uint32_t i = 0; i < EN; i++ ) {
 		pair<uint32_t,uint32_t> *p = tester._key_val + i*step_size;
 		epoch_list[i] = p->first;
 	}
 
 	auto tail_count = count_size - EN*step_size;
-	cout << tail_count << endl;
+	cout << "tail_count: " << tail_count << endl;
+
+
+
+	uint32_t top_EN = 100;
+	auto epic_step = (EN/top_EN);
+	uint32_t top_epoch_list[top_EN + 1];
+
+
+	cout << "top_EN: " << top_EN << " epic_step : " << epic_step << endl;
+
+	for ( uint32_t i = 0; i < top_EN; i++ ) {
+		top_epoch_list[i] = epoch_list[(i*epic_step)];
+	}
+
+/*
+	for ( uint32_t i = 0; i < top_EN; i++ ) {
+		cout << "(" << i << "): "<< top_epoch_list[i] << endl;
+	}
+*/
+
+	cout << "TEST_SIZE: "  << TEST_SIZE << " log2(TEST_SIZE) :: " << log2(TEST_SIZE) << endl;
+	cout << "TEST_SIZE: "  << TEST_SIZE << " step_size :: " << step_size << " epic_step :: " << epic_step << endl;
+	cout << "TEST_SIZE: "  << TEST_SIZE << " epics N :: " << EN << " top_EN :: " << top_EN << endl;
+	cout << "lg2(step_size): " << log2(step_size) << " lg2(epic_step): " << log2(epic_step) << " all: " << (log2(step_size) + log2(epic_step) + log2(top_EN)) << endl;
+	//
+
+	cout << "NlogN:: " << (double)TEST_SIZE*log2(TEST_SIZE) << " >= " << (step_size*log2(step_size) + epic_step*log2(epic_step) + top_EN*log2(top_EN)) << endl;
 
 	//
-	for ( uint32_t j = 0; j < 100; j++ ) {
-		for ( uint32_t i = 0; i < (count_size-10); i++  ) {
-			//
-			auto k = (i + delta) % (count_size-100);
 
-			auto kk = (key + k);
-			auto epoch_offset = search_epoch(kk,epoch_list,step_size,EN);
+	bool running = true;
+	atomic<uint8_t>		lock_values[2];
+	uint32_t			thread_KS[2];
+	uint32_t			epoch_offsets[2];
 
+	lock_values[0].store(0);
+	lock_values[1].store(0);
+/*
+	thread search_1([&](){
+		uint32_t epoch_offset = UINT32_MAX;
+		while ( running ) {
+			uint8_t can_read = 0;
+			while ( !lock_values[0].compare_exchange_weak(can_read,2) );
+			uint32_t kk = thread_KS[0];
+			epoch_offset = epoch_offsets[0];
+			lock_values[0].store(0);
 			pair<uint32_t,uint32_t> *p = bin_search_with_blackouts_increasing(kk,tester._key_val + epoch_offset, step_size);
-			/*
-			if ( (p != nullptr) && (i == (j%190)) ) {
-				cout << i << ") " << (key + k) << " = " << p->first << " " << p->second << endl;
-			} else if ( i == (j%190) ){
-				p = buffer_seek((key + k),tester._key_val,198);
-				cout << i << ") " << "not found: " << (key + k) << " -=- " << k << " " << p->first << " :: " << p->second << endl;
+		}
+	});
+	thread search_2([&](){
+		uint32_t epoch_offset = UINT32_MAX;
+		while ( running ) {
+			uint8_t can_read = 0;
+			while ( !lock_values[0].compare_exchange_weak(can_read,2) );
+			uint32_t kk = thread_KS[1];
+			epoch_offset = epoch_offsets[1];
+			lock_values[0].store(1);
+			pair<uint32_t,uint32_t> *p = bin_search_with_blackouts_increasing(kk,tester._key_val + epoch_offset, step_size);
+		}
+	});
+*/
+
+	uint32_t r_start = 226;
+	uint32_t r_stop = 253;
+
+	pair<uint32_t,uint32_t> *beg = tester._key_val;
+	pair<uint32_t,uint32_t> *end = beg + 256;   // maybe 64 procs allowed to run unchecked about 4 times.
+	double total_time = 0;
+
+
+	for ( uint32_t i = 0; i < 1000000L; i++ ) {
+
+		auto t_min = beg[r_start - 10].first;
+		uint32_t loc_top = min((uint32_t)(r_stop + 10),(uint32_t)254);
+		auto t_max = beg[loc_top].first;
+		auto rn = r_stop/2;
+		for ( uint32_t i = r_start; i < rn; i++ ) {
+			beg[i].first = t_min + (i-r_start)*2;
+			beg[r_stop-i].first = t_max - (i-r_start)*2;
+		}
+
+/*
+    uniform_int_distribution<uint32_t> pdist2(r_start,r_stop);
+	for ( uint32_t i = r_start; i < r_stop; i++ ) {
+		uint32_t swapper = pdist2(gen_v);
+		if ( i != swapper ) {
+			swap(beg[i],beg[swapper]);
+		}
+	}
+*/
+
+
+	// for ( uint32_t i = r_start; i < 256; i++ ) {
+	// 	cout << (beg[i].first - t_min) << endl;
+	// }
+
+		auto start = high_resolution_clock::now();
+
+	// baseline test
+	//
+	// 0.008859 seconds 
+	// uint64_t test_val = 1;
+	// for ( uint64_t i = 1; i < 10000000L; i++ ) {
+	// 	test_val += i % 771;
+	// }
+
+
+
+		tester.sort_small_mostly_increasing(beg,end);
+	//running = false;
+
+	// search_1.join();
+	// search_2.join();
+
+	//cout << endl;
+	//
+		auto stop = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(stop - start);
+
+		total_time += (double)(duration.count())/(1000000.0);
+	}
+
+
+	cout << total_time << " seconds" << endl;
+
+	// for ( uint32_t i = r_start; i < rn; i++ ) {
+	// 	cout << beg[i].second << ", "; cout.flush();
+	// 	if ( ( i < 256 ) &&  (beg[i].first > beg[i+1].first) ) {
+	// 		cout << endl;
+	// 		for ( uint32_t j = i - 4; j < i+4; j++ ) {
+	// 			cout << "unsorted: " << j << " :: " << beg[j].second << endl;
+	// 		}
+	// 	}
+	// }
+
+	// cout << endl;
+	cout << "--------------------------------"  << endl;
+
+	for ( uint32_t i = 0; i < 256; i++ ) {
+		cout << beg[i].second << ", "; cout.flush();
+		if ( ( i < 256 ) &&  (beg[i].first > beg[i+1].first) ) {
+			cout << endl;
+			for ( uint32_t j = i - 4; j < i+4; j++ ) {
+				cout << "unsorted: " << j << " :: " << beg[j].first << endl;
 			}
-			*/
-			//
 		}
 	}
 	cout << endl;
-	//
-	auto stop = high_resolution_clock::now();
-	auto duration = duration_cast<microseconds>(stop - start);
-	cout << (double)(duration.count())/(1000000.0) << " seconds" << endl;
 
+	//cout << test_val << endl;  (see baseline test)
 
 	//print_stored(primary_storage);
 
