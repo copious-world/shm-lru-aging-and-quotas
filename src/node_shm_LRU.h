@@ -145,8 +145,10 @@ typedef struct LRU_ELEMENT_HDR {
 } LRU_element;
 
 
-
-// Interleaved free memory is a stack -- fixed sized elements
+//
+//	LRU_cache --
+//
+//	Interleaved free memory is a stack -- fixed sized elements
 //
 
 class LRU_cache {

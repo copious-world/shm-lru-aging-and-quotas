@@ -9,7 +9,7 @@
 #include <iostream>
 
 #include <deque>
-#include <map>
+#include <list>
 #include <ctime>
 
 #include <thread>
@@ -208,6 +208,10 @@ class KeyValueManager {
 			//
 			_nouveau_max = 0;
 			_nouveau_min = UINT32_MAX;
+			//
+			_init_min_max_holes();
+			_regions_option = false;
+			_regions = nullptr;				// for future use
 		}
 	
 	public:
@@ -237,11 +241,11 @@ class KeyValueManager {
 				_N += _M;
 				_M = 0;
 			} else {
+				pair<uint32_t,uint32_t> new_hole_offset{UINT32_MAX,UINT32_MAX};
 				if ( key >= _max_hole_offset.first ) {
-					pair<uint32_t,uint32_t> new_hole_offset{UINT32_MAX,UINT32_MAX};
 					pair<uint32_t,uint32_t> *redbuf = _key_val + _max_hole_offset.second;  // redbuf === reduced buffer
-					uint32_t redN = (_N - _max_hole_offset.second);
-					uint32_t update_count = entry_remove(key,redbuf,redN,_M,(_blackout_count != 0),new_hole_offset);
+					uint32_t redN = (_N - _max_hole_offset.second) + 1;  // adding in the hole at the end to avoid the end copy...
+					uint32_t update_count = entry_remove(key,redbuf,redN,_M,false,new_hole_offset);
 					_N = redN + _max_hole_offset.second;
 					if ( update_count < UINT32_MAX ) {
 						if ( new_hole_offset.first != UINT32_MAX ) {
@@ -253,17 +257,38 @@ class KeyValueManager {
 						return true;
 					}
 					return false;  // no changes
+				} else if ( _regions_option ) {
+					//
+					pair<uint32_t,uint32_t> new_hole_offset{UINT32_MAX,UINT32_MAX};
+					pair<uint32_t,uint32_t> region_l;
+					pair<uint32_t,uint32_t> region_u;
+					//
+					if ( find_region(key,region_l,region_u) ) {
+						pair<uint32_t,uint32_t> *redbuf = _key_val + region_l.second;  // redbuf === reduced buffer
+						uint32_t redN = region_u.second - region_l.second;
+						uint32_t update_count = entry_remove(key,redbuf,redN,_M,false,new_hole_offset);
+						_N = redN + _max_hole_offset.second;
+						if ( update_count < UINT32_MAX ) {
+							if ( new_hole_offset.first != UINT32_MAX ) {
+								new_hole_offset.first += _max_hole_offset.second;
+								manage_new_hole(new_hole_offset);
+							}
+							if ( _M != update_count ) _M = update_count;
+							else _blackout_count++;
+							return true;
+						}
+						return false;
+					}
 				}
-			}
-			pair<uint32_t,uint32_t> new_hole_offset{UINT32_MAX,UINT32_MAX};
-			uint32_t update_count = entry_remove(key,_key_val,_N,_M,(_blackout_count != 0),new_hole_offset);
-			if ( update_count < UINT32_MAX ) {
-				if ( new_hole_offset.first != UINT32_MAX ) {
-					manage_new_hole(new_hole_offset);
+				uint32_t update_count = entry_remove(key,_key_val,_N,_M,(_blackout_count != 0),new_hole_offset);
+				if ( update_count < UINT32_MAX ) {
+					if ( new_hole_offset.first != UINT32_MAX ) {
+						manage_new_hole(new_hole_offset);
+					}
+					if ( _M != update_count ) _M = update_count;
+					else _blackout_count++;
+					return true;
 				}
-				if ( _M != update_count ) _M = update_count;
-				else _blackout_count++;
-				return true;
 			}
 			return false;  // no changes
 		}
@@ -271,8 +296,6 @@ class KeyValueManager {
 		void rectify_blackout_count(uint32_t tolerance) {
 			if ( tolerance >= _blackout_count ) {
 				_N = merge_sort_with_blackouts_increasing(_key_val,_N,_M,_nouveau_min,_nouveau_max,_proc_queue);
-				_M = 0;
-				_blackout_count = 0;
 			}
 		}
 
@@ -280,9 +303,42 @@ class KeyValueManager {
 			_proc_count = P;
 		}
 
+
+
+
+		bool
+		displace_lowest_value_threshold(list<uint32_t> deposit, uint32_t min_max, uint32_t max_count) {
+			//
+			pair<uint32_t,uint32_t> *p = _key_val;
+			pair<uint32_t,uint32_t> *end = _key_val + max_count;
+			pair<uint32_t,uint32_t> *copy = end + 1;
+			pair<uint32_t,uint32_t> *eo_everything = p + _N + _M;
+			//
+			while ( (p < end) && (p->first < min_max) ) {
+				if ( p->first != UINT32_MAX ) {
+					deposit.push_back(p->second);
+					if ( copy < eo_everything ) {
+						p->first = copy->first;
+						p->second = copy->second;
+						copy++;
+						_N--;
+					}
+				}
+				p++;
+			}
+			while ( copy < eo_everything ) {
+				p->first = copy->first;
+				p->second = copy->second;
+				copy++; p++;
+			}
+			//
+			rectify_blackout_count(UINT32_MAX);
+		}
+
+
+
 	//protected:
 	public:
-
 
 		void manage_new_hole(pair<uint32_t,uint32_t> &new_hole_offset) {
 			if ( new_hole_offset.first > _max_hole_offset.first ) {
@@ -293,11 +349,45 @@ class KeyValueManager {
 			}
 		}
 
+		void _init_min_max_holes() {
+			_min_hole_offset.first = UINT32_MAX;
+			_min_hole_offset.second = UINT32_MAX;
+			//
+			_max_hole_offset.first = 0;
+			_max_hole_offset.second = UINT32_MAX;
+		}
+
+
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		void manage_update(uint32_t key,uint32_t key_update,uint32_t maybe_value = UINT32_MAX) {
 			pair<uint32_t,uint32_t> new_hole_offset{UINT32_MAX,UINT32_MAX};
-			uint32_t maybe_M = entry_key_upate(key,key_update,_key_val,_N,_M,new_hole_offset,maybe_value,(_blackout_count != 0));
+			uint32_t maybe_M = UINT32_MAX;
+			//
+			if ( key >= _max_hole_offset.first ) {
+				pair<uint32_t,uint32_t> *redbuf = _key_val + _max_hole_offset.second;  // redbuf === reduced buffer
+				uint32_t redN = (_N - _max_hole_offset.second);
+				maybe_M = entry_key_upate(key,key_update,redbuf,redN,_M,new_hole_offset,maybe_value,false);
+				if ( maybe_M != UINT32_MAX ) {
+					_N = redN + _max_hole_offset.second;
+				}
+			} else if ( _regions_option ) {
+				pair<uint32_t,uint32_t> region_l;
+				pair<uint32_t,uint32_t> region_u;
+				//
+				if ( find_region(key,region_l,region_u) ) {
+					pair<uint32_t,uint32_t> *redbuf = _key_val + region_l.second;  // redbuf === reduced buffer
+					uint32_t redN = (region_u.second - region_l.second) + 1; // add in the hole to avoid the end copy
+					maybe_M = entry_key_upate(key,key_update,redbuf,redN,_M,new_hole_offset,maybe_value,false);
+					if ( maybe_M != UINT32_MAX ) {
+						_N = redN + _max_hole_offset.second;
+					}
+				} else {
+					maybe_M = entry_key_upate(key,key_update,_key_val,_N,_M,new_hole_offset,maybe_value,(_blackout_count != 0));	
+				}
+			} else {
+				maybe_M = entry_key_upate(key,key_update,_key_val,_N,_M,new_hole_offset,maybe_value,(_blackout_count != 0));	
+			}
 			//
 			if ( maybe_M == UINT32_MAX ) return;
 			_M = maybe_M;
@@ -307,10 +397,6 @@ class KeyValueManager {
 			//
 			if ( _proc_count <= _M ) {
 				_N = merge_sort_with_blackouts_increasing(_key_val,_N,_M,_nouveau_min,_nouveau_max,_proc_queue);
-				_M = 0;
-				_nouveau_max = 0;
-				_nouveau_min = UINT32_MAX;
-				_blackout_count = 0;
 			}
 			if ( new_hole_offset.first != UINT32_MAX ) {
 				manage_new_hole(new_hole_offset);
@@ -366,7 +452,7 @@ class KeyValueManager {
 		}
 
 
-		uint32_t merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t new_min,uint32_t new_max,UpdateSource &us)  {
+		inline uint32_t _merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t new_min,uint32_t new_max,UpdateSource &us)  {
 			//
 			if ( N == 0 ) return UINT32_MAX;
 			pair<uint32_t,uint32_t> *output = key_val;
@@ -452,11 +538,24 @@ class KeyValueManager {
 
 				//
 				return (uint32_t)(output - key_val);
-
 			}
 
 			return 0;
 		}
+
+
+		uint32_t merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t new_min,uint32_t new_max,UpdateSource &us)  {
+			//
+			uint32_t result = _merge_sort_with_blackouts_increasing(key_val, N, M, new_min, new_max, us);
+			_M = 0;
+			_nouveau_max = 0;
+			_nouveau_min = UINT32_MAX;
+			_blackout_count = 0;
+			_init_min_max_holes();
+			//
+			return result;
+		}
+
 
 		inline uint32_t entry_add(uint32_t key,uint32_t value,pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M) {
 			if ( N == 0 ) {
@@ -579,6 +678,12 @@ class KeyValueManager {
 		}
 
 
+		bool find_region(uint32_t key, pair<uint32_t,uint32_t> &lb_result, pair<uint32_t,uint32_t> &ub_result) {
+			return false;
+		}
+
+
+
 	public:
 
 		UpdateSource			_proc_queue;
@@ -596,6 +701,8 @@ class KeyValueManager {
 		pair<uint32_t,uint32_t> _max_hole_offset;
 		//
 		uint16_t				_proc_count;
+		bool					_regions_option;
+		pair<uint32_t,uint32_t> *_regions;
 };
 
 
