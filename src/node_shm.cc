@@ -1291,20 +1291,6 @@ namespace node_shm {
 	// let p_offset = sz*(this.proc_index)*i + SUPER_HEADER*NTiers
 
 
-	uint32_t g_SUPER_HEADER =0;
-	uint32_t g_NTiers = 0;
-	uint32_t g_INTER_PROC_DESCRIPTOR_WORDS = 0;
-	const uint32_t OFFSET_TO_MESSAGE = 32;
-	const uint32_t MAX_MESSAGE_SIZE = 128;
-	//
-	const uint32_t OFFSET_TO_MARKER = 0;
-	const uint32_t OFFSET_TO_OFFSET = 2;
-	const uint32_t OFFSET_TO_HASH = 4;   // start of 64bits
-	const uint32_t OFFSET_TO_MESSAGE = (4+8+2);		/// a possible message location, but data being stored will only trade the offset
-	const uint32_t DEFAULT_MICRO_TIMEOUT = 2; // 2 seconds
-
-	const MAX_WAIT_LOOPS = 1000;
-
 
 	NAN_METHOD(set_com_buf)  {
 		Nan::HandleScope scope;
@@ -1312,6 +1298,10 @@ namespace node_shm {
 		uint32_t SUPER_HEADER = Nan::To<uint32_t>(info[1]).FromJust();
 		uint32_t NTiers = Nan::To<uint32_t>(info[2]).FromJust();
 		uint32_t INTER_PROC_DESCRIPTOR_WORDS = Nan::To<uint32_t>(info[3]).FromJust();
+		//
+		size_t rc_sz = Nan::To<uint32_t>(info[4]).FromJust();
+		size_t seg_sz = Nan::To<uint32_t>(info[5]).FromJust();
+		bool am_initializer = Nan::To<bool>(info[6]).FromJust();
 
 		//
 		int resId = shmget(key, 0, 0);
@@ -1351,91 +1341,6 @@ namespace node_shm {
 			"atomic<T> isn't lock-free, unusable on shared mem");
 			
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-	typedef enum {
-		CLEAR_FOR_WRITE,	// unlocked - only one process will write in this spot, so don't lock for writing. Just indicate that reading can be done
-		CLEARED_FOR_ALLOC,	// the current process will set the atomic to CLEARED_FOR_ALLOC
-		LOCKED_FOR_ALLOC,	// a thread (process) that picks up the reading task will block other readers from this spot
-		CLEARED_FOR_COPY	// now let the writer copy the message into storage
-	} COM_BUFFER_STATE;
-
-	// The data storage table is arranged as an array of cells, where each cell has a header which may belong to a free list
-	// or to the LRU list data structure, which will allow for quick access to aged out entries. 
-
-	// There is one LRU per hash table group (pool), and the size of the LRU is at most 50% (maybe or) of all possible hash table
-	// entries summed across the pool entries. 
-
-
-	// only one process/thread should own this position. 
-	// The only contention will be that some process/thread will inspect the buffer to see if there is a job there.
-	// waiting for the state to be CLEAR_FOR_WRITE
-	//
-	inline bool wait_to_write(char *read_marker,uint16_t loops = MAX_WAIT_LOOPS,uint32_t delay = 2) {
-		auto p = static_cast<atomic<uint8_t>*>(read_marker);
-		uint16_t count = 0;
-		while ( true ) {
-			count++;
-			COM_BUFFER_STATE clear = (COM_BUFFER_STATE)(p->load(std::memory_order_relaxed));
-			if ( clear == CLEAR_FOR_WRITE ) break
-			//
-			if ( count > loops ) {
-				return false;
-			}
-			usleep(delay);
-		}
-		return true;
-	}
-
-	// MAX_WAIT_LOOPS
-	// await_write_offset(read_marker,MAX_WAIT_LOOPS,4)
-
-	//
-	inline void clear_for_write(unsigned char *read_marker) {   // first and last
-		auto p = static_cast<atomic<uint8_t>*>(read_marker);
-		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),CLEAR_FOR_WRITE)
-						&& ((COM_BUFFER_STATE)(*read_marker) !== CLEAR_FOR_WRITE));
-	}
-
-	//
-	inline void cleared_for_alloc(unsigned char *read_marker) {
-		auto p = static_cast<atomic<uint8_t>*>(read_marker);
-		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),CLEARED_FOR_ALLOC)
-						&& ((COM_BUFFER_STATE)(*read_marker) !== CLEARED_FOR_ALLOC));
-	}
-
-	//
-	inline void claim_for_alloc(unsigned char *read_marker) {
-		auto p = static_cast<atomic<uint8_t>*>(read_marker);
-		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),LOCKED_FOR_ALLOC)
-						&& ((COM_BUFFER_STATE)(*read_marker) !== LOCKED_FOR_ALLOC));
-	}
-
-	//
-	inline bool await_write_offset(char *read_marker,uint16_t loops,uint32_t delay) {
-		auto p = static_cast<atomic<uint8_t>*>(read_marker);
-		uint32_t count = 0;
-		while ( true ) {
-			count++;
-			COM_BUFFER_STATE clear = (COM_BUFFER_STATE)(p->load(std::memory_order_relaxed));
-			if ( clear == CLEARED_FOR_COPY ) break
-			//
-			if ( count > MAX_WAIT_LOOPS ) {
-				return false;
-			}
-			usleep(2);
-		}
-		return true;
-	}
-
-
-	//
-	inline void clear_for_copy(unsigned char *read_marker) {
-		auto p = static_cast<atomic<uint8_t>*>(read_marker);
-		while(!p->compare_exchange_weak((COM_BUFFER_STATE)(*read_marker),CLEARED_FOR_COPY)
-						&& ((COM_BUFFER_STATE)(*read_marker) !== CLEARED_FOR_COPY));
-	}
-
-
 
 	void transfer_to_source_tier(char *temp_bloat,size_t rec_size,map<uint32_t,map<uint32_t,uint64_t> &moving_objects,uint32_t req_count,uint32_t source_tier) {
 		//
@@ -1493,20 +1398,6 @@ namespace node_shm {
 	//		LRU_element *claim_free_mem(ready_msg_count,assigned_tier)
 
 
-
-	// LRU_cache method - calls get -- 
-	pair<uint32_t,uint32_t> filter_existence_check(char **messages,char **accesses,uint32_t ready_msg_count) {
-		uint32_t new_count = 0;
-		uint32_t dup_count = 0;
-		while ( ready_msg_count-- >= 0 ) {
-			uint64_t hash = ((uint64_t *)(*messages))[0];
-			if ( _hmap_i->partition_get(hash) != 0 ) {
-				accesses[dup_count++] = messages[ready_msg_count];  // the message exists
-				messages[ready_msg_count] = NULL;
-			}
-		}
-		return pair<uint32_t,uint32_t>(new_count,dup_count);
-	}
 
 
 	// HH_map method - calls partition_get -- 
@@ -1575,23 +1466,6 @@ namespace node_shm {
 
 
 
-	// HH_map method - calls get -- 
-	//
-	uint32_t partition_get(uint64_t key,uint8_t selector) {
-		//
-		uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
-		HHash *T = (HHash *)(_region + _offsets[selector]);
-		//
-		uint32_t uniqueness_mask = this->_uniqueness_mask;   // default HASH_MASK
-		// The element id of its bucket is stored in the top half of the 64, with other control information.
-		//
-		uint32_t element_diff = (uint32_t)((key >> HALF) & uniqueness_mask);  // just unloads it (was index)
-		uint32_t hash = (uint32_t)(key & HASH_MASK); // this is the 32 bit hash of the data determined by the caller...
-		//
-		return (uint32_t)(get_hh_set(T, hash, element_diff) >> HALF); 
-	}
-
-
 /*
 Free memory is a stack with atomic var protection.
 If a basket of new entries is available, then claim a basket's worth of free nodes and return then as a 
@@ -1611,25 +1485,6 @@ doubly linked list for later entry. Later, add at most two elements to the LIFO 
 		return total_requested;
 	}
 
-
-	// LRU_cache method
-	bool check_free_mem(uint32_t msg_count,bool add) {
-		//
-		uint8_t *start = _region;
-		size_t step = _step;
-		//
-		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-		_count_free = ctrl_free->_prev;  // using the hash field as the counter
-		//
-		auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
-		uint32_t total_requested = requested->load(std::memory_order_relaxed);
-		if ( add ) {
-			total_requested += msg_count;
-			requested->fetch_add(msg_count);
-		}
-		if ( _count_free < total_requested ) return false;
-		return true;
-	}
 
 	// LRU_cache method
 	void free_mem_claim_satisfied(uint32_t msg_count) {   // stop requesting the memory... 
@@ -1858,143 +1713,38 @@ int main() {
 
 
 
-
-	// At the app level obtain the LRU for the tier and work from there
-	int reader_operation(uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint16_t assigned_tier) {
-		if ( g_com_buffer == NULL  ) {    // com buffer not intialized
-			return -5; // plan error numbers: this error is huge problem cannot operate
-		}
-		if ( (proc_count > 0) && (assigned_tier >= 0) ) {
-			//
-			LRU_cache *lru = g_tier_to_LRU[assigned_tier];
-			if ( lru == NULL ) {
-				return(-1);
-			}
-			//
-			char **messages = messages_reserved;  // get this many addrs if possible...
-			char **accesses = duplicate_reserved;
-			//
-			uint32_t condition_key = g_tier_to_CONDITION[tier];
-			ConditionHolder *cond = g_CONDITION_per_segment[condition_key];
-			if ( cond != NULL) {
-				if ( cond->wait_on_timed(shared_state,DEFAULT_MICRO_TIMEOUT) ) {  // start working
-					// 
-					uint32_t ready_msg_count = 0;
-					// 		OP on com buff
-					// FIRST: gather messages that are aready for addition to shared data structures.
-					//
-					for ( uint32_t proc = 0; proc < proc_count; proc++ ) {
-						//
-						uint32_t p_offset = g_INTER_PROC_DESCRIPTOR_WORDS*(proc)*assigned_tier + g_SUPER_HEADER*g_NTiers;
-						char *access_point = ((char *)g_com_buffer) + p_offset;
-						char *read_marker = (access_point + OFFSET_TO_MARKER);
-
-						//
-						if ( (COM_BUFFER_STATE)(*read_marker) == CLEARED_FOR_ALLOC ) {
-							//
-							claim_for_alloc(read_marker); // This is the atomic update of the write state
-							messages[ready_msg_count] = access_point;
-							accesses[ready_msg_count] = access_point;
-							ready_msg_count++;
-							//
-						}
-						//
-					}
-					// rof; 
-					// 		OP on com buff
-					// SECOND: If duplicating, free the message slot, otherwise gather memory for storing new objecs
-					//
-					if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
-						// 	-- FILTER - only allocate for new objects
-						pair<uint32_t,uint32_t> update = lru->filter_existence_check(messages,accesses,ready_msg_count);
-
-						ready_msg_count = update.first;
-						uint32_t duplicate_count = update.second
-						while ( duplicate_count-- > 0 ) {
-							char *access_point = accesses[duplicate_count];
-							if ( access_point != nullptr ) {
-								char *read_marker = (access_point + OFFSET_TO_MARKER);
-								clear_for_copy(read_marker);
-							}
-						}
-						//
-						if ( ready_msg_count > 0 ) {
-							//
-							// Is there enough memory?
-							bool add = true;
-							while ( !(lru->check_free_mem(ready_msg_count,add)) ) {
-								if ( !run_evictions(lru,assigned_tier) ) {
-									return(-1);
-								}
-								add = false;
-							}
-							// GET LIST FROM FREE MEMORY 
-							//
-							uint32_t lru_element_offsets[ready_msg_count+1];  // should be on stack
-							memset((void *)lru_element_offsets,0,sizeof(uint32_t)*(ready_msg_count+1)); // clear the buffer
-
-							lru->claim_free_mem(ready_msg_count,lru_element_offsets); // negotiate getting a list from free memory
-							//
-							// if there are elements, they are already removed from free memory and this basket belongs to this process..
-							if ( first ) {
-								//
-								uint32_t *current = lru_element_offsets;
-								uint8_t *start = lru->_region;
-								uint32_t offset = 0;
-								//
-								uint32_t N = ready_msg_count;
-								//
-								// map hashes to the offsets
-								//
-								while ( offset = *current++ ) {
-									// read from com buf
-									char *access_point = messages[--N];
-									if ( access_point != nullptr ) {
-										uint32_t *write_offset_here = (access_point + OFFSET_TO_OFFSET);
-										uint64_t *hash_parameter = (uint64_t *)(access_point + OFFSET_TO_HASH);
-										uint64_t hash64 = hash_parameter[0];
-										//
-										if ( lru->add_key_value(hash64,offset) ) { // add to the hash table...
-											write_offset_here[0] = offset;
-											//
-											char *read_marker = (access_point + OFFSET_TO_MARKER);
-											clear_for_copy(read_marker);
-										}		
-									}
-								}
-								//
-								lru->attach_to_lru_list(lru_element_offsets,ready_msg_count);  // attach to an LRU as a whole bucket...
-							}
-						}
-					}
-				}
-			}
-			return 0;
-		}
-
-		return(-1)
+	void allow_delay() {
+		usleep(2);
 	}
 
 
-
 	/**
-	 * Waking up any thread that waits on input into the tier.
-	 * Any number of processes may place a message into a tier. 
-	 * If the tier is full, the reader has the job of kicking off the eviction process.
-	*/
-	bool wake_up_readers(uint32_t tier) {
-		uint32_t condition_key = g_tier_to_CONDITION[tier];
-		ConditionHolder *cond = g_CONDITION_per_segment[condition_key];
-		if ( cond != NULL) {
-			return cond->signal();
-		}
-		return false
-	}
-
-	/**
+	 * `put`
 	 *
+	 *  add or update a value  (JavaScript call)
+	 * 
+	 * 	The method mostly access the com buffer in order to make a piece of data available to 
+	 * 	other processes for placement into tables.
+	 * 
+	 *	This method requires that the com buffer (a reference known to this module), 
+	 * 	has been initialized...
+	 * 
+	 * 	A policy on the tier may be to set the new value (after searching for it) in the first trie (0)
+	 * 	and then removing the value from older tiers eventually, since the old timestamps will not be accessible in
+	 * 	in future searches. 
+	 * 	
+	 * 	Parameters:
+	 * 	process - The process number of the calling process
+	 *  hash_bucket - The modulus of the hash relative to the full table size.
+	 *	full_hash - The hash (e.g. XXHash of the data being stored)
+	 *	updating -  Whether or not this is to be treated as a new key or if the key is expected to be present.
+	 *	buffer - the actual data to be stored, a buffer type
+	 *	size - the size of the buffer
+	 *	timestamp - if the method is calld for updating, the old timestamp will help locate the tier where the key-value
+	 *				pair will be located. 
 	*/
 	NAN_METHOD(put)  {
+		//
 		Nan::HandleScope scope;
 		uint32_t process = Nan::To<uint32_t>(info[0]).FromJust();	// the process number
 		uint32_t hash_bucket = Nan::To<uint32_t>(info[1]).FromJust();	// hash modulus the number of buckets (hence a bucket)
@@ -2004,6 +1754,10 @@ int main() {
 		char* buffer = (char*) node::Buffer::Data(info[3]->ToObject());  // should be a reference...
     	unsigned int size = info[4]->Uint32Value();
 
+		uint32_t timestamp = 0;
+		if ( updating ) {
+			timestamp = info[5]->Uint32Value();
+		}
 		//
 		//
 		uint32_t tier = 0;  // new elements go into the first tier ... later they may move...
@@ -2021,53 +1775,12 @@ int main() {
 			//
 			if ( buffer && (size > 0) ) {
 				//
-				uint32_t p_offset = g_INTER_PROC_DESCRIPTOR_WORDS*(process)*i + g_SUPER_HEADER*g_NTiers;
-				char *access_point = ((char *)g_com_buffer) + p_offset;
-				unsigned char *read_marker = (access_point + OFFSET_TO_MARKER);
-				uint32_t *hash_parameter = (uint32_t *)(access_point + OFFSET_TO_HASH);
-				uint32_t *offset_offset = (uint32_t *)(access_point + OFFSET_TO_OFFSET);
-				//
-				// Writing will take place after a place in the LRU has been given to this writer...
-				// 
-				// WAIT - a reader may be still taking data out of our slot.
-				// let it finish before puting in the new stuff.
-				if ( wait_to_write(read_marker) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
-					// tell a reader to get some free memory
-					hash_parameter[0] = hash_bucket; // put in the hash so that the read can see if this is a duplicate
-					hash_parameter[1] = full_hash;
-					//
-					cleared_for_alloc(read_marker);   // allocators can now claim this process request
-					//
-					// will sigal just in case this is the first writer done and a thread is out there with nothing to do.
-					// wakeup a conditional reader if it happens to be sleeping and mark it for reading, 
-					// which prevents this process from writing until the data is consumed
-					bool status = wake_up_readers(tier);
-					if ( !status ) {
-						info.GetReturnValue().Set(Nan::New<Boolean>(false));
-						return;
-					}
-					// the write offset should come back to the process's read maker
-					offset_offset[0] = updating ? UINT32_MAX : 0;
-					//					
-					if ( await_write_offset(read_marker,MAX_WAIT_LOOPS,4) ) {
-						uint32_t write_offset = offset_offset[0];
-						if ( (write_offset == UINT32_MAX) && !(updating) ) {	// a duplicate has been found
-							clear_for_write(read_marker);   // next write from this process can now proceed...
-							info.GetReturnValue().Set(Nan::New<Number>(-1));
-							return;
-						}
-						//
-						char *m_insert = lru->data_location(write_offset);
-						memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));
-						//
-						clear_for_write(read_marker);   // next write from this process can now proceed...
-					} else {
-						clear_for_write(read_marker);   // next write from this process can now proceed...
-						info.GetReturnValue().Set(Nan::New<Number>(-1));
-						return;
-					}
-				} else {
-					// something went wrong ... perhaps a frozen reader...
+				int status = put_method(process, hash_bucket, full_hash, updating, buffer, size, timestamp, tier, allow_delay);
+				if ( status < -1 ) {
+					info.GetReturnValue().Set(Nan::New<Boolean>(false));
+					return;
+				}
+				if ( status == -1 ) {
 					info.GetReturnValue().Set(Nan::New<Number>(-1));
 					return;
 				}

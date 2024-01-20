@@ -86,20 +86,11 @@ Updating source has to be figured out. Atomicity is needed around 'has_values'.
 all search and sorting references being masked and calculated.)
 But, the buffer can have dense areas and sparse areas with the idea that the most active traffic will be in a dense area,
 while the least active areas will remain dense to economize on space. Medium traffic areas can have some sparseness (holes)
-which may slow its searches, but updates will move these to the new area which should be a packed short array. Updates will
-leave holes behind.
+which may slow its searches, but updates will move these to the new area which should be a packed short array.
 
-The algorithm can know the lowest and highest hole numbers.  It can opportunistically compact the buffer 
+The algorithm can no the lowest and highest hole numbers.  It can opportunistically compact the buffer 
 in order to remove holes. 
 
 * The rest is that we work on tiers...
-
-A Tier will contain elements in some timestamp range. All tiers update their range according to the clock 
-and the rate of filling.
-
-
-* Timestamps (last use timestamp) can be augmented by the number of uses in a time period.
-High use will sort higher in the buffer even if they are in the same time bucket. 
-
 
 */

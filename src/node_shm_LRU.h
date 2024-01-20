@@ -12,12 +12,6 @@
 #include <iostream>
 #include <sstream>
 
-using namespace node;
-using namespace v8;
-using namespace std;
-
-#include "hmap_interface.h"
-
 
 #include <map>
 #include <unordered_map>
@@ -25,6 +19,15 @@ using namespace std;
 #include <chrono>
 #include <atomic>
 
+
+using namespace node;
+using namespace v8;
+using namespace std;
+
+
+#include "hmap_interface.h"
+#include "holey_buffer.h"
+#include "atomic_proc_rw_state.h"
 
 
 using namespace std::chrono;
@@ -72,6 +75,7 @@ milliseconds ms = duration_cast< milliseconds >(
 );
 
 */
+
 
 
 inline uint64_t epoch_ms(void) {
@@ -145,6 +149,19 @@ typedef struct LRU_ELEMENT_HDR {
 } LRU_element;
 
 
+
+const uint32_t MAX_MESSAGE_SIZE = 128;
+//
+const uint32_t OFFSET_TO_MARKER = 0;					// in bytes
+const uint32_t OFFSET_TO_OFFSET = sizeof(uint32_t);		// 
+const uint32_t OFFSET_TO_HASH = (OFFSET_TO_OFFSET + sizeof(uint32_t));   // start of 64bits
+
+const uint32_t TOTAL_ATOMIC_OFFSET = (OFFSET_TO_HASH + sizeof(uint64_t));	
+//
+const uint32_t DEFAULT_MICRO_TIMEOUT = 2; // 2 seconds
+
+
+
 //
 //	LRU_cache --
 //
@@ -156,12 +173,19 @@ class LRU_cache {
 	public:
 		// LRU_cache -- constructor
 		LRU_cache(void *region,size_t record_size,size_t region_size,bool am_initializer) {
+			//
+			_SUPER_HEADER = 0;
+			_NTiers = 0;
+			_INTER_PROC_DESCRIPTOR_WORDS = 0;		// initialized by exposed method called by coniguration.
+			_readerAtomicFlag = nullptr;
+			//
 			_reason = "OK";
 			_region = (uint8_t *)region;
 			_record_size = record_size;
 			_status = true;
 			_step = (sizeof(LRU_element) + record_size);
-			_hmap_i = nullptr;
+			_hmap_i[0] = nullptr;  //
+			_hmap_i[1] = nullptr;  //
 			if ( (4*_step) >= region_size ) {
 				_reason = "(constructor): regions is too small";
 				_status = false;
@@ -178,7 +202,28 @@ class LRU_cache {
 					_count = this->_walk_allocated_list(1);
 				}
 			}
+
+			lb_time->store(UINT32_MAX);
+			ub_time->store(UINT32_MAX);
 		}
+
+
+		/**
+		 * called by exposed method 
+		 * must be called for initialization
+		*/
+
+		void initialize_header_sizes(uint32_t super_header_size,uint32_t N_tiers,uint32_t words_for_mutex_and_conditions) {
+			_SUPER_HEADER = super_header_size;
+			_NTiers = N_tiers;
+			_INTER_PROC_DESCRIPTOR_WORDS = words_for_mutex_and_conditions;		// initialized by exposed method called by coniguration.
+			_beyond_entries_for_tiers_and_mutex = (_SUPER_HEADER*_NTiers);
+		}
+
+		void set_reader_atomic_flag(atomic_flag *aflag) {
+			_readerAtomicFlag = aflag;
+		}
+
 
 		// setup_region -- part of initialization if the process is the intiator..
 		void setup_region(size_t record_size) {
@@ -229,10 +274,11 @@ class LRU_cache {
 
 		}
 
-		// set_hash_impl - called by initHopScotch
+		// set_hash_impl - called by initHopScotch -- set two paritions servicing a random selection.
 		//
-		void set_hash_impl(HMap_interface *hmap) {
-			_hmap_i = hmap;
+		void set_hash_impl(HMap_interface *hmap1,HMap_interface *hmap2) {
+			_hmap_i[0] = hmap1;
+			_hmap_i[1] = hmap2;
 		}
 
 		// add_el
@@ -387,28 +433,36 @@ class LRU_cache {
 
 		// HASH TABLE USAGE
 		void remove_key(uint64_t hash) {
-			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl
+			//
+			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = _hmap_i[selector];
+
+			if ( T == nullptr ) {   // no call to set_hash_impl
 				_local_hash_table.erase(hash);
 			} else {
-				_hmap_i->del(hash);
+				T->del(hash);
 			}
 		}
 
 		void clear_hash_table(void) {
-			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl
+			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = _hmap_i[selector];
+			if ( T == nullptr ) {   // no call to set_hash_impl
 				_local_hash_table.clear();
 			} else {
-				_hmap_i->clear();
+				T->clear();
 			}
 
 		}
 
 		uint64_t store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
-			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl
+			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = _hmap_i[selector];
+			if ( T == nullptr ) {   // no call to set_hash_impl
 				uint64_t key64 = (((uint64_t)full_hash << HALF) | (uint64_t)hash_bucket);				
 				_local_hash_table[key64] = new_el_offset;
 			} else {
-				uint64_t result = _hmap_i->store(hash_bucket,full_hash,new_el_offset); //UINT64_MAX
+				uint64_t result = T->store(hash_bucket,full_hash,new_el_offset); //UINT64_MAX
 				//count << "store_in_hash: " << result << endl;
 				return result;
 			}
@@ -426,12 +480,14 @@ class LRU_cache {
 		// check_for_hash
 		// either returns an offset to the data or returns the UINT32_MAX.  (4,294,967,295)
 		uint32_t check_for_hash(uint64_t key) {
-			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl -- means the table was not initialized to use shared memory
+			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = _hmap_i[selector];
+			if ( T == nullptr ) {   // no call to set_hash_impl -- means the table was not initialized to use shared memory
 				if ( _local_hash_table.find(key) != _local_hash_table.end() ) {
 					return(_local_hash_table[key]);
 				}
 			} else {
-				uint32_t result = _hmap_i->get(key);
+				uint32_t result = T->get(key);
 				if ( result != 0 ) return(result);
 			}
 			return(UINT32_MAX);
@@ -440,13 +496,15 @@ class LRU_cache {
 		// check_for_hash
 		// either returns an offset to the data or returns the UINT32_MAX.  (4,294,967,295)
 		uint32_t check_for_hash(uint32_t key,uint32_t bucket) {    // full_hash,hash_bucket  :: key == full_hash
-			if ( _hmap_i == nullptr ) {   // no call to set_hash_impl -- means the table was not initialized to use shared memory
+			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = _hmap_i[selector];
+			if ( TierAndProcManager == nullptr ) {   // no call to set_hash_impl -- means the table was not initialized to use shared memory
 					uint64_t hash64 = (((uint64_t)key << HALF) | (uint64_t)bucket);
 				if ( _local_hash_table.find(hash64) != _local_hash_table.end() ) {
 					return(_local_hash_table[hash64]);
 				}
 			} else {
-				uint32_t result = _hmap_i->get(key,bucket);
+				uint32_t result = T->get(key,bucket);
 				if ( result != 0 ) return(result);
 			}
 			return(UINT32_MAX);
@@ -499,7 +557,10 @@ class LRU_cache {
 				return 0;
 			} else {
 				uint32_t xs[32];
-				uint8_t count = _hmap_i->get_bucket(hash, xs);
+				uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
+				HHash *T = _hmap_i[selector];
+
+				uint8_t count = T->get_bucket(hash, xs);
 				//
 				uint8_t *start = _region;
 				size_t step = _step;
@@ -652,7 +713,67 @@ class LRU_cache {
 			return(_count_free);
 		}
 
-		
+	public:
+
+		// HH_map method - calls get -- 
+		//
+		uint32_t 	partition_get(uint64_t key) {
+			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = _hmap_i[selector];
+			return get_hh_map(T, key);
+		}
+
+
+
+		// LRU_cache method - calls get -- 
+		/**
+		 * filter_existence_check
+		 * 
+		 * Both arrays, messages and accesses, contain references to hash words.. 
+		 * These are the hash parameters left by the process requesting storage.
+		 * 
+		*/
+		uint32_t		filter_existence_check(char **messages,char **accesses,uint32_t ready_msg_count) {
+			uint32_t new_count = 0;
+			while ( --ready_msg_count >= 0 ) {
+				uint64_t *hash_loc = (uint64_t *)(messages[ready_msg_count] + OFFSET_TO_HASH);
+				uint64_t hash = hash_loc[0];
+				uint32_t data_loc = this->partition_get(hash);
+				if ( data_loc != 0 ) {    // check if this message is already stored
+					messages[ready_msg_count] = data_loc;
+				} else {
+					new_count++;
+					accesses[ready_msg_count] = NULL;
+				}
+			}
+			return new_count;
+		}
+
+
+	
+
+		// LRU_cache method
+		bool check_free_mem(uint32_t msg_count,bool add) {
+			//
+			uint8_t *start = _region;
+			size_t step = _step;
+			//
+			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+			_count_free = ctrl_free->_prev;  // using the hash field as the counter
+			//
+			auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
+			uint32_t total_requested = requested->load(std::memory_order_relaxed);
+			if ( add ) {
+				total_requested += msg_count;
+				requested->fetch_add(msg_count);
+			}
+			if ( _count_free < total_requested ) return false;
+			return true;
+		}
+
+
+
+
 
 	private:
 
@@ -748,10 +869,417 @@ class LRU_cache {
 		uint16_t						_max_count;  // max possible number of records
 		uint32_t						_share_key;
 		//
-		HMap_interface 					*_hmap_i;
+		atomic<uint32_t>				*lb_time;
+		atomic<uint32_t>				*ub_time;
+		//
+		HMap_interface 					*_hmap_i[2];
 		//
 		unordered_map<uint64_t,uint32_t>			_local_hash_table;
 };
+
+
+
+
+
+
+
+
+
+
+typedef struct TIER_TIME {
+	atomic<uint32_t>	*lb_time;
+	atomic<uint32_t>	*ub_time;
+} Tier_time_bucket, *Tier_time_bucket_ref;
+
+
+
+
+// b_search 
+//
+static inline uint32_t
+time_interval_b_search(uint32_t timestamp, Tier_time_bucket_ref timer_table,uint32_t N) {
+	Tier_time_bucket_ref beg = timer_table;
+	Tier_time_bucket_ref end = timer_table + N;
+	//
+	if ( (beg->lb_time->load() <= timestamp )&& (timestamp < beg->ub_time->load()) ) return 0;
+	beg++; N--;
+	if ( ((end-1)->lb_time->load() <= timestamp )&& (timestamp < (end-1)->ub_time->load()) ) return N-1;
+	end--; N--;
+	//
+	while ( beg < end ) {
+		N = N >> 1;
+		if ( N == 0 ) {
+			while ( beg < end ) {
+				if ( (beg->lb_time->load() <= timestamp )&& (timestamp < beg->ub_time->load()) ) return beg;
+				beg++;
+			}
+			break;
+		}
+		if ( mid >= end ) break;
+		Tier_time_bucket_ref mid = beg + N;
+		//
+		uint32_t mid_lb, mid_ub;
+		mid_lb = mid->lb_time->load();
+		mid_ub = mid->ub_time->load();
+		//
+		if ( (mid_lb <= timestamp ) && (timestamp < mid_ub) ) return mid;
+		if ( timestamp > mid_ub ) beg = mid;
+		else end = mid;
+	}
+	return UINT32_MAX;
+}
+
+
+template<const uint8_t MAX_TIERS = 8>
+class TierAndProcManager {
+
+	public:
+
+		TierAndProcManager(void *region[MAX_TIERS], size_t rc_sz, bool am_initializer, uint8_t num_tiers_in_use) : _t_times(t_times) {
+			_NTiers = num_tiers_in_use;
+			for ( int i = 0; i < num_tiers_in_use; i++ ) {
+				_tiers[i] = new LRU_cache(region[i], rc_sz, seg_sz, am_initializer);
+				_t_times[i].lb_time = _tiers[i]->lb_time;
+				_t_times[i].ub_time = _tiers[i]->ub_time;
+			}
+			_com_buffer = nullptr;
+		}
+
+		// -- 
+		bool		set_com_buffer(void *com_buffer) {
+			if ( com_buffer == nullptr ) return false;
+			_com_buffer = com_buffer;
+			return true;
+		}
+
+		LRU_cache	*access_tier(uint8_t tier) {
+			if ( (0 <= tier) && (tier < MAX_TIERS) ) {
+				return _tiers[tier];
+			}
+			return nullptr;
+		}
+
+		LRU_cache	*from_time(uint32_t timestamp) {
+			uint32_t index = time_interval_b_search(timestamp, _t_times, num_tiers_in_use);
+			if ( index < num_tiers_in_use ) {
+				return _tiers[index];
+			}
+			return nullptr;
+		}
+
+
+
+
+
+	/**
+	 * reader_operation
+	 * 
+	 * The reader operation is launched from a new thread during initialization.
+	 * A number of readers may occur among cores for handling insertion and expulsion of data from a tier.
+	 * So, a core may handle one or more tiers, launching a thread for each tier it manages.
+	 * 
+	 * Each read operation is assigned a tier for which it reads. 
+	 * Data shared with the writer is negotiated between cores within areas set aside for each tier.
+	 * So, for each tier there will be atomics that operate specifically for the tier in question.
+	 * 
+	*/
+
+	// At the app level obtain the LRU for the tier and work from there
+	//
+	int 		reader_operation(uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint8_t assigned_tier) {
+		//
+		if ( _com_buffer == NULL  ) {    // com buffer not intialized
+			return -5; // plan error numbers: this error is huge problem cannot operate
+		}
+		if ( (proc_count > 0) && (assigned_tier < _NTiers) ) {
+			//
+			LRU_cache *lru = access_tier(assigned_tier);
+			if ( lru == NULL ) {
+				return(-1);
+			}
+			//
+			char **messages = messages_reserved;  // get this many addrs if possible...
+			char **accesses = duplicate_reserved;
+			//
+			_readerAtomicFlag[assigned_tier]->wait(false);
+				// 
+			uint32_t ready_msg_count = 0;
+			// 		OP on com buff
+			// FIRST: gather messages that are aready for addition to shared data structures.
+			//
+			// go through all the processes that might have written to this tier.
+			//
+			uint32_t tier_atomics = assigned_tier*TOTAL_ATOMIC_OFFSET;  // same offset for all procs
+			//
+			for ( uint32_t proc = 0; (proc < proc_count); proc++ ) {
+				//
+				uint32_t next_proc_table = _INTER_PROC_DESCRIPTOR_WORDS*(proc);   // each proc might be writing to this tier
+				uint32_t p_offset = _beyond_entries_for_tiers_and_mutex + next_proc_table + tier_atomics;
+				//
+				char *access_point = ((char *)_com_buffer) + p_offset;
+				atomic<COM_BUFFER_STATE> *read_marker = (atomic<COM_BUFFER_STATE> *)(access_point + OFFSET_TO_MARKER);
+				//
+				if ( read_marker->load() == CLEARED_FOR_ALLOC ) {
+					//
+					claim_for_alloc(read_marker); // This is the atomic update of the write state
+					messages[ready_msg_count] = access_point;
+					accesses[ready_msg_count] = access_point;
+					ready_msg_count++;
+					//
+				}
+				//
+			}
+			// rof; 
+			//
+			//
+			// 		OP on com buff
+			// SECOND: If duplicating, free the message slot, otherwise gather memory for storing new objecs
+			//
+			if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
+				// 	-- FILTER - only allocate for new objects
+				uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
+				//
+				char **end_dups = accesses + (ready_msg_count - additional_locations);
+				char **tmp = messages;
+				while ( accesses < end_dups ) {
+					char *dup_access = *accesses++;
+					if ( dup_access != nullptr ) {
+						uint32_t data_loc = (uint32_t)(tmp[0]);
+						tmp[0] = nullptr;
+						uint32_t *write_offset_here = (access_point + dup_access);
+						write_offset_here[0] = data_loc;
+						// now get the control word location
+						atomic<COM_BUFFER_STATE> *read_marker = (atomic<COM_BUFFER_STATE> *)(dup_access + OFFSET_TO_MARKER);
+						clear_for_copy(read_marker);  // tells the requesting process to go ahead and write data.
+					}
+					tmp++;
+				}
+				//
+				if ( additional_locations > 0 ) {
+					//
+					// Is there enough memory?
+					bool add = true;
+					while ( !(lru->check_free_mem(ready_msg_count,add)) ) {
+						if ( !run_evictions(lru,assigned_tier) ) {
+							return(-1);
+						}
+						add = false;
+					}
+					// GET LIST FROM FREE MEMORY 
+					//
+					uint32_t lru_element_offsets[ready_msg_count+1];  // should be on stack
+					memset((void *)lru_element_offsets,0,sizeof(uint32_t)*(additional_locations+1)); // clear the buffer
+
+					bool mem_claimed = (UINT32_MAX != lru->claim_free_mem(additional_locations,lru_element_offsets)); // negotiate getting a list from free memory
+					//
+					// if there are elements, they are already removed from free memory and this basket belongs to this process..
+					if ( mem_claimed ) {
+						//
+						uint32_t *current = lru_element_offsets;   // offset to new elemnents in the regions
+						uint8_t *start = lru->_region;
+						uint32_t offset = 0;
+						//
+						uint32_t N = ready_msg_count;
+						char **tmp = messages;
+						char **end_m = messages + N;
+						//
+						// map hashes to the offsets
+						//
+						while ( tmp < end_m ) {
+							// read from com buf
+							char *access_point = *tmp++;
+							if ( access_point != nullptr ) {
+								//
+								offset = *current++;
+								//
+								uint32_t *write_offset_here = (access_point + OFFSET_TO_OFFSET);
+								uint64_t *hash_parameter = (uint64_t *)(access_point + OFFSET_TO_HASH);
+								uint64_t hash64 = hash_parameter[0];
+								//
+								if ( lru->add_key_value(hash64,offset) ) { // add to the hash table...
+									write_offset_here[0] = offset;
+									//
+									atomic<COM_BUFFER_STATE> *read_marker = (atomic<COM_BUFFER_STATE> *)(access_point + OFFSET_TO_MARKER);
+									clear_for_copy(read_marker);
+								}		
+							}
+						}
+						//
+						lru->attach_to_lru_list(lru_element_offsets,ready_msg_count);  // attach to an LRU as a whole bucket...
+					}
+				}
+			}
+
+			return 0;
+		}
+
+		return(-1)
+	}
+
+
+
+
+		/**
+		 * Waking up any thread that waits on input into the tier.
+		 * Any number of processes may place a message into a tier. 
+		 * If the tier is full, the reader has the job of kicking off the eviction process.
+		*/
+		bool wake_up_readers(uint32_t tier) {
+			_readerAtomicFlag[tier] = true;
+			_readerAtomicFlag[tier]->notify_all();
+			return true;
+		}
+
+
+		/**
+		 * put_method
+		 * 
+		 * Initiates the process by which the system find a place to write data. This method waits on the position to write data.
+		 * 
+		 * This method first waits on access only if its entry has already been breached by itself or a process looking to pick up
+		 * hash parameters. Once a process or thread is servicing the search for the next location to return for a previous request.
+		 * 
+		 * This puts to a tier. Most often, this will be called with tier 0 for a new piece of data.
+		 * But, it may be invoked for a list of values being moved to an older tier during tier evictions.
+		 * 
+		*/
+
+
+
+		int 		put_method(uint32_t process,uint32_t hash_bucket,uint32_t full_hash,bool updating,char* buffer,unsigned int size,uint32_t timestamp,uint32_t tier,void (delay_func)()) {
+			//
+			if ( _com_buffer == nullptr ) return -1;  // has not been initialized
+			if ( (buffer == nullptr) || (size <= 0) ) return -1;  // might put a limit on size lower and uppper
+			//
+			//
+			LRU_cache *lru = from_time(timestamp);   // this is being accessed in more than one place...
+
+			if ( lru == nullptr ) {  // has not been initialized
+				return -1;
+			}
+			//
+			// offset to the table storing shared terms belonging to 'process'. (Process or thread id)
+			uint32_t next_proc_table = _INTER_PROC_DESCRIPTOR_WORDS*(proc);
+			uint32_t tier_atomics = tier*TOTAL_ATOMIC_OFFSET;
+			//
+			uint32_t p_offset = _beyond_entries_for_tiers_and_mutex + next_proc_table + tier_atomics; 
+
+			//
+			char *access_point = ((char *)_com_buffer) + p_offset;   // start of shared atomics... (for the given tier)
+			// particular atomics
+			unsigned char *read_marker =	(access_point + OFFSET_TO_MARKER);		// this is for other processes to wake up...
+			uint32_t *hash_parameter =		(uint32_t *)(access_point + OFFSET_TO_HASH);	// parameters for the call
+			uint32_t *offset_offset =		(uint32_t *)(access_point + OFFSET_TO_OFFSET);	// the new data offset should be returned here
+
+			//
+			// Writing will take place after a place in the LRU has been given to this writer...
+			// 
+			// WAIT - a reader may be still taking data out of our slot.
+			// let it finish before puting in the new stuff.
+			if ( wait_to_write(read_marker,delay_func) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
+				// 
+				// tell a reader to get some free memory
+				hash_parameter[0] = hash_bucket; // put in the hash so that the read can see if this is a duplicate
+				hash_parameter[1] = full_hash;
+				//
+				cleared_for_alloc(read_marker);   // allocators can now claim this process request
+				//
+				// will sigal just in case this is the first writer done and a thread is out there with nothing to do.
+				// wakeup a conditional reader if it happens to be sleeping and mark it for reading, 
+				// which prevents this process from writing until the data is consumed
+				bool status = wake_up_readers(tier);
+				if ( !status ) {
+					return -2;
+				}
+				// the write offset should come back to the process's read maker
+				offset_offset[0] = updating ? UINT32_MAX : 0;
+				//					
+				if ( await_write_offset(read_marker,MAX_WAIT_LOOPS,delay_func) ) {
+					uint32_t write_offset = offset_offset[0];
+					if ( (write_offset == UINT32_MAX) && !(updating) ) {	// a duplicate has been found
+						clear_for_write(read_marker);   // next write from this process can now proceed...
+						return -1;
+					}
+					//
+					char *m_insert = lru->data_location(write_offset);
+					memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));  // COPY IN NEW DATA HERE...
+					//
+					clear_for_write(read_marker);   // next write from this process can now proceed...
+				} else {
+					clear_for_write(read_marker);   // next write from this process can now proceed...
+					return -1;
+				}
+			} else {
+				// something went wrong ... perhaps a frozen reader...
+				return -1;
+			}
+			//
+			return 0;
+		}
+
+
+	protected:
+
+
+		/**
+		 * 
+		// raise the lower bound on the times allowed into an LRU 
+		// this operation does not run evictions. 
+		// but processes running evictions may use it.
+		//
+		// This is using atomics ... not certain that is the future with this...
+		//
+		// returns: the old lower bound on time. the lower bound may become the new upper bound of an
+		// older tier.
+		*/
+
+		void raise_lru_lb_time_bounds(uint32_t lb_timestamp) {
+			uint32_t index = time_interval_b_search(timestamp, _t_times, num_tiers_in_use);
+			if ( index == 0 ) {
+				Tier_time_bucket *ttbr = Tier_time_bucket[0];
+				ttbr->ub_time->store(UINT32_MAX);
+				uint32_t lbt = ttbr->lb_time->load();
+				if ( lbt < lb_timestamp ) {
+					ttbr->lb_time->store(lb_timestamp);
+					return lbt;
+				}
+				return 0;
+			}
+			if ( index < num_tiers_in_use ) {
+				Tier_time_bucket *ttbr = Tier_time_bucket[index];
+				uint32_t lbt = ttbr->lb_time->load();
+				if ( lbt < lb_timestamp ) {
+					uint32_t ubt = ttbr->ub_time->load();
+					uint32_t delta = (lb_timestamp - lbt);
+					ttbr->lb_time->store(lb_timestamp);
+					ubt -= delta;
+					ttbr->ub_time->store(lb_timestamp);					
+					return lbt;
+				}
+				return 0;
+			}
+		}
+
+	protected:
+
+		void					*_com_buffer;
+		LRU_cache 				*_tiers[MAX_TIERS];		// local process storage
+		Tier_time_bucket		_t_times[MAX_TIERS];	// shared mem storage
+
+
+	protected:
+
+
+		uint32_t _SUPER_HEADER;
+		uint32_t _NTiers;
+		uint32_t _INTER_PROC_DESCRIPTOR_WORDS;
+		uint32_t _beyond_entries_for_tiers_and_mutex;
+
+	//
+		atomic_flag *_readerAtomicFlag;
+
+
+}
 
 
 
