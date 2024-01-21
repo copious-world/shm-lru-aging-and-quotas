@@ -22,7 +22,7 @@ using namespace std;
 
 
 
-#include "./updating_source.h"
+#include "updating_source.h"
 
 
 
@@ -185,6 +185,9 @@ bin_search_with_blackouts_increasing(uint32_t key,pair<uint32_t,uint32_t> *key_v
 }
 
 
+//
+// Pairs are used as <timestamp,data> offset pairs
+//
 
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -196,6 +199,8 @@ class KeyValueManager {
 
 	public:
 
+		// <timestamp,data>
+		//
 		KeyValueManager(pair<uint32_t,uint32_t> *primary_storage,
 							uint32_t count_size, pair<uint32_t,uint32_t> *shared_queue, uint16_t expected_proc_max) 
 			: _proc_queue(shared_queue,expected_proc_max) {
@@ -213,7 +218,7 @@ class KeyValueManager {
 			_regions_option = false;
 			_regions = nullptr;				// for future use
 		}
-	
+
 	public:
 		// 
 
@@ -307,7 +312,7 @@ class KeyValueManager {
 
 
 		bool
-		displace_lowest_value_threshold(list<uint32_t> deposit, uint32_t min_max, uint32_t max_count) {
+		displace_lowest_value_threshold(list<uint32_t> &deposit, uint32_t min_max, uint32_t max_count) {
 			//
 			pair<uint32_t,uint32_t> *p = _key_val;
 			pair<uint32_t,uint32_t> *end = _key_val + max_count;

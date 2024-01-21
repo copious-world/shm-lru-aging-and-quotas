@@ -1291,10 +1291,14 @@ namespace node_shm {
 	// let p_offset = sz*(this.proc_index)*i + SUPER_HEADER*NTiers
 
 
+	static TierAndProcManager *g_tiers_procs = nullptr;
+
 
 	NAN_METHOD(set_com_buf)  {
 		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
+
+		Local<Array> keys = Local<Array>::Cast(info[0]);
+
 		uint32_t SUPER_HEADER = Nan::To<uint32_t>(info[1]).FromJust();
 		uint32_t NTiers = Nan::To<uint32_t>(info[2]).FromJust();
 		uint32_t INTER_PROC_DESCRIPTOR_WORDS = Nan::To<uint32_t>(info[3]).FromJust();
@@ -1303,32 +1307,42 @@ namespace node_shm {
 		size_t seg_sz = Nan::To<uint32_t>(info[5]).FromJust();
 		bool am_initializer = Nan::To<bool>(info[6]).FromJust();
 
+		uint16_t n = jsArray->Length();
+		v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();Value(context).FromJust();
 		//
-		int resId = shmget(key, 0, 0);
-		if (resId == -1) {
-			switch(errno) {
-				case ENOENT: // not exists
-				case EIDRM:  // scheduled for deletion
-					info.GetReturnValue().Set(Nan::New<Number>(-1));
-					return;
-				default:
-					return Nan::ThrowError(strerror(errno));
+		void *regions[MAX_TIERS];
+
+		for ( int i = 0; i < min(NTiers,n); i++ ) {
+			uint32_t key = jsSubArray->Get(context, i).ToLocalChecked()->Uint32
+			//
+			int resId = shmget(key, 0, 0);
+			if (resId == -1) {
+				switch(errno) {
+					case ENOENT: // not exists
+					case EIDRM:  // scheduled for deletion
+						info.GetReturnValue().Set(Nan::New<Number>(-1));
+						return;
+					default:
+						return Nan::ThrowError(strerror(errno));
+				}
 			}
-		}
-
-		void *region = getShmSegmentAddr(resId);
-		if ( region == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
+			//
+			void *region = getShmSegmentAddr(resId);
+			if ( region == nullptr ) {
+				info.GetReturnValue().Set(Nan::New<Number>(-1));
+				return;
+			}
+			//
+			regions[i] = = region;
 		}
 		//
+		//	launch readers after hopscotch tables are put into place
+		//
+		g_tiers_procs = new TierAndProcManager(regions, rc_sz, am_initializer, NTiers, SUPER_HEADER, INTER_PROC_DESCRIPTOR_WORDS);
 
-		g_com_buffer = region
+		g_com_buffer = region;
+
 		info.GetReturnValue().Set(Nan::New<Boolean>(true));
-
-		g_SUPER_HEADER = SUPER_HEADER;
-		g_NTiers = NTiers;
-		g_INTER_PROC_DESCRIPTOR_WORDS = INTER_PROC_DESCRIPTOR_WORDS;
 	}
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -1342,52 +1356,7 @@ namespace node_shm {
 			
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-	void transfer_to_source_tier(char *temp_bloat,size_t rec_size,map<uint32_t,map<uint32_t,uint64_t> &moving_objects,uint32_t req_count,uint32_t source_tier) {
-		//
-		// transfer control to a thread managing the next tier
-		//
-		for ( auto p : moving_objects ) {{
-			uint32_t i = p.first;
-			uint64_t hash = p.second;
-			char *data = temp_bloat + rec_size*i;
-			thread_adds_data(source_tier+1,data,hash);
-		}}
-	}
 
-
-	bool run_evictions(LRU_cache *lru,uint32_t source_tier) {
-		//
-		// lru - is a source tier 
-		//
-		map<uint32_t,uint64_t> moving_objects;
-		//
-		uint8_t *start = _region;
-		size_t step = _step;
-		//
-		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-		_count_free = ctrl_free->_prev;  // using the hash field as the counter
-		//
-		uint32_t req_count = free_mem_requested();
-		if ( req_count == 0 ) return true;
-		//
-		char *temp_bloat = new char[_record_size*req_count]
-		char *tmp = temp_bloat;
-		//
-		for ( uint32_t i = 0; i < req_count; i++ ) {
-			pair<uint32_t,uint64_t> &p = lru->lru_remove_last();
-			uint32_t t_offset = p.first;
-			uint32_t hash = p.second;
-			LRU_element *moving = (LRU_element *)(start + t_offset);  // always the same each tier...
-			char *data = (char *)(moving + 1);
-			memcpy(data,tmp,_record_size);
-			tmp += _record_size;
-			return_to_free_mem(moving);
-			moving_objects[i] = hash;
-		}
-		//
-		transfer_to_source_tier(temp_bloat,_record_size,moving_objects,req_count,source_tier);
-		return true;
-	}
 
 	// messages_reserved is an area to store pointers to the messages that will be read.
 	// duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
@@ -1466,131 +1435,6 @@ namespace node_shm {
 
 
 
-/*
-Free memory is a stack with atomic var protection.
-If a basket of new entries is available, then claim a basket's worth of free nodes and return then as a 
-doubly linked list for later entry. Later, add at most two elements to the LIFO queue the LRU.
-*/
-	// LRU_cache method
-	inline uint32_t free_mem_requested(void) {
-		//
-		uint8_t *start = _region;
-		size_t step = _step;
-		//
-		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-		//
-		auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
-		uint32_t total_requested = requested->load(std::memory_order_relaxed);
-
-		return total_requested;
-	}
-
-
-	// LRU_cache method
-	void free_mem_claim_satisfied(uint32_t msg_count) {   // stop requesting the memory... 
-		uint8_t *start = _region;
-		size_t step = _step;
-		//
-		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-		auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
-		if ( requested->load() <= msg_count ) {
-			requested->store(0);
-		} else {
-			requested->fetch_sub(msg_count);
-		}
-	}
-
-
-	// LRU_cache method
-	void return_to_free_mem(LRU_element *el) {				// a versions of push
-		uint8_t *start = _region;
-		size_t step = _step;
-		//
-		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_next));
-		auto count_free = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
-		//
-		uint32_t el_offset = (uint32_t)(el - start);
-		uint32_t h_offset = head->load(std::memory_order_relaxed);
-		while(!head->compare_exchange_weak(h_offset, el_offset));
-		count_free->fetch_add(1, std::memory_order_relaxed);
-	}
-
-	// LRU_cache method
-	uint32_t claim_free_mem(uint32_t ready_msg_count,uint32_t *reserved_offsets) {
-		LRU_element *first = NULL;
-		//
-		uint8_t *start = _region;
-		size_t step = _step;
-		//
-		LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
-		uint32_t h_offset = head->load(std::memory_order_relaxed);
-		if ( h_offset == UINT32_MAX ) {
-			_status = false;
-			_reason = "out of free memory: free count == 0";
-			return(UINT32_MAX);
-		}
-		auto count_free = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
-		//
-		// POP as many as needed
-		//
-		uint32_t n = ready_msg_count;
-		while ( n-- ) {  // consistently pop the free stack
-			uint32_t next_offset = UINT32_MAX;
-			uint32_t first_offset = UINT32_MAX;
-			do {
-				if ( h_offset == UINT32_MAX ) {
-					_status = false;
-					_reason = "out of free memory: free count == 0";
-					return(UINT32_MAX);			/// failed memory allocation...
-				}
-				first_offset = h_offset;
-				first = (LRU_element *)(start + first_offset);
-				next_offset = first->_next;
-			} while( !(head->compare_exchange_weak(h_offset, next_offset)) );  // link ctrl->next to new first
-			//
-			if ( next_offset < UINT32_MAX ) {
-				reserved_offsets[n] = first_offset;  // h_offset should have changed
-			}
-		}
-		//
-		count_free->fetch_sub(ready_msg_count, std::memory_order_relaxed);
-		free_mem_claim_satisfied(ready_msg_count);
-		//
-		return 0;
-	}
-
-
-
-	// LRU_cache method
-	atomic<uint32_t> *wait_on_tail(LRU_element *ctrl_tail,bool set_high = false,uint32_t delay = 4) {
-		//
-		auto flag_pos = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_share_key));
-		if ( set_high ) {
-			uint32_t check = UINT32_MAX;
-			while ( check !== 0 ) {
-				check = flag_pos->load(std::memory_order_relaxed);
-				if ( check != 0 )  {			// waiting until everyone is done with it
-					usleep(delay);
-				}
-			}
-			while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,UINT32_MAX)
-						&& (ctrl_tail->_share_key) !== UINT32_MAX));
-		} else {
-			uint32_t check = UINT32_MAX;
-			while ( check == UINT32_MAX ) {
-				check = flag_pos->load(std::memory_order_relaxed);
-				if ( check == UINT32_MAX )  {
-					usleep(delay);
-				}
-			}
-			while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,(check+1))
-						&& (ctrl_tail->_share_key < UINT32_MAX) );
-		}
-		return flag_pos;
-	}
-
 
 /*
 template<typename T, typename OP>
@@ -1617,98 +1461,8 @@ int main() {
 */
 
 
-	// LRU_cache method
-	void done_with_tail(LRU_element *ctrl_tail,atomic<uint32_t> *flag_pos,bool set_high = false) {
-		if ( set_high ) {
-			while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,0)
-						&& (ctrl_tail->_share_key == UINT32_MAX));   // if some others have gone through OK
-		} else {
-			auto prev_val = flag_pos->load();
-			if ( prev_val == 0 ) return;  // don't go below zero
-			flag_pos->fetch_sub(ctrl_tail->_share_key,1);
-		}
-	}
-
 
 	// LRU_cache method
-	/**
-	 * Prior to attachment, the required space availability must be checked.
-	*/
-	void attach_to_lru_list(uint32_t *lru_element_offsets,uint32_t ready_msg_count) {
-		//
-		uint32_t last = lru_element_offsets[(ready_msg_count - 1)];  // freed and assigned to hashes...
-		uint32_t first = lru_element_offsets[0];  // freed and assigned to hashes...
-		//
-		uint8_t *start = _region;
-		size_t step = _step;
-		//
-		LRU_element *ctrl_hdr = (LRU_element *)start;
-		//
-		LRU_element *ctrl_tail = (LRU_element *)(start + step);
-		auto tail_block = wait_on_tail(ctrl_tail,false); // WAIT :: stops if the tail hash is set high ... this call does not set it
-
-		auto head = static_cast<atomic<uint32_t>*>(&(ctrl_hdr->_next));
-		//
-		uint32_t next = head->exchange(first);  // ensure that some next (another basket first perhaps) is available for buidling the LRU
-		//
-		LRU_element *old_first = (LRU_element *)(start + next);  // this has been settled
-		//
-		old_first->_prev = last;			// ---- ---- ---- ---- ---- ---- ---- ----
-		//
-		// thread the list
-		for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
-			LRU_element *current_el = (LRU_element *)(start + lru_element_offsets[i]);
-			current_el->_prev = ( i > 0 ) ? lru_element_offsets[i-1] : 0;
-			current_el->_next = ((i+1) < ready_msg_count) ? lru_element_offsets[i+1] : next;
-		}
-		//
-
-		done_with_tail(ctrl_tail,tail_block,false);
-	}
-
-
-
-	/*
-		Exclude tail pop op during insert, where insert can only be called 
-		if there is enough room in the memory section. Otherwise, one evictor will get busy evicting. 
-		As such, the tail op exclusion may not be necessary, but desirable.  Really, though, the tail operation 
-		necessity will be discovered by one or more threads at the same time. Hence, the tail op exclusivity 
-		will sequence evictors which may possibly share work.
-
-		The problem to be addressed is that the tail might start removing elements while an insert is attempting to attach 
-		to them. Of course, the eviction has to be happening at the same time elements are being added. 
-		And, eviction is supposed to happen when memory runs out so the inserters are waiting for memory and each thread having 
-		encountered the need for eviction has called for it and should simply be higher on the stack waiting for the 
-		eviction to complete. After that they get free memory independently.
-	*/
-
-
-
-	// LRU_cache method
-	inline pair<uint32_t,uint32_t> lru_remove_last() {
-		//
-		uint8_t *start = _region;
-		size_t step = _step;
-		//
-		LRU_element *ctrl_tail = (LRU_element *)(start + step);
-		auto tail_block = wait_on_tail(ctrl_tail,true);   // WAIT :: usually this will happen only when memory becomes full
-		//
-		auto tail = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_prev));
-		uint32_t t_offset = tail->load();
-		//
-		LRU_element *leaving = (LRU_element *)(start + t_offset);
-		LRU_element *staying = (LRU_element *)(start + leaving->_prev);
-		//
-		uint64_t hash = leaving->_hash;
-		//
-		staying->_next = step;  // this doesn't change
-		ctrl_tail->_prev = leaving->_prev;
-		//
-		done_with_tail(ctrl_tail,tail_block,true);
-		//
-		pair<uint32_t,uint64_t> p(t_offset,hash);
-		return p;
-	}
 
 
 
@@ -1775,7 +1529,7 @@ int main() {
 			//
 			if ( buffer && (size > 0) ) {
 				//
-				int status = put_method(process, hash_bucket, full_hash, updating, buffer, size, timestamp, tier, allow_delay);
+				int status = g_tiers_procs->put_method(process, hash_bucket, full_hash, updating, buffer, size, timestamp, tier, allow_delay);
 				if ( status < -1 ) {
 					info.GetReturnValue().Set(Nan::New<Boolean>(false));
 					return;

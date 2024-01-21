@@ -36,6 +36,9 @@ using namespace std::chrono;
 #define MAX_BUCKET_FLUSH 12
 
 
+#define ONE_HOUR 	(60*60*1000);
+
+
 /**
  * The 64 bit key stores a 32bit hash (xxhash or other) in the lower word.
  * The top 32 bits stores a structured bit array. The top 1 bit will be
@@ -172,12 +175,11 @@ class LRU_cache {
 	//
 	public:
 		// LRU_cache -- constructor
-		LRU_cache(void *region,size_t record_size,size_t region_size,bool am_initializer) {
+		LRU_cache(void *region,size_t record_size,size_t region_size,bool am_initializer,uint16_t proc_max) {
 			//
 			_SUPER_HEADER = 0;
 			_NTiers = 0;
 			_INTER_PROC_DESCRIPTOR_WORDS = 0;		// initialized by exposed method called by coniguration.
-			_readerAtomicFlag = nullptr;
 			//
 			_reason = "OK";
 			_region = (uint8_t *)region;
@@ -205,6 +207,13 @@ class LRU_cache {
 
 			lb_time->store(UINT32_MAX);
 			ub_time->store(UINT32_MAX);
+
+			pair<uint32_t,uint32_t> *primary_storage = (pair<uint32_t,uint32_t> *)(_region + _region_size);
+			pair<uint32_t,uint32_t> *shared_queue = primary_storage + _max_count;
+
+			_timeout_table = new KeyValueManager(primary_storage, _max_count, shared_queue, proc_max);
+			_configured_tier_cooling = ONE_HOUR;
+			_configured_shrinkage = 0.3333;
 		}
 
 
@@ -220,8 +229,15 @@ class LRU_cache {
 			_beyond_entries_for_tiers_and_mutex = (_SUPER_HEADER*_NTiers);
 		}
 
-		void set_reader_atomic_flag(atomic_flag *aflag) {
-			_readerAtomicFlag = aflag;
+
+		void set_configured_tier_cooling_time(uint32_t delay = ONE_HOUR) {
+			_configured_tier_cooling = delay;
+		}
+
+		void set_configured_shrinkage(double fractional) {
+			if ( fractional > 0 && fractional < 0.5 ) {
+				_configured_shrinkage = fractional;
+			}
 		}
 
 
@@ -246,7 +262,7 @@ class LRU_cache {
 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);
 			ctrl_free->_prev = UINT32_MAX;
 			ctrl_free->_next = 3*step;
-			ctrl_free->_hash = UINT32_MAX;
+			ctrl_free->_hash = 0;
 			ctrl_free->_when = 0;
 
 			size_t region_size = this->_region_size;
@@ -715,6 +731,240 @@ class LRU_cache {
 
 	public:
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+		// 		start of the new atomic code for memory stack...
+
+		// LRU Methods
+
+
+		/*
+		Free memory is a stack with atomic var protection.
+		If a basket of new entries is available, then claim a basket's worth of free nodes and return then as a 
+		doubly linked list for later entry. Later, add at most two elements to the LIFO queue the LRU.
+		*/
+		// LRU_cache method
+		//
+		//
+		uint32_t		free_mem_requested(void) {
+			//
+			uint8_t *start = _region;
+			size_t step = _step;
+			//
+			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+			//
+			auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
+			uint32_t total_requested = requested->load(std::memory_order_relaxed);
+
+			return total_requested;
+		}
+
+
+		// LRU_cache method
+		void free_mem_claim_satisfied(uint32_t msg_count) {   // stop requesting the memory... 
+			uint8_t *start = _region;
+			size_t step = _step;
+			//
+			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+			auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
+			if ( requested->load() <= msg_count ) {
+				requested->store(0);
+			} else {
+				requested->fetch_sub(msg_count);
+			}
+		}
+
+
+		// LRU_cache method
+		void return_to_free_mem(LRU_element *el) {				// a versions of push
+			uint8_t *start = _region;
+			size_t step = _step;
+			//
+			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+			auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_next));
+			auto count_free = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
+			//
+			uint32_t el_offset = (uint32_t)(el - start);
+			uint32_t h_offset = head->load(std::memory_order_relaxed);
+			while(!head->compare_exchange_weak(h_offset, el_offset));
+			count_free->fetch_add(1, std::memory_order_relaxed);
+		}
+
+
+		// LRU_cache method
+		uint32_t claim_free_mem(uint32_t ready_msg_count,uint32_t *reserved_offsets) {
+			LRU_element *first = NULL;
+			//
+			uint8_t *start = _region;
+			size_t step = _step;
+			//
+			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+			//
+			auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
+			uint32_t h_offset = head->load(std::memory_order_relaxed);
+			if ( h_offset == UINT32_MAX ) {
+				_status = false;
+				_reason = "out of free memory: free count == 0";
+				return(UINT32_MAX);
+			}
+			auto count_free = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
+			//
+			// POP as many as needed
+			//
+			uint32_t n = ready_msg_count;
+			while ( n-- ) {  // consistently pop the free stack
+				uint32_t next_offset = UINT32_MAX;
+				uint32_t first_offset = UINT32_MAX;
+				do {
+					if ( h_offset == UINT32_MAX ) {
+						_status = false;
+						_reason = "out of free memory: free count == 0";
+						return(UINT32_MAX);			/// failed memory allocation...
+					}
+					first_offset = h_offset;
+					first = (LRU_element *)(start + first_offset);
+					next_offset = first->_next;
+				} while( !(head->compare_exchange_weak(h_offset, next_offset)) );  // link ctrl->next to new first
+				//
+				if ( next_offset < UINT32_MAX ) {
+					reserved_offsets[n] = first_offset;  // h_offset should have changed
+				}
+			}
+			//
+			count_free->fetch_sub(ready_msg_count, std::memory_order_relaxed);
+			free_mem_claim_satisfied(ready_msg_count);
+			//
+			return 0;
+		}
+
+
+
+		// LRU_cache method
+		void done_with_tail(LRU_element *ctrl_tail,atomic<uint32_t> *flag_pos,bool set_high = false) {
+			if ( set_high ) {
+				while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,0)
+							&& (ctrl_tail->_share_key == UINT32_MAX));   // if some others have gone through OK
+			} else {
+				auto prev_val = flag_pos->load();
+				if ( prev_val == 0 ) return;  // don't go below zero
+				flag_pos->fetch_sub(ctrl_tail->_share_key,1);
+			}
+		}
+
+
+
+		// LRU_cache method
+		atomic<uint32_t> *wait_on_tail(LRU_element *ctrl_tail,bool set_high = false,uint32_t delay = 4) {
+			//
+			auto flag_pos = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_share_key));
+			if ( set_high ) {
+				uint32_t check = UINT32_MAX;
+				while ( check !== 0 ) {
+					check = flag_pos->load(std::memory_order_relaxed);
+					if ( check != 0 )  {			// waiting until everyone is done with it
+						usleep(delay);
+					}
+				}
+				while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,UINT32_MAX)
+							&& (ctrl_tail->_share_key) !== UINT32_MAX));
+			} else {
+				uint32_t check = UINT32_MAX;
+				while ( check == UINT32_MAX ) {
+					check = flag_pos->load(std::memory_order_relaxed);
+					if ( check == UINT32_MAX )  {
+						usleep(delay);
+					}
+				}
+				while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,(check+1))
+							&& (ctrl_tail->_share_key < UINT32_MAX) );
+			}
+			return flag_pos;
+		}
+
+
+		/*
+			Exclude tail pop op during insert, where insert can only be called 
+			if there is enough room in the memory section. Otherwise, one evictor will get busy evicting. 
+			As such, the tail op exclusion may not be necessary, but desirable.  Really, though, the tail operation 
+			necessity will be discovered by one or more threads at the same time. Hence, the tail op exclusivity 
+			will sequence evictors which may possibly share work.
+
+			The problem to be addressed is that the tail might start removing elements while an insert is attempting to attach 
+			to them. Of course, the eviction has to be happening at the same time elements are being added. 
+			And, eviction is supposed to happen when memory runs out so the inserters are waiting for memory and each thread having 
+			encountered the need for eviction has called for it and should simply be higher on the stack waiting for the 
+			eviction to complete. After that they get free memory independently.
+		*/
+
+
+		/**
+		 * Prior to attachment, the required space availability must be checked.
+		*/
+		void attach_to_lru_list(uint32_t *lru_element_offsets,uint32_t ready_msg_count) {
+			//
+			uint32_t last = lru_element_offsets[(ready_msg_count - 1)];  // freed and assigned to hashes...
+			uint32_t first = lru_element_offsets[0];  // freed and assigned to hashes...
+			//
+			uint8_t *start = _region;
+			size_t step = _step;
+			//
+			LRU_element *ctrl_hdr = (LRU_element *)start;
+			//
+			LRU_element *ctrl_tail = (LRU_element *)(start + step);
+			auto tail_block = wait_on_tail(ctrl_tail,false); // WAIT :: stops if the tail hash is set high ... this call does not set it
+
+			auto head = static_cast<atomic<uint32_t>*>(&(ctrl_hdr->_next));
+			//
+			uint32_t next = head->exchange(first);  // ensure that some next (another basket first perhaps) is available for buidling the LRU
+			//
+			LRU_element *old_first = (LRU_element *)(start + next);  // this has been settled
+			//
+			old_first->_prev = last;			// ---- ---- ---- ---- ---- ---- ---- ----
+			//
+			// thread the list
+			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
+				LRU_element *current_el = (LRU_element *)(start + lru_element_offsets[i]);
+				current_el->_prev = ( i > 0 ) ? lru_element_offsets[i-1] : 0;
+				current_el->_next = ((i+1) < ready_msg_count) ? lru_element_offsets[i+1] : next;
+			}
+			//
+
+			done_with_tail(ctrl_tail,tail_block,false);
+		}
+
+
+
+		// LRU_cache method
+		inline pair<uint32_t,uint32_t> lru_remove_last() {
+			//
+			uint8_t *start = _region;
+			size_t step = _step;
+			//
+			LRU_element *ctrl_tail = (LRU_element *)(start + step);
+			auto tail_block = wait_on_tail(ctrl_tail,true);   // WAIT :: usually this will happen only when memory becomes full
+			//
+			auto tail = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_prev));
+			uint32_t t_offset = tail->load();
+			//
+			LRU_element *leaving = (LRU_element *)(start + t_offset);
+			LRU_element *staying = (LRU_element *)(start + leaving->_prev);
+			//
+			uint64_t hash = leaving->_hash;
+			//
+			staying->_next = step;  // this doesn't change
+			ctrl_tail->_prev = leaving->_prev;
+			//
+			done_with_tail(ctrl_tail,tail_block,true);
+			//
+			pair<uint32_t,uint64_t> p(t_offset,hash);
+			return p;
+		}
+
+
+
+
+
+
+
 		// HH_map method - calls get -- 
 		//
 		uint32_t 	partition_get(uint64_t key) {
@@ -759,19 +1009,34 @@ class LRU_cache {
 			size_t step = _step;
 			//
 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-			_count_free = ctrl_free->_prev;  // using the hash field as the counter
+			// using _prev to count the free elements... it is not updated in this check (just inspected)
+			_count_free = ctrl_free->_prev;  // using the hash field as the counter  (prev usually indicates the end, but not its a stack)
 			//
 			auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
-			uint32_t total_requested = requested->load(std::memory_order_relaxed);
+			uint32_t total_requested = requested->load(std::memory_order_relaxed);  // could start as zero
 			if ( add ) {
-				total_requested += msg_count;
-				requested->fetch_add(msg_count);
+				total_requested += msg_count;			// update public info about the amount requested 
+				requested->fetch_add(msg_count);		// should be the amount of all curren requests
 			}
 			if ( _count_free < total_requested ) return false;
 			return true;
 		}
 
 
+		// _timeout_table
+
+
+
+		uint32_t timeout_table_evictions(list<uint32_t> &moving,uint32_t req_count) {
+			//
+			const auto now = system_clock::now();
+    		const time_t t_c = system_clock::to_time_t(now);
+			uint32_t min_max_time = (t_c - _configured_tier_cooling);
+			uint32_t as_many_as = min((_max_count*_configured_shrinkage),(req_count*3));
+			//
+			_timeout_table->displace_lowest_value_threshold(moving,min_max_time,as_many_as);
+			return moving.size();
+		}
 
 
 
@@ -874,7 +1139,13 @@ class LRU_cache {
 		//
 		HMap_interface 					*_hmap_i[2];
 		//
+
+		KeyValueManager					*_timeout_table;
+		uint32_t						_configured_tier_cooling;
+		double							_configured_shrinkage;
+		//
 		unordered_map<uint64_t,uint32_t>			_local_hash_table;
+		//
 };
 
 
@@ -935,10 +1206,11 @@ class TierAndProcManager {
 
 	public:
 
-		TierAndProcManager(void *region[MAX_TIERS], size_t rc_sz, bool am_initializer, uint8_t num_tiers_in_use) : _t_times(t_times) {
+		TierAndProcManager(void *region[MAX_TIERS], size_t rc_sz, bool am_initializer, uint8_t num_tiers_in_use, uint32_t SUPER_HEADER, uint32_t INTER_PROC_DESCRIPTOR_WORDS) : _t_times(t_times) {
 			_NTiers = num_tiers_in_use;
 			for ( int i = 0; i < num_tiers_in_use; i++ ) {
 				_tiers[i] = new LRU_cache(region[i], rc_sz, seg_sz, am_initializer);
+				_tiers[i]->initialize_header_sizes(SUPER_HEADER,num_tiers_in_use,INTER_PROC_DESCRIPTOR_WORDS);
 				_t_times[i].lb_time = _tiers[i]->lb_time;
 				_t_times[i].ub_time = _tiers[i]->ub_time;
 			}
@@ -950,6 +1222,18 @@ class TierAndProcManager {
 			if ( com_buffer == nullptr ) return false;
 			_com_buffer = com_buffer;
 			return true;
+		}
+
+		bool 		set_reader_atomic_tags() {
+			if ( _com_buffer != nullptr ) {
+				atomic_flag *af = (atomic_flag *)_com_buffer;
+				for ( int i; i < _NTiers; i++ ) {
+					_readerAtomicFlag[i] = atomic_flag;
+					atomic_flag++;
+				}
+				return true;
+			}
+			return false
 		}
 
 		LRU_cache	*access_tier(uint8_t tier) {
@@ -970,6 +1254,40 @@ class TierAndProcManager {
 
 
 
+		// TierAndProcManager
+		bool run_evictions(LRU_cache *lru,uint32_t source_tier) {
+			//
+			// lru - is a source tier
+			uint32_t req_count = lru->free_mem_requested();
+			if ( req_count == 0 ) return true;	// for some reason this was invoked, but no one actually wanted free memory.
+
+			list<uint32_t> moving;
+			uint32_t reclaimed_stamps = lru->timeout_table_evictions(moving,req_count);
+			if ( lru->has_reserve() ) {
+				LRU_cache *next_tier = this->access_tier(source_tier+1);
+				if ( next_tier == nullptr ) {
+					// crisis mode...				elements will have to be discarded or sent to another machine
+				} else {
+					// use a secondary free list for new req_count elements 
+					// and at the same time, yield the old position to a second tier that shares this tier's primary.
+					list<LRU_element *> free_reserve;
+					lru->from_reserve(free_reserve,req_count);
+					list<LRU_element *>::iterator *lit = free_reserve.begin();
+					for ( ; lit !=  free_reserve.end(); lit++ ) {
+						LRU_element *reserve_el = *lit;
+						lru->return_to_free_mem(reserve_el);
+					}
+					next_tier->claim_hashes(moving);
+					lru->relinquish_hashes(moving);
+					// have to wakeup a secondary process that will move data from reserve to primary
+					// and move relinquished data to the secondary... (free up reserve again... need it later)
+				}
+			} else {
+				transfer_to_source_tier(_record_size,moving,reclaimed_stamps,source_tier);   // also copy data...
+			}
+			//
+			return true;
+		}
 
 	/**
 	 * reader_operation
@@ -1001,7 +1319,7 @@ class TierAndProcManager {
 			char **messages = messages_reserved;  // get this many addrs if possible...
 			char **accesses = duplicate_reserved;
 			//
-			_readerAtomicFlag[assigned_tier]->wait(false);
+			_readerAtomicFlag[assigned_tier]->wait(false);  // this tier's LRU shares this read flag
 				// 
 			uint32_t ready_msg_count = 0;
 			// 		OP on com buff
@@ -1070,6 +1388,8 @@ class TierAndProcManager {
 					uint32_t lru_element_offsets[ready_msg_count+1];  // should be on stack
 					memset((void *)lru_element_offsets,0,sizeof(uint32_t)*(additional_locations+1)); // clear the buffer
 
+					// the next thing off the free stack.
+					//
 					bool mem_claimed = (UINT32_MAX != lru->claim_free_mem(additional_locations,lru_element_offsets)); // negotiate getting a list from free memory
 					//
 					// if there are elements, they are already removed from free memory and this basket belongs to this process..
@@ -1085,7 +1405,7 @@ class TierAndProcManager {
 						//
 						// map hashes to the offsets
 						//
-						while ( tmp < end_m ) {
+						while ( tmp < end_m ) {   // only as many elements as proc placing data into the tier (parameter)
 							// read from com buf
 							char *access_point = *tmp++;
 							if ( access_point != nullptr ) {
@@ -1100,7 +1420,7 @@ class TierAndProcManager {
 									write_offset_here[0] = offset;
 									//
 									atomic<COM_BUFFER_STATE> *read_marker = (atomic<COM_BUFFER_STATE> *)(access_point + OFFSET_TO_MARKER);
-									clear_for_copy(read_marker);
+									clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
 								}		
 							}
 						}
@@ -1276,7 +1596,7 @@ class TierAndProcManager {
 		uint32_t _beyond_entries_for_tiers_and_mutex;
 
 	//
-		atomic_flag *_readerAtomicFlag;
+		atomic_flag *_readerAtomicFlag[MAX_TIERS];
 
 
 }
