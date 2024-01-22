@@ -189,6 +189,7 @@ bin_search_with_blackouts_increasing(uint32_t key,pair<uint32_t,uint32_t> *key_v
 // Pairs are used as <timestamp,data> offset pairs
 //
 
+#define TIER_MATCH_MASK 3			// ???
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -217,10 +218,15 @@ class KeyValueManager {
 			_init_min_max_holes();
 			_regions_option = false;
 			_regions = nullptr;				// for future use
+			_lowest_tier_mismatch = UINT32_MAX;
 		}
 
 	public:
 		// 
+
+		void set_tier_match(uint8_t val) {
+			_tier_match = val;
+		}
 
 		inline bool add_entry(uint32_t key,uint32_t value) {
 			if ( _N + _M >= _MAX ) return false;
@@ -231,6 +237,9 @@ class KeyValueManager {
 			_nouveau_max = max(key,_nouveau_max);
 			_nouveau_min = min(key,_nouveau_min);
 			_M = MCheck;
+			if ( (_lowest_tier_mismatch != UINT32_MAX) && ((TIER_MATCH_MASK & (value & _tier_match)) == 0) ) {
+				_lowest_tier_mismatch = key;
+			}
 			return true;
 		}
 
@@ -338,6 +347,23 @@ class KeyValueManager {
 			}
 			//
 			rectify_blackout_count(UINT32_MAX);
+		}
+
+
+		void mismatch_list(list<uint32_t> &movables) {
+			//
+			pair<uint32_t,uint32_t> *p = find_key(_lowest_tier_mismatch,_key_val,_N,_M,(_blackout_count != 0));
+			movables.push_back(p->second);
+			pair<uint32_t,uint32_t> *end = _key_val + _N + _M;
+			while ( ++p < end ) {
+				auto value = p->second;
+				if ( (TIER_MATCH_MASK & (value & _tier_match)) == 0) {
+					p->first = UINT32_MAX;			// no longer supported in the local list
+					movables.push_back(value);
+				}
+			}
+			//
+			_lowest_tier_mismatch = UINT32_MAX;
 		}
 
 
@@ -580,6 +606,30 @@ class KeyValueManager {
 		}
 
 
+		inline pair<uint32_t,uint32_t> *find_key(uint32_t key,pair<uint32_t,uint32_t> *key_val,uint32_t &N,uint32_t M,bool has_holes) {
+			pair<uint32_t,uint32_t> *p = has_holes ? bin_search_with_blackouts_increasing(key, key_val, N) : 
+											b_search(key,key_val,N);
+			if ( p == nullptr ) {	// not found in the sorted older end (with possible holes)
+				p = key_val + N;
+				pair<uint32_t,uint32_t> *end = p + M;		// so look for it in the new addition, unlikely sorted.
+				while ( p < end ) {
+					if ( p->first == key ) {
+						return p;
+					}
+					p++;
+				}
+				// -- this would be an implicit add with update... not going that route
+				// if ( maybe_value != UINT32_MAX ) {  // add a new value and key... 
+				// 	p->first = key;
+				// 	p->second = maybe_value;
+				// 	return M + 1;
+				// }
+				return nullptr;
+			}
+			return p;
+		}
+
+
 		// makes a hole where the old entry is...
 		inline uint32_t entry_key_upate(uint32_t key,uint32_t key_update,pair<uint32_t,uint32_t> *key_val,uint32_t &N,uint32_t M,pair<uint32_t,uint32_t> &new_hole_offset,uint32_t maybe_value = UINT32_MAX,bool has_holes = true) {
 			if ( key_update < key ) return UINT32_MAX; // it is assumed the keys will arrive in monotonic increasing order
@@ -701,11 +751,14 @@ class KeyValueManager {
 		uint32_t				_nouveau_max;
 		uint32_t				_nouveau_min;
 		//
+		uint32_t				_lowest_tier_mismatch;
+		//
 		pair<uint32_t,uint32_t> _min_hole_offset;
 		pair<uint32_t,uint32_t> _max_hole_offset;
 		//
 		uint16_t				_proc_count;
 		bool					_regions_option;
+		uint8_t					_tier_match;
 		pair<uint32_t,uint32_t> *_regions;
 };
 
