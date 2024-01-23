@@ -175,7 +175,7 @@ class LRU_cache {
 	//
 	public:
 		// LRU_cache -- constructor
-		LRU_cache(void *region,size_t record_size,size_t region_size,bool am_initializer,uint16_t proc_max) {
+		LRU_cache(void *region,size_t record_size,size_t region_size,size_t reserve_size,bool am_initializer,uint16_t proc_max,uint8_t tier) {
 			//
 			_SUPER_HEADER = 0;
 			_NTiers = 0;
@@ -205,6 +205,26 @@ class LRU_cache {
 				}
 			}
 
+			// reserve
+			_reserve = _region + _region_size;  // the amount of memory v.s. reserve determined by config
+			_end_reserve = _reserve + reserve_size;
+
+			_reserve_size = reserve_size;
+			_max_reserve_count = (reserve_size/_step) - 3;
+			_count_reserve_free = 0;
+			_count_reserve = 0; 
+			//
+
+			if ( am_initializer ) {
+				setup_region(record_size);
+				setup_reserve_section(record_size);
+			} else {
+				_count_free = this->_walk_free_list();
+				_count = this->_walk_allocated_list(1);
+			}
+			//
+
+			// time lower bound and upper bound for a tier...
 			lb_time->store(UINT32_MAX);
 			ub_time->store(UINT32_MAX);
 
@@ -214,6 +234,8 @@ class LRU_cache {
 			_timeout_table = new KeyValueManager(primary_storage, _max_count, shared_queue, proc_max);
 			_configured_tier_cooling = ONE_HOUR;
 			_configured_shrinkage = 0.3333;
+
+			_tier = tier;
 		}
 
 
@@ -247,11 +269,10 @@ class LRU_cache {
 		}
 
 
-		// setup_region -- part of initialization if the process is the intiator..
-		void setup_region(size_t record_size) {
-			
-			uint8_t *start = _region;
-			size_t step = _step;
+
+		uint16_t setup_region_free_list(size_t record_size,uint8_t *start,size_t step,size_t region_size) {
+
+			uint16_t free_count = 0;
 
 			LRU_element *ctrl_hdr = (LRU_element *)start;
 			ctrl_hdr->_prev = UINT32_MAX;
@@ -271,13 +292,12 @@ class LRU_cache {
 			ctrl_free->_hash = 0;
 			ctrl_free->_when = 0;
 
-			size_t region_size = this->_region_size;
 			//
 			size_t curr = ctrl_free->_next;
 			size_t next = 4*step;
 			
 			while ( curr < region_size ) {   // all the ends are in the first three elements ... the rest is either free or part of the LRU
-				_count_free++;
+				free_count++;
 				LRU_element *next_free = (LRU_element *)(start + curr);
 				next_free->_prev = UINT32_MAX;  // singly linked free list
 				next_free->_next = next;
@@ -291,10 +311,27 @@ class LRU_cache {
 				next += step;
 			}
 
-			ctrl_free->_hash = _count_free;   // how many free elements avaibale
+			ctrl_free->_hash = free_count;   // how many free elements avaibale
 			ctrl_hdr->_hash = 0;
 
+			return free_count;
 		}
+
+
+		// setup_region -- part of initialization if the process is the intiator..
+		void setup_region(size_t record_size) {
+			uint8_t *start = _region;
+			size_t region_size = _region_size;
+			_count_free = setup_region_free_list(record_size,start,_step,region_size);
+		}
+
+				// setup_region -- part of initialization if the process is the intiator..
+		void setup_reserve_section(size_t record_size) {
+			uint8_t *start = _reserve;
+			size_t region_size = _region_size;
+			_count_free = setup_region_free_list(record_size,start,_step);
+		}
+
 
 		// set_hash_impl - called by initHopScotch -- set two paritions servicing a random selection.
 		//
@@ -452,6 +489,8 @@ class LRU_cache {
 			return(true);
 		}
 
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		// HASH TABLE USAGE
 		void remove_key(uint64_t hash) {
@@ -780,11 +819,7 @@ class LRU_cache {
 		}
 
 
-		// LRU_cache method
-		void return_to_free_mem(LRU_element *el) {				// a versions of push
-			uint8_t *start = _region;
-			size_t step = _step;
-			//
+		void _atomic_stack_push(uint8_t *start,size_t step) {
 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
 			auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_next));
 			auto count_free = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
@@ -793,6 +828,15 @@ class LRU_cache {
 			uint32_t h_offset = head->load(std::memory_order_relaxed);
 			while(!head->compare_exchange_weak(h_offset, el_offset));
 			count_free->fetch_add(1, std::memory_order_relaxed);
+		}
+
+		// LRU_cache method
+		void return_to_free_mem(LRU_element *el) {				// a versions of push
+			atomic_stack_push(_region,_step);
+		}
+
+		void return_to_reserve_mem(LRU_element *el) {
+			atomic_stack_push(_reserve,_step);
 		}
 
 
@@ -1044,20 +1088,61 @@ class LRU_cache {
 			return moving.size();
 		}
 
-
-
-		// called by a background thread..
 		//
-		void move_mismatch_list(uint32_t source_tier) {
+		//
+		/**
+		 * move_mismatch_list_storage
+		 * 
+		 * 
+		 * called by a background thread..
+		 * 
+		 * When the primary process claims free memory out of reserve,
+		 * it also plans the eviction of data in order to move data from 
+		 * occupied primary storage to secondary storage, so as to free up the 
+		 * storage in primary. But, the process requesting the eviction will
+		 * not move the data itself. Instead, it is moved by a secondary process
+		 * at a later time. 
+		 * 
+		 * For a while the key to the storage offset will indicate the original storage
+		 * location of the data in its offset. But, the key will have been moved already 
+		 * to the hash table of the new element. (New keys are in the hash table.)
+		 * 
+		 * Also, the timestamp will have been moved to the new tier ('this' tier).
+		 * Similarly, the elements offsets will be refer to the other tier's primary memory.
+		 * 
+		 * The stored elemens, stored in the other primary memories, will be detached from the other tier's
+		 * LRU free list. But, current searches that find the element in the current tier will take their 
+		 * data from the other tier's primary. That will be the case until this method runs.
+		 * 
+		 * When this method runs, the LRU, 'this', looks into the `_timeout_table` for the offsets that 
+		 * refer to the `source_tier`. It then claims as much of its own free memory to store the 
+		 * moving data objects. Then, with each claimed memory offset, the LRU copies the object from
+		 * the offset in the other tier's primary memory to its own primary memory, where the new memory position 
+		 * in the LRU is one of the claimed free memory offsets.
+		 * 
+		 * In this method, the LRU then alters enters the new offset into the hash, doing an update of the hash value, the offset.
+		 * Given the offset lands appropriately in the hash table, the LRU updates the timestamp entry for the element with 
+		 * the new offset.
+		 * 
+		 * Finally, original copy of the object is discarded by returning the free memory element header to the free storage 
+		 * of its orignal keeper, the preceeding tier LRU.
+		 * 
+		 * Once the aged elements have been removed from the source tier, there is an opportunity to move
+		 * elements from its reserve back into the storage areas newly returned to the free memory list. This method
+		 * does not perform that update. But, the caller may signal another worker to begin reclaiming the reserve.
+		*/
+		void move_mismatch_list_storage(uint32_t source_tier) {
 			//
 			LRU_cache *a_tier = _sharing_tiers[source_tier];
 			if ( a_tier == nullptr ) return;
 
+			// get the entries (set during eviction) that refer to another tier primary storage
 			list<uint32_t> movables;
-			a_tier->_timeout_table->mismatch_list(movables);
+			this->_timeout_table->mismatch_list(movables); 
+			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 			auto count = movables.size();
-			uint32_t reserved_offsets[count];
+			uint32_t reserved_offsets[count];    // going to pull out the offsets into the other storage
 
 			this->claim_free_mem(count,reserved_offsets);
 			uint32_t *tmp = &reserved_offsets[0];
@@ -1073,14 +1158,78 @@ class LRU_cache {
 					LRU_element *el_to_move = (LRU_element *)(a_tier->_region + offet);  // coming from the other LRU
 					LRU_element *el_move_to = (LRU_element *)(_region + new_offset);
 					memcpy((void *)(el_move_to + 1),(void *)(el_to_move + 1),128);
+					//
 					uint64_t hash = el_to_move->_hash;
 					time_t when = el_to_move->_when;
+					//
+					el_move_to->_hash = hash;		// new storage location
+					el_move_to->_when = when;
+					//
+					uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
+					uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
+					//
+					new_offset = (new_offset & (~TIER_MATCH_MASK)) | this->_tier;
+					//
+					uint64_t store_stat = this->store_in_hash(full_hash,hash_bucket,new_offset);  // STORE (really an UPDATE)
+					if ( store_stat != UINT64_MAX ) {
+						_timeout_table.update_entry(when,when,new_offset);
+					} // else  need some way to cure this at this point...
+					//
 					a_tier->return_to_free_mem(el_to_move);
-					a_tier->clear_hash(hash,offset);
-					this->add_hash(hash,new_offset);
-					_timeout_table.add_entry(when,new_offset);
+					// a_tier->remove_key(hash);  // key has already been removed...(moved)
 				}
 			}
+		}
+
+
+
+		void move_from_reserve_to_primary() {
+			LRU_element *el_to_move = (LRU_element *)_reserve;
+			LRU_element *end_reserve = el_to_move + _max_reserve;
+
+			LRU_element *records_in_use[_max_reserve];
+
+			uint rec_count = 0;
+			while ( _N_reserved && (el_to_move < end_reserve) ) {
+				if ( el_to_move->_share_key & IS_RESERVE_IN_USE ) {
+					records_in_use[rec_count++] = el_to_move;
+				}
+				el_to_move++;
+			}
+
+			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+			uint32_t primary_offsets[rec_count];    // going to pull out the offsets into the other storage
+			this->claim_free_mem(count,primary_offsets);		// get the new offset
+			uint32_t *tmp = &primary_offsets[0];
+
+			for ( int i = 0; i < rec_count; i++ ) {
+				//
+				int8_t *start = (int8_t *)_region;
+				LRU_element *el = records_in_use[i];
+				auto new_offset = primary_offsets[i];
+				//
+				LRU_element *el_move_to = (LRU_element *)(start + new_offset);
+				el_move_to->_hash = el->_hash;
+				el_move_to->_when = el->_when;
+				el_move_to->_share = el->_share_key;
+				//
+				memcpy((void *)(el_move_to + 1),(void *)(el + 1),128);
+
+				auto hash64 = el->_hash;
+
+				uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
+				uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
+				//
+				uint64_t store_stat = this->store_in_hash(full_hash,hash_bucket,new_offset);  // STORE (really an UPDATE)
+				if ( store_stat != UINT64_MAX ) {
+					_timeout_table.update_entry(el->_when,el->_when,new_offset);
+				} // else  need some way to cure this at this point...
+				//
+				this->return_to_reserve_mem(el_to_move);
+				_N_reserved--;
+			}
+
 
 		}
 
@@ -1171,13 +1320,25 @@ class LRU_cache {
 		bool							_status;
 		const char 						*_reason;
 		uint8_t		 					*_region;
+		//
+		uint8_t							*_reserve; // some offset in the region (by configuration)
+		uint8_t							*_end_reserve;  // end by configuration (end of total region)
+		//
 		size_t		 					_record_size;
-		size_t							_region_size;
 		uint32_t						_step;
+		//
+		size_t							_region_size;
 		uint16_t						_count_free;
 		uint16_t						_count;
 		uint16_t						_max_count;  // max possible number of records
+
+		size_t							_reserve_size;
+		uint16_t						_count_reserve_free;
+		uint16_t						_count_reserve;
+		uint16_t						_max_reserve_count;
+
 		uint32_t						_share_key;
+
 		//
 		atomic<uint32_t>				*lb_time;
 		atomic<uint32_t>				*ub_time;
@@ -1189,6 +1350,7 @@ class LRU_cache {
 		uint32_t						_configured_tier_cooling;
 		double							_configured_shrinkage;
 		LRU_cache 						*_sharing_tiers[4];
+		uint32_t						_tier;
 		//
 		unordered_map<uint64_t,uint32_t>			_local_hash_table;
 		//
@@ -1255,7 +1417,7 @@ class TierAndProcManager {
 		TierAndProcManager(void *region[MAX_TIERS], size_t rc_sz, bool am_initializer, uint8_t num_tiers_in_use, uint32_t SUPER_HEADER, uint32_t INTER_PROC_DESCRIPTOR_WORDS) : _t_times(t_times) {
 			_NTiers = num_tiers_in_use;
 			for ( int i = 0; i < num_tiers_in_use; i++ ) {
-				_tiers[i] = new LRU_cache(region[i], rc_sz, seg_sz, am_initializer);
+				_tiers[i] = new LRU_cache(region[i], rc_sz, seg_sz, am_initializer, i);
 				_tiers[i]->initialize_header_sizes(SUPER_HEADER,num_tiers_in_use,INTER_PROC_DESCRIPTOR_WORDS);
 				_t_times[i].lb_time = _tiers[i]->lb_time;
 				_t_times[i].ub_time = _tiers[i]->ub_time;
