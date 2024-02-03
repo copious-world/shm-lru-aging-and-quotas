@@ -113,7 +113,7 @@ condition_variable condVar2;          // (2)
 
 atomic<uint32_t> counter{};
 //uint32_t counter;
-constexpr uint32_t countlimit = 1000000; // 1'000'000; // 10000000;
+constexpr uint32_t countlimit = 10000000; // 1'000'000; // 10000000;   70000000;
 
 void ping() {
 
@@ -146,33 +146,52 @@ void pong() {
 atomic_flag condAtomicFlag{};
 atomic_flag g_ping_lock = ATOMIC_FLAG_INIT;
 
-bool g_ping_notifier_1 = false;
-bool g_ping_notifier_2 = false;
+
+constexpr bool noisy_prints = false; 
+
+void f_hit(bool ab_caller,uint32_t count) {
+  //
+  if ( noisy_prints ) {
+    if ( ab_caller ) {
+      cout << "P1-a: " << count << " is diff: " << (countlimit - count) << endl;
+    } else {
+      cout << "P1-b: " << count << " is diff: " << (countlimit - count) << endl;
+    }
+  }
+}
 
 void a_ping_1() {
 
-    while ( counter <= countlimit ) {
+    while ( counter < countlimit ) {
         while ( g_ping_lock.test(memory_order_relaxed) ) ;
-        g_ping_lock.wait(true);
+        //g_ping_lock.wait(true);
         ++counter;
-        //cout << "P1-a: " << counter << " is diff: " << (countlimit - counter) << endl;
+        f_hit(true,counter);
         g_ping_lock.test_and_set();   // set the flag to true
-        //g_ping_notifier_2 = true;
         g_ping_lock.notify_one();
     }
+    g_ping_lock.test_and_set();
+    g_ping_lock.notify_one();
 
    // cout << "P1: " << counter << " is diff: " << (countlimit - counter) << endl;
 }
 
 void a_pong_1() {
-    while ( counter < countlimit ) {
+    while ( counter <= countlimit ) {
         while ( !(g_ping_lock.test(memory_order_relaxed)) ) g_ping_lock.wait(false);
-        //cout << "P1-b: " << counter << " is diff: " << (countlimit - counter) << endl;
+        uint32_t old_counter = counter;
+        f_hit(false,counter);
         g_ping_lock.clear(memory_order_release);
         g_ping_lock.notify_one();
+        if ( counter == countlimit ) {
+          if ( old_counter < counter ) {
+            while ( !(g_ping_lock.test_and_set()) ) usleep(1);
+            f_hit(false,counter);
+          }
+          break;
+        }
     }
-
-   // cout << "P2: " << counter << " is diff: " << (countlimit - counter) << endl;
+    //cout << "P1-b: " << counter << " is diff: " << (countlimit - counter) << endl;
 }
 
 
@@ -265,12 +284,15 @@ int main(int argc, char **argv) {
 
 	if ( (argc == 2) && (strncmp(argv[1],"a1",2) == 0) ) {
     //cout << "starting a test" << endl;
-    g_ping_notifier_1 = true;
     g_ping_lock.clear();
+    //
     //
 		thread t1(a_ping_1);
 		thread t2(a_pong_1);
     //
+    usleep(20);
+    start = chrono::system_clock::now();
+    g_ping_lock.notify_all();
 		//
 		t1.join();
 		t2.join();
