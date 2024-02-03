@@ -1183,6 +1183,23 @@ class LRU_cache {
 
 
 
+		/**
+		 * move_from_reserve_to_primary
+		 * 
+		 * This method cleans out the reserve that would have been tapped at a busy moment. The end result of this call
+		 * is that the primary memory of a tier will be utilized as the storage or the elements put into the reseve, where the
+		 * primary storage has been previously cleared of evicted objects.
+		 * 
+		 * As a result this is the final stage of a four stage process in which the reserve is takes steps as follows: first, used to quickly store
+		 * elements under keys accessible to the application; second, older elements are evicted from the keyed tables, 
+		 * the hash table and the timer table, and then placed in the hashes of the next tier; third, the moved hashes leave their objects
+		 * behind with offset values referencing them from the next tier until the process runs to copy out the objects and free
+		 * the primary memory; fourth, the newly freed memory can accomodate the objects relegated to the reserve and the reserve 
+		 * can be reclaimed for the next push of additions.
+		 * 
+		*/
+
+
 		void move_from_reserve_to_primary() {
 			LRU_element *el_to_move = (LRU_element *)_reserve;
 			LRU_element *end_reserve = el_to_move + _max_reserve;

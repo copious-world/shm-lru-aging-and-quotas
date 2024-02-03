@@ -69,7 +69,7 @@ class UpdateSource {
 
 Updating source has to be figured out. Atomicity is needed around 'has_values'.
 
-* Code from node_shm.cc will be moved into classes. 
+* Code from node_shm.cc will be moved into classes. (check)
 
 * There is one processes that will compress the timer buffer. 
 * The 'put' method will call upon the time buffer when adding a new entry.
