@@ -736,7 +736,7 @@ namespace node_shm {
 			//
 //cout << "N " << n << endl;
 			//
-			for (uint16_t i = 0; i < n; i++) {		
+			for (uint16_t i = 0; i < n; i++) {
 				Local<v8::Array> jsSubArray = Local<Array>::Cast(jsArray->Get(context, i).ToLocalChecked());
         		uint32_t hash = jsSubArray->Get(context, 0).ToLocalChecked()->Uint32Value(context).FromJust();
         		uint32_t index = jsSubArray->Get(context, 1).ToLocalChecked()->Uint32Value(context).FromJust();
@@ -1297,23 +1297,26 @@ namespace node_shm {
 	NAN_METHOD(set_com_buf)  {
 		Nan::HandleScope scope;
 
-		Local<Array> keys = Local<Array>::Cast(info[0]);
+		uint32_t com_key = Nan::To<uint32_t>(info[0]).FromJust();
+		Local<Array> keys = Local<Array>::Cast(info[1]);
 
-		uint32_t SUPER_HEADER = Nan::To<uint32_t>(info[1]).FromJust();
-		uint32_t NTiers = Nan::To<uint32_t>(info[2]).FromJust();
+		uint32_t SUPER_HEADER = Nan::To<uint32_t>(info[2]).FromJust();
+		uint32_t NTiers = Nan::To<uint32_t>(info[3]).FromJust();
 		uint32_t INTER_PROC_DESCRIPTOR_WORDS = Nan::To<uint32_t>(info[3]).FromJust();
+		//
 		//
 		size_t rc_sz = Nan::To<uint32_t>(info[4]).FromJust();
 		size_t seg_sz = Nan::To<uint32_t>(info[5]).FromJust();
 		bool am_initializer = Nan::To<bool>(info[6]).FromJust();
+		//
 
-		uint16_t n = jsArray->Length();
+		uint16_t n = keys->Length();
 		v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();Value(context).FromJust();
 		//
 		void *regions[MAX_TIERS];
 
 		for ( int i = 0; i < min(NTiers,n); i++ ) {
-			uint32_t key = jsSubArray->Get(context, i).ToLocalChecked()->Uint32
+			uint32_t key = keys->Get(context, i).ToLocalChecked()->Uint32Value(context).FromJust();
 			//
 			int resId = shmget(key, 0, 0);
 			if (resId == -1) {
@@ -1335,12 +1338,36 @@ namespace node_shm {
 			//
 			regions[i] = = region;
 		}
+
+		// ----
+
+		{
+			int resId = shmget(com_key, 0, 0);
+			if (resId == -1) {
+				switch(errno) {
+					case ENOENT: // not exists
+					case EIDRM:  // scheduled for deletion
+						info.GetReturnValue().Set(Nan::New<Number>(-1));
+						return;
+					default:
+						return Nan::ThrowError(strerror(errno));
+				}
+			}
+			//
+			void *region = getShmSegmentAddr(resId);
+			if ( region == nullptr ) {
+				info.GetReturnValue().Set(Nan::New<Number>(-1));
+				return;
+			}
+			g_com_buffer = region;
+		}
+
 		//
 		//	launch readers after hopscotch tables are put into place
+		//	The g_tiers_procs are initialized with the regions as communication buffers...
 		//
 		g_tiers_procs = new TierAndProcManager(regions, rc_sz, am_initializer, NTiers, SUPER_HEADER, INTER_PROC_DESCRIPTOR_WORDS);
-
-		g_com_buffer = region;
+		g_tiers_procs->set_and_init_com_buffer(g_com_buffer);
 
 		info.GetReturnValue().Set(Nan::New<Boolean>(true));
 	}
@@ -1410,13 +1437,13 @@ int main() {
 	 *
 	 *  add or update a value  (JavaScript call)
 	 * 
-	 * 	The method mostly access the com buffer in order to make a piece of data available to 
+	 * 	The method mostly accesses the com buffer in order to make a piece of data available to 
 	 * 	other processes for placement into tables.
 	 * 
 	 *	This method requires that the com buffer (a reference known to this module), 
 	 * 	has been initialized...
 	 * 
-	 * 	A policy on the tier may be to set the new value (after searching for it) in the first trie (0)
+	 * 	A policy on the tier may be to set the new value (after searching for it) in the first tier (0)
 	 * 	and then removing the value from older tiers eventually, since the old timestamps will not be accessible in
 	 * 	in future searches. 
 	 * 	

@@ -23,10 +23,11 @@
 #include <bitset>
 #include <random>
 
-//#include <linux/futex.h>
+#include <linux/futex.h>
 
 #include <sys/time.h>
 #include <sys/wait.h>
+//#include <sys/sysproto.h>
 
 
 using namespace std;
@@ -49,15 +50,6 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 
 // -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
 
-
-
-//#include "node_shm_LRU.h"
-
-#include "time_bucket.h"
-
-
-
-//static TierAndProcManager<4> *g_tiers_procs = nullptr;
 
 
 
@@ -170,36 +162,35 @@ void f_hit(bool ab_caller,uint32_t count) {
 
 void a_ping_1() {
 
-    // while ( counter < countlimit ) {
-    //     while ( g_ping_lock.test(memory_order_relaxed) ) ;
-    //     //g_ping_lock.wait(true);
-    //     ++counter;
-    //     f_hit(true,counter);
-    //     g_ping_lock.test_and_set();   // set the flag to true
-    //     g_ping_lock.notify_one();
-    // }
-    // g_ping_lock.test_and_set();
-    // g_ping_lock.notify_one();
+    while ( counter < countlimit ) {
+        while ( g_ping_lock.test(memory_order_relaxed) ) ;
+        //g_ping_lock.wait(true);
+        ++counter;
+        f_hit(true,counter);
+        g_ping_lock.test_and_set();   // set the flag to true
+        g_ping_lock.notify_one();
+    }
+    g_ping_lock.test_and_set();
+    g_ping_lock.notify_one();
 
    // cout << "P1: " << counter << " is diff: " << (countlimit - counter) << endl;
 }
 
 void a_pong_1() {
-
-    // while ( counter <= countlimit ) {
-    //     while ( !(g_ping_lock.test(memory_order_relaxed)) ) g_ping_lock.wait(false);
-    //     uint32_t old_counter = counter;
-    //     f_hit(false,counter);
-    //     g_ping_lock.clear(memory_order_release);
-    //     g_ping_lock.notify_one();
-    //     if ( counter == countlimit ) {
-    //       if ( old_counter < counter ) {
-    //         while ( !(g_ping_lock.test_and_set()) ) usleep(1);
-    //         f_hit(false,counter);
-    //       }
-    //       break;
-    //     }
-    // }
+    while ( counter <= countlimit ) {
+        while ( !(g_ping_lock.test(memory_order_relaxed)) ) g_ping_lock.wait(false);
+        uint32_t old_counter = counter;
+        f_hit(false,counter);
+        g_ping_lock.clear(memory_order_release);
+        g_ping_lock.notify_one();
+        if ( counter == countlimit ) {
+          if ( old_counter < counter ) {
+            while ( !(g_ping_lock.test_and_set()) ) usleep(1);
+            f_hit(false,counter);
+          }
+          break;
+        }
+    }
     //cout << "P1-b: " << counter << " is diff: " << (countlimit - counter) << endl;
 }
 
@@ -267,47 +258,21 @@ void f(int n)
 int main(int argc, char **argv) {
 	//
 
+
+
     #if defined(__cpp_lib_atomic_flag_test)
 
         cout << "THERE REALLY ARE ATOMIC FLAGS" << endl;
 
     #endif
 
-  #if defined(_GLIBCXX_HAVE_LINUX_FUTEX)
-        cout << "There really is a platform wait" << endl;
-  #endif
-
-  cout << "size of unsigned long: " << sizeof(unsigned long) << endl;
 
 	if ( argc == 2 ) {
 		cout << argv[1] << endl;
 	}
 
 
-
-  uint32_t timestamp = 100;
-  uint32_t N = 32; // 300000;
-  Tier_time_bucket timer_table[N]; // ----
-
-  atomic<uint32_t> atom_ints[N*2];
-
-  for ( uint32_t i = 0; i < N; i++ ) {
-    timer_table[i]._lb_time = &atom_ints[i*2];
-    timer_table[i]._ub_time = &atom_ints[i*2 + 1];
-    timer_table[i]._lb_time->store(i*5);
-    timer_table[i]._ub_time->store((i+1)*5);
-  }
-
-  timer_table[N-1]._ub_time->store((UINT32_MAX - 2));
-
-  // for ( uint32_t i = 0; i < N; i++ ) {
-  //     auto lb = timer_table[i]._lb_time->load();
-  //     auto ub = timer_table[i]._ub_time->load();
-  //     cout << i << ". (lb,ub) = (" << lb << "," << ub << ") ..";
-  //     cout.flush();
-  // }
-  // cout << endl;
-
+	auto start = chrono::system_clock::now();  
 
 /*
     vector<thread> v;
@@ -316,82 +281,31 @@ int main(int argc, char **argv) {
     for (auto& t : v)
         t.join();
 */
-  auto NN = N*5;
-  uint32_t found_1 = 0;
-  uint32_t found_3 = 0;
-  uint32_t nowish = 0; 
 
-  const auto right_now = std::chrono::system_clock::now();
-  nowish = std::chrono::system_clock::to_time_t(right_now);
-
-
-  for ( uint32_t i = 0; i < NN; i++ ) {
-
-    // found_1 = time_interval_b_search(i,timer_table,N);
-    // if ( found_1 == UINT32_MAX ) {
-    //   cout << i << " broken at " << endl;
-    // }
-
-
-    found_3 = time_interval_b_search(nowish,timer_table,N);
-
-  }
-
-  chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
-
-
-  // test 2
-	auto start = chrono::system_clock::now();  
-
-
-  for ( uint32_t i = 0; i < NN; i++ ) {
+	if ( (argc == 2) && (strncmp(argv[1],"a1",2) == 0) ) {
+    //cout << "starting a test" << endl;
+    g_ping_lock.clear();
     //
-    found_1 = time_interval_b_search(i,timer_table,N);
     //
-  }
+		thread t1(a_ping_1);
+		thread t2(a_pong_1);
+    //
+    usleep(20);
+    start = chrono::system_clock::now();
+    g_ping_lock.notify_all();     // kick start the loops...
+		//
+		t1.join();
+		t2.join();
+	} else {
+		thread t1(ping);
+		thread t2(pong);
+		//
+		t1.join();
+		t2.join();
+	}
 
-  //
-  //
-
-	// if ( (argc == 2) && (strncmp(argv[1],"a1",2) == 0) ) {
-  //   //cout << "starting a test" << endl;
-  //   //g_ping_lock.clear();
-  //   //
-  //   //
-	// 	thread t1(a_ping_1);
-	// 	thread t2(a_pong_1);
-  //   //
-  //   //usleep(20);
-  //   start = chrono::system_clock::now();
-  //   //g_ping_lock.notify_all();
-	// 	//
-	// 	t1.join();
-	// 	t2.join();
-  // } else if ( (argc == 2) && (strncmp(argv[1],"nada",4) == 0) ) {
-  //   cout << "NADA" << endl;
-	// } else {
-	// 	thread t1(ping);
-	// 	thread t2(pong);
-	// 	//
-	// 	t1.join();
-	// 	t2.join();
-	// }
-
-  chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
-
-  found_1 = time_interval_b_search(timestamp,timer_table,N);
-  uint32_t found_2 = time_interval_b_search(0,timer_table,N);
-
-
-  //
-  cout << "found: " << found_2 << endl;
-  cout << "found: " << found_1 << endl;
-  cout << "found: " << found_3 << endl;
-  //
-  cout << "found 3: (" << nowish << ") " << timer_table[found_3]._lb_time->load() << "," << timer_table[found_3]._ub_time->load() << endl;
-  //
-  cout << "Duration test 1: " << dur_t1.count() << " seconds" << endl;
-  cout << "Duration test 2: " << dur_t2.count() << " seconds" << endl;
+  chrono::duration<double> dur = chrono::system_clock::now() - start;
+  cout << "Duration: " << dur.count() << " seconds" << endl;
 
 
   return(0);
@@ -523,39 +437,5 @@ int main(int argc, char** argv) {
   return 0;
 }
 
-
-*/
-
-
-
-
-
-/*
-auto ms_since_epoch(std::int64_t m){
-  return std::chrono::system_clock::from_time_t(time_t{0})+std::chrono::milliseconds(m);
-}
-
-uint64_t timeSinceEpochMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-    std::chrono::system_clock::now().time_since_epoch()
-).count();
-
-
-int main()
-{
-    using namespace std::chrono;
- 
-    uint64_t ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-    std::cout << ms << " milliseconds since the Epoch\n";
- 
-    uint64_t sec = duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
-    std::cout << sec << " seconds since the Epoch\n";
- 
-    return 0;
-}
-
-
-milliseconds ms = duration_cast< milliseconds >(
-    system_clock::now().time_since_epoch()
-);
 
 */

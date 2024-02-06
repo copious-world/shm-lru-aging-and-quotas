@@ -12,7 +12,7 @@ find_package( Threads )
 add_executable(atests ${SOURCE_FILES})
 
 
-target_link_libraries( test ${CMAKE_THREAD_LIBS_INIT} )
+target_link_libraries( atests ${CMAKE_THREAD_LIBS_INIT} )
 
 
 if(NOT CMAKE_BUILD_TYPE)

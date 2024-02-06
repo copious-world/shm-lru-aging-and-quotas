@@ -419,6 +419,28 @@ namespace Nan {
 namespace node {
 namespace node_shm {
 
+
+
+	template<typename K,typename V>
+	inline void js_map_maker_destruct(map<K,V> &jmap,Local<Object> &jsObject) {
+		if ( jmap.size() > 0 ) {
+			for ( auto p : jmap ) {
+				stringstream ss;
+				ss << p.first;
+				string key = ss.str();
+				//
+				Local<String> propName = Nan::New(key).ToLocalChecked();
+				Local<String> propValue = Nan::New(p.second).ToLocalChecked();
+				//
+				Nan::Set(jsObject, propName, propValue);
+				delete p.second;
+			}
+			jmap.clear();
+		}
+	}
+
+
+
 	// SHM   ----  ----  ----  ----  ----  ----  ----
 	/**
 	 * Create or get shared memory

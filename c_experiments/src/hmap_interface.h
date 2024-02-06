@@ -70,7 +70,7 @@ typedef struct HHASH {
 		//
 	}
 	uint16_t bucket_count(uint32_t h_bucket) {			// at most 255 in a bucket ... will be considerably less
-		uint32_t *controllers = (uint32_t *)(static_cast<char *>((void *)(this)) + sizof(struct HHASH) + _C_Offset);
+		uint32_t *controllers = (uint32_t *)(static_cast<char *>((void *)(this)) + sizeof(struct HHASH) + _C_Offset);
 		uint16_t *controller = (uint16_t *)(&controllers[h_bucket]);
 		//
 		uint8_t my_word = _control_bits & 0x1;

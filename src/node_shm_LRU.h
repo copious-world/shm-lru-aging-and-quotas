@@ -20,8 +20,6 @@
 #include <atomic>
 
 
-using namespace node;
-using namespace v8;
 using namespace std;
 
 
@@ -30,13 +28,16 @@ using namespace std;
 #include "atomic_proc_rw_state.h"
 
 
+#include "time_bucket.h"
+
+
 using namespace std::chrono;
 
 
 #define MAX_BUCKET_FLUSH 12
 
 
-#define ONE_HOUR 	(60*60*1000);
+#define ONE_HOUR 	(60*60*1000)
 
 
 /**
@@ -124,25 +125,6 @@ inline string map_maker_destruct(map<K,V> &jmap) {
 }
 
 
-template<typename K,typename V>
-inline void js_map_maker_destruct(map<K,V> &jmap,Local<Object> &jsObject) {
-	if ( jmap.size() > 0 ) {
-		for ( auto p : jmap ) {
-			stringstream ss;
-			ss << p.first;
-			string key = ss.str();
-			//
-			Local<String> propName = Nan::New(key).ToLocalChecked();
-			Local<String> propValue = Nan::New(p.second).ToLocalChecked();
-			//
-			Nan::Set(jsObject, propName, propValue);
-			delete p.second;
-		}
-		jmap.clear();
-	}
-}
-
-
 typedef struct LRU_ELEMENT_HDR {
 	uint32_t	_prev;
 	uint32_t	_next;
@@ -171,20 +153,43 @@ const uint32_t DEFAULT_MICRO_TIMEOUT = 2; // 2 seconds
 //	Interleaved free memory is a stack -- fixed sized elements
 //
 
-class LRU_cache {
+
+class LRU_Consts {
+
+
+	public: 
+
+		LRU_Consts() {
+			_status = true;
+			_SUPER_HEADER = 0;
+			_NTiers = 0;
+			_INTER_PROC_DESCRIPTOR_WORDS = 0;		// initialized by exposed method called by coniguration.
+		}
+
+		virtual ~LRU_Consts() {}
+
+	public:
+
+		uint32_t			_SUPER_HEADER;
+		uint32_t			_INTER_PROC_DESCRIPTOR_WORDS;
+		uint32_t			_NTiers;
+		bool				_status;
+
+		uint32_t _beyond_entries_for_tiers_and_mutex;
+
+};
+
+
+class LRU_cache : public LRU_Consts {
 	//
 	public:
 		// LRU_cache -- constructor
 		LRU_cache(void *region,size_t record_size,size_t region_size,size_t reserve_size,bool am_initializer,uint16_t proc_max,uint8_t tier) {
 			//
-			_SUPER_HEADER = 0;
-			_NTiers = 0;
-			_INTER_PROC_DESCRIPTOR_WORDS = 0;		// initialized by exposed method called by coniguration.
 			//
 			_reason = "OK";
 			_region = (uint8_t *)region;
 			_record_size = record_size;
-			_status = true;
 			_step = (sizeof(LRU_element) + record_size);
 			_hmap_i[0] = nullptr;  //
 			_hmap_i[1] = nullptr;  //
@@ -270,7 +275,7 @@ class LRU_cache {
 
 
 
-		uint16_t setup_region_free_list(size_t record_size,uint8_t *start,size_t step,size_t region_size) {
+		uint16_t setup_region_free_list(size_t record_size, uint8_t *start, size_t step, size_t region_size) {
 
 			uint16_t free_count = 0;
 
@@ -496,7 +501,7 @@ class LRU_cache {
 		void remove_key(uint64_t hash) {
 			//
 			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
-			HHash *T = _hmap_i[selector];
+			HMap_interface *T = _hmap_i[selector];
 
 			if ( T == nullptr ) {   // no call to set_hash_impl
 				_local_hash_table.erase(hash);
@@ -505,9 +510,8 @@ class LRU_cache {
 			}
 		}
 
-		void clear_hash_table(void) {
-			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
-			HHash *T = _hmap_i[selector];
+		void clear_hash_table(uint8_t selector) {
+			HMap_interface *T = _hmap_i[selector];
 			if ( T == nullptr ) {   // no call to set_hash_impl
 				_local_hash_table.clear();
 			} else {
@@ -517,8 +521,8 @@ class LRU_cache {
 		}
 
 		uint64_t store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
-			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
-			HHash *T = _hmap_i[selector];
+			uint8_t selector = ((full_hash & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HMap_interface *T = _hmap_i[selector];
 			if ( T == nullptr ) {   // no call to set_hash_impl
 				uint64_t key64 = (((uint64_t)full_hash << HALF) | (uint64_t)hash_bucket);				
 				_local_hash_table[key64] = new_el_offset;
@@ -541,8 +545,8 @@ class LRU_cache {
 		// check_for_hash
 		// either returns an offset to the data or returns the UINT32_MAX.  (4,294,967,295)
 		uint32_t check_for_hash(uint64_t key) {
-			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
-			HHash *T = _hmap_i[selector];
+			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HMap_interface *T = _hmap_i[selector];
 			if ( T == nullptr ) {   // no call to set_hash_impl -- means the table was not initialized to use shared memory
 				if ( _local_hash_table.find(key) != _local_hash_table.end() ) {
 					return(_local_hash_table[key]);
@@ -557,8 +561,8 @@ class LRU_cache {
 		// check_for_hash
 		// either returns an offset to the data or returns the UINT32_MAX.  (4,294,967,295)
 		uint32_t check_for_hash(uint32_t key,uint32_t bucket) {    // full_hash,hash_bucket  :: key == full_hash
-			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
-			HHash *T = _hmap_i[selector];
+			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HMap_interface *T = _hmap_i[selector];
 			if ( TierAndProcManager == nullptr ) {   // no call to set_hash_impl -- means the table was not initialized to use shared memory
 					uint64_t hash64 = (((uint64_t)key << HALF) | (uint64_t)bucket);
 				if ( _local_hash_table.find(hash64) != _local_hash_table.end() ) {
@@ -619,7 +623,7 @@ class LRU_cache {
 			} else {
 				uint32_t xs[32];
 				uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
-				HHash *T = _hmap_i[selector];
+				HMap_interface *T = _hmap_i[selector];
 
 				uint8_t count = T->get_bucket(hash, xs);
 				//
@@ -1018,8 +1022,8 @@ class LRU_cache {
 		// HH_map method - calls get -- 
 		//
 		uint32_t 	partition_get(uint64_t key) {
-			uint8_t selector = ((hash & HH_SELECT_BIT) == 0) ? 0 : 1;
-			HHash *T = _hmap_i[selector];
+			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HMap_interface *T = _hmap_i[selector];
 			return get_hh_map(T, key);
 		}
 
@@ -1199,7 +1203,6 @@ class LRU_cache {
 		 * 
 		*/
 
-
 		void move_from_reserve_to_primary() {
 			LRU_element *el_to_move = (LRU_element *)_reserve;
 			LRU_element *end_reserve = el_to_move + _max_reserve;
@@ -1334,7 +1337,9 @@ class LRU_cache {
 			cout << "{\"offset\": -1 }]" << endl;
 		}
 
-		bool							_status;
+	public:
+
+
 		const char 						*_reason;
 		uint8_t		 					*_region;
 		//
@@ -1376,54 +1381,6 @@ class LRU_cache {
 
 
 
-
-
-
-
-
-
-typedef struct TIER_TIME {
-	atomic<uint32_t>	*lb_time;
-	atomic<uint32_t>	*ub_time;
-} Tier_time_bucket, *Tier_time_bucket_ref;
-
-
-
-
-// b_search 
-//
-static inline uint32_t
-time_interval_b_search(uint32_t timestamp, Tier_time_bucket_ref timer_table,uint32_t N) {
-	Tier_time_bucket_ref beg = timer_table;
-	Tier_time_bucket_ref end = timer_table + N;
-	//
-	if ( (beg->lb_time->load() <= timestamp )&& (timestamp < beg->ub_time->load()) ) return 0;
-	beg++; N--;
-	if ( ((end-1)->lb_time->load() <= timestamp )&& (timestamp < (end-1)->ub_time->load()) ) return N-1;
-	end--; N--;
-	//
-	while ( beg < end ) {
-		N = N >> 1;
-		if ( N == 0 ) {
-			while ( beg < end ) {
-				if ( (beg->lb_time->load() <= timestamp )&& (timestamp < beg->ub_time->load()) ) return beg;
-				beg++;
-			}
-			break;
-		}
-		if ( mid >= end ) break;
-		Tier_time_bucket_ref mid = beg + N;
-		//
-		uint32_t mid_lb, mid_ub;
-		mid_lb = mid->lb_time->load();
-		mid_ub = mid->ub_time->load();
-		//
-		if ( (mid_lb <= timestamp ) && (timestamp < mid_ub) ) return mid;
-		if ( timestamp > mid_ub ) beg = mid;
-		else end = mid;
-	}
-	return UINT32_MAX;
-}
 
 
 template<const uint8_t MAX_TIERS = 8>
@@ -1822,19 +1779,13 @@ class TierAndProcManager {
 
 	protected:
 
-
-		uint32_t _SUPER_HEADER;
-		uint32_t _NTiers;
-		uint32_t _INTER_PROC_DESCRIPTOR_WORDS;
-		uint32_t _beyond_entries_for_tiers_and_mutex;
-
 	//
 		atomic_flag *_readerAtomicFlag[MAX_TIERS];
 
 
-}
+};
 
 
 
 
-#endif // _H_HOPSCOTCH_HASH_LRU_
+#endif  // _H_HOPSCOTCH_HASH_LRU_

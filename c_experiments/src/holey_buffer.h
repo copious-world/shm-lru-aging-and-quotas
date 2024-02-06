@@ -96,7 +96,7 @@ u32b_search(uint32_t key,uint32_t *buckets,uint32_t N) {
 	if ( (beg[0] <= key) && (key < beg[1]) ) return 0;
 	beg++; N--;
 	//
-	if ( (end-1)[0] <= key ) return N-1;
+	if ( (end-1)[0] <= key ) return N;
 	end--; N--;
 	//
 	while ( beg < end ) {
@@ -304,8 +304,8 @@ class KeyValueManager {
 
 
 
-		bool
-		displace_lowest_value_threshold(list<uint32_t> deposit, uint32_t min_max, uint32_t max_count) {
+		void
+		displace_lowest_value_threshold(list<uint32_t> &deposit, uint32_t min_max, uint32_t max_count) {
 			//
 			pair<uint32_t,uint32_t> *p = _key_val;
 			pair<uint32_t,uint32_t> *end = _key_val + max_count;
@@ -465,7 +465,7 @@ class KeyValueManager {
 			//
 			if ( beg == end ) {  // just copy the new vals to the 
 				sort_small_mostly_increasing(new_vals,new_vals_end);
-				memcpy(output,new_vals,M*sizeof(pair<uint32_t,uint32_t>));
+				memcpy((void *)output,(void *)new_vals,M*sizeof(pair<uint32_t,uint32_t>));
 				return M;
 			} else {
 				//
@@ -675,7 +675,7 @@ class KeyValueManager {
 		}
 
 
-		bool find_region(uint32_t key, pair<uint32_t,uint32_t> &lb_result, pair<uint32_t,uint32_t> &ub_result) {
+		bool find_region([[maybe_unused]] uint32_t key, [[maybe_unused]] pair<uint32_t,uint32_t> &lb_result, [[maybe_unused]] pair<uint32_t,uint32_t> &ub_result) {
 			return false;
 		}
 
