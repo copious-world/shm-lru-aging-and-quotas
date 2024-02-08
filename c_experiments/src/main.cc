@@ -343,7 +343,6 @@ int main(int argc, char **argv) {
   // test 2
 	auto start = chrono::system_clock::now();  
 
-
   for ( uint32_t i = 0; i < NN; i++ ) {
     //
     found_1 = time_interval_b_search(i,timer_table,N);

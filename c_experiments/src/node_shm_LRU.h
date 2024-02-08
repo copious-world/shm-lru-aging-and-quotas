@@ -223,11 +223,39 @@ class LRU_cache : public LRU_Consts {
 			_beyond_entries_for_tiers_and_mutex = (_SUPER_HEADER*_NTiers);
 		}
 
+
+
+		// HH_map method - calls get -- 
+		//
+		uint32_t 	partition_get(uint64_t key) {
+			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HMap_interface *T = _hmap_i[selector];
+			return get_hh_map(T, key);
+		}
+
+		// LRU_cache method - calls get -- 
 		/**
-		 * Prior to attachment, the required space availability must be checked.
+		 * filter_existence_check
+		 * 
+		 * Both arrays, messages and accesses, contain references to hash words.. 
+		 * These are the hash parameters left by the process requesting storage.
+		 * 
 		*/
-		void attach_to_lru_list([[maybe_unused]] uint32_t *lru_element_offsets,[[maybe_unused]] uint32_t ready_msg_count) {
-			//
+
+		uint32_t		filter_existence_check(Com_element **messages,Com_element **accesses,uint32_t ready_msg_count) {
+			uint32_t new_count = 0;
+			while ( --ready_msg_count >= 0 ) {
+				uint64_t hash = (uint64_t *)(messages[ready_msg_count]->_hash);
+				uint32_t data_loc = this->partition_get(hash);
+				//
+				if ( data_loc != 0 ) {    // check if this message is already stored
+					messages[ready_msg_count] = (Com_element *)data_loc;  // just putting in an offset... maybe something better
+				} else {
+					new_count++;
+					accesses[ready_msg_count] = NULL;
+				}
+			}
+			return new_count;
 		}
 
 		uint32_t		free_mem_requested(void) {
@@ -259,8 +287,6 @@ class LRU_cache : public LRU_Consts {
 		void 			claim_hashes([[maybe_unused]] list<uint32_t> &moving) {}
 
 		void			relinquish_hashes([[maybe_unused]] list<uint32_t> &moving) {}
-
-		uint32_t		filter_existence_check([[maybe_unused]] char **messages,[[maybe_unused]] char **accesses,[[maybe_unused]] uint32_t ready_msg_count) { return 0; }
 
 		bool			add_key_value([[maybe_unused]] uint64_t hash,[[maybe_unused]] uint32_t offset) {
 			return true; // faux success
@@ -310,7 +336,6 @@ class TierAndProcManager : public LRU_Consts {
 				//    am_initializer -- either read or set the initializer
 				//
 				_tiers[i] = new LRU_cache(regions[i], rc_sz, seg_sz, reserve_size, proc_max, am_initializer, i);
-				//
 				//
 				_tiers[i]->initialize_header_sizes(SUPER_HEADER,num_tiers_in_use,INTER_PROC_DESCRIPTOR_WORDS);
 				_t_times[i]._lb_time = _tiers[i]->_lb_time;
@@ -393,6 +418,11 @@ class TierAndProcManager : public LRU_Consts {
 			return &(ce->_marker);
 		}
 
+		Com_element *access_point(uint8_t tier = 0) {
+			Com_element *ce = (_owner_proc_area + tier);
+			return ce;
+		}
+
 		uint32_t	*get_hash_parameter(uint8_t tier = 0) {
 			Com_element *ce = (_owner_proc_area + tier);
 			return &(ce->_hash);
@@ -408,6 +438,13 @@ class TierAndProcManager : public LRU_Consts {
 			Com_element *owner_proc_area = ((Com_element *)_com_buffer) + (proc*_NTiers);
 			Com_element *ce = (owner_proc_area + tier);
 			return &(ce->_marker);
+		}
+
+
+		Com_element *access_point(uint8_t proc, uint8_t tier = 0) {
+			Com_element *owner_proc_area = ((Com_element *)_com_buffer) + (proc*_NTiers);
+			Com_element *ce = (owner_proc_area + tier);
+			return ce;
 		}
 
 		uint32_t	*get_hash_parameter(uint8_t proc, uint8_t tier = 0) {
@@ -465,8 +502,17 @@ class TierAndProcManager : public LRU_Consts {
 			return true;
 		}
 
+
+
+		// Stop the process on a futex until notified...
+		void wait_for_data_presenet_notification(uint8_t tier) {
+			_readerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
+		}
+
+
+
 		/**
-		 * reader_operation
+		 * second_phase_write_handler
 		 * 
 		 * The reader operation is launched from a new thread during initialization.
 		 * A number of readers may occur among cores for handling insertion and expulsion of data from a tier.
@@ -480,7 +526,7 @@ class TierAndProcManager : public LRU_Consts {
 
 		// At the app level obtain the LRU for the tier and work from there
 		//
-		int 		reader_operation(uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint8_t assigned_tier) {
+		int 		second_phase_write_handler(uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint8_t assigned_tier = 0) {
 			//
 			if ( _com_buffer == NULL  ) {    // com buffer not intialized
 				return -5; // plan error numbers: this error is huge problem cannot operate
@@ -492,30 +538,30 @@ class TierAndProcManager : public LRU_Consts {
 					return(-1);
 				}
 				//
-				char **messages = messages_reserved;  // get this many addrs if possible...
-				char **accesses = duplicate_reserved;
+				Com_element **messages = (Com_element **)messages_reserved;  // get this many addrs if possible...
+				Com_element **accesses = (Com_element **)duplicate_reserved;
 				//
 
-				// Stop the process on a futex until notified...
-				_readerAtomicFlag[assigned_tier]->wait(false);  // this tier's LRU shares this read flag
-					// 
-				uint32_t ready_msg_count = 0;
-				// 		OP on com buff
+				wait_for_data_presenet_notification(assigned_tier);
+				// 
 				// FIRST: gather messages that are aready for addition to shared data structures.
+				// 		OP on com buff
 				//
-				// go through all the processes that might have written to this tier.
+				// Go through all the processes that might have written to this tier.
+				// Here, the assigned tier 
 				//
-				uint32_t tier_atomics = assigned_tier*TOTAL_ATOMIC_OFFSET;  // same offset for all procs
+				uint32_t ready_msg_count = 0;
 				//
 				for ( uint32_t proc = 0; (proc < proc_count); proc++ ) {
 					//
 					atomic<COM_BUFFER_STATE> *read_marker = this->get_read_marker(proc, assigned_tier);
+					Com_element *access = this->access_pointproc,(assigned_tier);
 					//
 					if ( read_marker->load() == CLEARED_FOR_ALLOC ) {
 						//
 						claim_for_alloc(read_marker); // This is the atomic update of the write state
-						messages[ready_msg_count] = access_point;
-						accesses[ready_msg_count] = access_point;
+						messages[ready_msg_count] = access;
+						accesses[ready_msg_count] = access;
 						ready_msg_count++;
 						//
 					}
@@ -523,22 +569,21 @@ class TierAndProcManager : public LRU_Consts {
 				}
 				// rof; 
 				//
-				//
-				// 		OP on com buff
 				// SECOND: If duplicating, free the message slot, otherwise gather memory for storing new objecs
+				// 		OP on com buff
 				//
 				if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
 					// 	-- FILTER - only allocate for new objects
 					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
 					//
-					char **end_dups = accesses + (ready_msg_count - additional_locations);
-					char **tmp = messages;
+					Com_element **end_dups = accesses + (ready_msg_count - additional_locations);
+					Com_element **tmp = messages;
 
 					/// questionable   DUBIOUS
 					//
 					while ( accesses < end_dups ) {
-						char *dup_access = *accesses++;
-						if ( dup_access != nullptr ) {
+						Com_element *dup_access = *accesses++;
+						if ( dup_access != nullptr ) {		// this element has been found and this is actually a data_loc...
 							uint32_t data_loc = (uint32_t)(tmp[0]);
 							tmp[0] = nullptr;
 							uint32_t *write_offset_here = dup_access;
@@ -624,7 +669,7 @@ class TierAndProcManager : public LRU_Consts {
 		 * Any number of processes may place a message into a tier. 
 		 * If the tier is full, the reader has the job of kicking off the eviction process.
 		*/
-		bool wake_up_readers(uint32_t tier) {
+		bool wake_up_write_handlers(uint32_t tier) {
 			_readerAtomicFlag[tier]->test_and_set();
 			_readerAtomicFlag[tier]->notify_all();
 			return true;
@@ -678,7 +723,7 @@ class TierAndProcManager : public LRU_Consts {
 				// will sigal just in case this is the first writer done and a thread is out there with nothing to do.
 				// wakeup a conditional reader if it happens to be sleeping and mark it for reading, 
 				// which prevents this process from writing until the data is consumed
-				bool status = wake_up_readers(tier);
+				bool status = wake_up_write_handlers(tier);
 				if ( !status ) {
 					return -2;
 				}
