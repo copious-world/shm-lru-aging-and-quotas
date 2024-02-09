@@ -355,7 +355,7 @@ namespace node_shm {
 		ShmBufferType type = (ShmBufferType) Nan::To<int32_t>(info[4]).FromJust();
 		size_t size = count * getSize1ForShmBufferType(type);
 		bool isCreate = (size > 0);
-		
+
 		int resId = shmget(key, size, shmflg);
 		if (resId == -1) {
 			switch(errno) {
@@ -457,6 +457,27 @@ namespace node_shm {
 
 
 
+
+	NAN_METHOD(getSegSize) {
+		Nan::HandleScope scope;
+		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
+
+		int resId = shmget(key, 0, 0);
+		if (resId == -1) {
+			switch(errno) {
+				case ENOENT: // not exists
+				case EIDRM:  // scheduled for deletion
+					info.GetReturnValue().Set(Nan::New<Number>(-1));
+					return;
+				default:
+					return Nan::ThrowError(strerror(errno));
+			}
+		}
+		size_t seg_size = g_ids_to_seg_sizes[resId];
+		info.GetReturnValue().Set(Nan::New<Number>(seg_size));
+	}
+
+
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -505,8 +526,6 @@ namespace node_shm {
 				} else {
 					return Nan::ThrowError("Bad parametes for initLRU");
 				}
-
-
 			}
 		} else {
 			if ( plr != nullptr ) {
@@ -580,27 +599,6 @@ namespace node_shm {
 		}
 	}
 
-
-
-
-	NAN_METHOD(getSegSize) {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-
-		int resId = shmget(key, 0, 0);
-		if (resId == -1) {
-			switch(errno) {
-				case ENOENT: // not exists
-				case EIDRM:  // scheduled for deletion
-					info.GetReturnValue().Set(Nan::New<Number>(-1));
-					return;
-				default:
-					return Nan::ThrowError(strerror(errno));
-			}
-		}
-		size_t seg_size = g_ids_to_seg_sizes[resId];
-		info.GetReturnValue().Set(Nan::New<Number>(seg_size));
-	}
 
 
 

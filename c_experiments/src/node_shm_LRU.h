@@ -129,6 +129,12 @@ typedef struct COM_ELEMENT {
 } Com_element;
 
 
+typedef union {
+	uint32_t			_offset;
+	Com_element			*_cel;
+} com_or_offset;
+
+
 //
 //	LRU_cache --
 //
@@ -161,6 +167,7 @@ class LRU_Consts {
 		uint32_t 			_beyond_entries_for_tiers_and_mutex;
 
 };
+
 
 
 // class LRU_cache : public LRU_Consts {
@@ -198,7 +205,6 @@ class LRU_cache : public LRU_Consts {
 		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
 
 		void initialize_com_area(uint16_t proc_max) {
 			Com_element *proc_entry = _cascaded_com_area;
@@ -242,20 +248,21 @@ class LRU_cache : public LRU_Consts {
 		 * 
 		*/
 
-		uint32_t		filter_existence_check(Com_element **messages,Com_element **accesses,uint32_t ready_msg_count) {
-			uint32_t new_count = 0;
+		uint32_t		filter_existence_check(com_or_offset **messages,com_or_offset **accesses,uint32_t ready_msg_count) {
+			uint32_t new_msgs_count = 0;
 			while ( --ready_msg_count >= 0 ) {
-				uint64_t hash = (uint64_t *)(messages[ready_msg_count]->_hash);
+				//
+				uint64_t hash = (uint64_t *)(messages[ready_msg_count]->_cel->_hash);
 				uint32_t data_loc = this->partition_get(hash);
 				//
 				if ( data_loc != 0 ) {    // check if this message is already stored
-					messages[ready_msg_count] = (Com_element *)data_loc;  // just putting in an offset... maybe something better
+					messages[ready_msg_count]->_offset = data_loc;  // just putting in an offset... maybe something better
 				} else {
-					new_count++;
-					accesses[ready_msg_count] = NULL;
+					new_msgs_count++;
+					accesses[ready_msg_count]->_offset = 0;
 				}
 			}
-			return new_count;
+			return new_msgs_count;
 		}
 
 		uint32_t		free_mem_requested(void) {
@@ -266,12 +273,96 @@ class LRU_cache : public LRU_Consts {
 			return 0;
 		}
 
+
+
+
+		// LRU_cache method
+		atomic<uint32_t> *wait_on_tail(LRU_element *ctrl_tail,bool set_high = false,uint32_t delay = 4) {
+			//
+			auto flag_pos = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_share_key));
+			if ( set_high ) {
+				uint32_t check = UINT32_MAX;
+				while ( check !== 0 ) {
+					check = flag_pos->load(std::memory_order_relaxed);
+					if ( check != 0 )  {			// waiting until everyone is done with it
+						usleep(delay);
+					}
+				}
+				while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,UINT32_MAX)
+							&& (ctrl_tail->_share_key) !== UINT32_MAX));
+			} else {
+				uint32_t check = UINT32_MAX;
+				while ( check == UINT32_MAX ) {
+					check = flag_pos->load(std::memory_order_relaxed);
+					if ( check == UINT32_MAX )  {
+						usleep(delay);
+					}
+				}
+				while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,(check+1))
+							&& (ctrl_tail->_share_key < UINT32_MAX) );
+			}
+			return flag_pos;
+		}
+
+
+		// LRU_cache method
+		void done_with_tail(LRU_element *ctrl_tail,atomic<uint32_t> *flag_pos,bool set_high = false) {
+			if ( set_high ) {
+				while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,0)
+							&& (ctrl_tail->_share_key == UINT32_MAX));   // if some others have gone through OK
+			} else {
+				auto prev_val = flag_pos->load();
+				if ( prev_val == 0 ) return;  // don't go below zero
+				flag_pos->fetch_sub(ctrl_tail->_share_key,1);
+			}
+		}
+
+		/**
+		 * Prior to attachment, the required space availability must be checked.
+		*/
+		void attach_to_lru_list(uint32_t *lru_element_offsets,uint32_t ready_msg_count) {
+			//
+			uint32_t last = lru_element_offsets[(ready_msg_count - 1)];  // freed and assigned to hashes...
+			uint32_t first = lru_element_offsets[0];  // freed and assigned to hashes...
+			//
+			uint8_t *start = this->start();
+			size_t step = _step;
+			//
+			LRU_element *ctrl_hdr = (LRU_element *)start;
+			//
+			// wait
+			LRU_element *ctrl_tail = (LRU_element *)(start + step);
+			auto tail_block = wait_on_tail(ctrl_tail,false); // WAIT :: stops if the tail hash is set high ... this call does not set it
+
+			// new head
+			auto head = static_cast<atomic<uint32_t>*>(&(ctrl_hdr->_next));
+			//
+			uint32_t next = head->exchange(first);  // ensure that some next (another basket first perhaps) is available for buidling the LRU
+			//
+			LRU_element *old_first = (LRU_element *)(start + next);  // this has been settled
+			//
+			old_first->_prev = last;			// ---- ---- ---- ---- ---- ---- ---- ----
+			//
+			// thread the list
+			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
+				LRU_element *current_el = (LRU_element *)(start + lru_element_offsets[i]);
+				current_el->_prev = ( i > 0 ) ? lru_element_offsets[i-1] : 0;
+				current_el->_next = ((i+1) < ready_msg_count) ? lru_element_offsets[i+1] : next;
+			}
+			//
+
+			done_with_tail(ctrl_tail,tail_block,false);
+		}
+
+
+	
+
 		void			wait_for_reserves([[maybe_unused]] uint32_t req_count) {}
 
-		bool			has_reserve(void) { return false; }
+		bool			has_reserve(void) { return true; }
 
 		bool			check_free_mem([[maybe_unused]] uint32_t msg_count,[[maybe_unused]] bool add) {
-			return false;
+			return true;
 		}
 
 		bool 			transfer_out_of_tier(void) { return false; }
@@ -355,13 +446,29 @@ class TierAndProcManager : public LRU_Consts {
 			return true;
 		}
 
+		void 		*set_reader_atomic_tags() {
+			if ( _com_buffer != nullptr ) {
+				atomic_flag *af = (atomic_flag *)_com_buffer;
+				for ( int i; i < _NTiers; i++ ) {
+					_readerAtomicFlag[i] = af;
+					af++;
+				}
+				return ((void *)af);
+			}
+			return nullptr;
+		}
+
 		// -- set_and_init_com_buffer
 		//		the com buffer is retains a set of values or each process 
 		//		
 		bool 		set_and_init_com_buffer(void *com_buffer) {
-			if ( set_com_buffer(com_buffer) && _am_initializer ) {
+			//
+			void *data = set_reader_atomic_tags();
+			if ( data == nullptr ) return false;
+			//
+			if ( set_com_buffer(data) && _am_initializer ) {
 				// _com_buffer is now pointing at the com_buffer... but it has not been essentially formatted.
-				Com_element *proc_entry = (Com_element *)(com_buffer);
+				Com_element *proc_entry = (Com_element *)(data);  // start after shared tier tags
 				//
 				//  N = _Procs*_NTiers :: Maybe overkill, except that may prove useful for processes to contend over individual tiers.
 				uint32_t P = _Procs;
@@ -383,17 +490,9 @@ class TierAndProcManager : public LRU_Consts {
 			}
 		}
 
-		bool 		set_reader_atomic_tags() {
-			if ( _com_buffer != nullptr ) {
-				atomic_flag *af = (atomic_flag *)_com_buffer;
-				for ( int i; i < _NTiers; i++ ) {
-					_readerAtomicFlag[i] = af;
-					af++;
-				}
-				return true;
-			}
-			return false;
-		}
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
 
 		LRU_cache	*access_tier(uint8_t tier) {
 			if ( (0 <= tier) && (tier < MAX_TIERS) ) {
@@ -412,6 +511,7 @@ class TierAndProcManager : public LRU_Consts {
 
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
 
 		atomic<COM_BUFFER_STATE> *get_read_marker(uint8_t tier = 0) {
 			Com_element *ce = (_owner_proc_area + tier);
@@ -459,7 +559,12 @@ class TierAndProcManager : public LRU_Consts {
 			return &(ce->_offset);
 		}
 
-		// TierAndProcManager
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+		// run_evictions
+
 		bool run_evictions(LRU_cache *lru,uint32_t source_tier,uint32_t ready_msg_count) {
 			//
 			// lru - is a source tier
@@ -514,7 +619,7 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * second_phase_write_handler
 		 * 
-		 * The reader operation is launched from a new thread during initialization.
+		 * The backend reader operation, second phase write, is launched from a new thread during initialization.
 		 * A number of readers may occur among cores for handling insertion and expulsion of data from a tier.
 		 * So, a core may handle one or more tiers, launching a thread for each tier it manages.
 		 * 
@@ -537,31 +642,39 @@ class TierAndProcManager : public LRU_Consts {
 				if ( lru == NULL ) {
 					return(-1);
 				}
+				//  messages[ready_msg_count]->_offset
 				//
-				Com_element **messages = (Com_element **)messages_reserved;  // get this many addrs if possible...
-				Com_element **accesses = (Com_element **)duplicate_reserved;
-				//
+				// 												WAIT FOR WORK
 
 				wait_for_data_presenet_notification(assigned_tier);
+
+				//
+				//
+				com_or_offset **messages = (com_or_offset **)messages_reserved;  // get this many addrs if possible...
+				com_or_offset **accesses = (com_or_offset **)duplicate_reserved;
+				//
 				// 
 				// FIRST: gather messages that are aready for addition to shared data structures.
 				// 		OP on com buff
 				//
 				// Go through all the processes that might have written to this tier.
-				// Here, the assigned tier 
+				// Here, the assigned tier provides the offset into the proc's tier entries.
+				// Lock down the message written by the proc for the particular tier.. (often 0)
 				//
 				uint32_t ready_msg_count = 0;
 				//
 				for ( uint32_t proc = 0; (proc < proc_count); proc++ ) {
 					//
 					atomic<COM_BUFFER_STATE> *read_marker = this->get_read_marker(proc, assigned_tier);
-					Com_element *access = this->access_pointproc,(assigned_tier);
+					Com_element *access = this->access_point(proc,assigned_tier);
 					//
-					if ( read_marker->load() == CLEARED_FOR_ALLOC ) {
+					if ( read_marker->load() == CLEARED_FOR_ALLOC ) {   // process has a message
 						//
 						claim_for_alloc(read_marker); // This is the atomic update of the write state
-						messages[ready_msg_count] = access;
-						accesses[ready_msg_count] = access;
+						//
+						messages[ready_msg_count]->_cel = access;
+						accesses[ready_msg_count]->_cel = access;
+						//
 						ready_msg_count++;
 						//
 					}
@@ -576,28 +689,35 @@ class TierAndProcManager : public LRU_Consts {
 					// 	-- FILTER - only allocate for new objects
 					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
 					//
-					Com_element **end_dups = accesses + (ready_msg_count - additional_locations);
-					Com_element **tmp = messages;
-
-					/// questionable   DUBIOUS
+					// accesses are null or zero offset if the hash already has an allocated location.
+					// If accesses[i] is a zero offset, then the element is new. Otherwise, the element 
+					// already exists and its offset has been placed into the corresponding messages[i] location.
+					// If accesses[i] is a zero offset, then the messages[i] is a reference to the data write location.
 					//
-					while ( accesses < end_dups ) {
-						Com_element *dup_access = *accesses++;
-						if ( dup_access != nullptr ) {		// this element has been found and this is actually a data_loc...
-							uint32_t data_loc = (uint32_t)(tmp[0]);
-							tmp[0] = nullptr;
-							uint32_t *write_offset_here = dup_access;
-							write_offset_here[0] = data_loc;
+					com_or_offset **tmp_dups = accesses;
+					com_or_offset **end_dups = accesses + ready_msg_count;  // look at the whole bufffer, see who is set
+					com_or_offset **tmp = messages;
+
+					/// Walk the messages and accesses in sync step.
+					//
+					while ( tmp_dups < end_dups ) {
+						com_or_offset *dup_access = *tmp_dups++;
+						//
+						// this element has been found and this is actually a data_loc...
+						if ( dup_access->_offset != 0 ) {			// duplicated, an occupied location for the hash
+							uint32_t data_loc = tmp->_offset;		// offset is in the messages buffer
+							tmp->_offset = 0; 						// clear position
+							Com_element *cel = dup_access->_cel;	// duplicate was not clear... ref to com element
+							cel->_offset = data_loc;				// to the com element ... output the known offset
 							// now get the control word location
-							Com_element *ce = (Com_element *)(access_point);
-							atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
-							//
+							atomic<COM_BUFFER_STATE> *read_marker = &(cel->_marker);			// use the data location
+							//  write data without creating a new hash entry.. (an update)
 							clear_for_copy(read_marker);  // tells the requesting process to go ahead and write data.
 						}
 						tmp++;
 					}
 					//
-					if ( additional_locations > 0 ) {
+					if ( additional_locations > 0 ) {  // new (additional) locations have been allocated 
 						//
 						// Is there enough memory?							--- CHECK FREE MEMORY
 						bool add = true;
@@ -609,8 +729,10 @@ class TierAndProcManager : public LRU_Consts {
 						}
 						// GET LIST FROM FREE MEMORY 
 						//
-						uint32_t lru_element_offsets[ready_msg_count+1];  // should be on stack
-						memset((void *)lru_element_offsets,0,sizeof(uint32_t)*(additional_locations+1)); // clear the buffer
+						// should be on stack
+						uint32_t lru_element_offsets[ready_msg_count+1];  
+						// clear the buffer
+						memset((void *)lru_element_offsets,0,sizeof(uint32_t)*(additional_locations+1)); 
 
 						// the next thing off the free stack.
 						//
@@ -637,7 +759,7 @@ class TierAndProcManager : public LRU_Consts {
 									offset = *current++;
 									//
 									Com_element *ce = (Com_element *)(access_point);
-
+									//
 									uint32_t *write_offset_here = (&ce->_offset);
 									uint64_t *hash_parameter =  (&ce->_hash);
 
@@ -648,18 +770,36 @@ class TierAndProcManager : public LRU_Consts {
 										//
 										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
 										clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
-									}		
+									}
 								}
 							}
 							//
 							lru->attach_to_lru_list(lru_element_offsets,ready_msg_count);  // attach to an LRU as a whole bucket...
+						} else {
+							com_or_offset **tmp_dups = accesses;
+
+							/// Walk the messages and accesses in sync step.
+							//
+							while ( tmp_dups < end_dups ) {
+								//
+								com_or_offset *dup_access = *tmp_dups++;
+								// this element has been found and this is actually a data_loc...
+								if ( dup_access->_offset == 0 ) {			// no assignment to an offset
+									Com_element *cel = tmp->_cel;			// message location for proc and tier (waiting message)
+									cel->_offset = UINT32_MAX; 				// error position
+									// now get the control word location
+									atomic<COM_BUFFER_STATE> *read_marker = &(cel->_marker);			// use the data location
+									//  write data without creating a new hash entry.. (an update)
+									indicate_error(read_marker);  // tells the requesting process to go ahead and write data.
+								}
+								tmp++;
+							}
+							return -1;
 						}
 					}
 				}
-
 				return 0;
 			}
-
 			return(-1);
 		}
 
@@ -717,6 +857,9 @@ class TierAndProcManager : public LRU_Consts {
 				// tell a reader to get some free memory
 				hash_parameter[0] = hash_bucket; // put in the hash so that the read can see if this is a duplicate
 				hash_parameter[1] = full_hash;
+				// the write offset should come back to the process's read maker
+				offset_offset[0] = updating ? UINT32_MAX : 0;
+				//
 				//
 				cleared_for_alloc(read_marker);   // allocators can now claim this process request
 				//
@@ -727,8 +870,6 @@ class TierAndProcManager : public LRU_Consts {
 				if ( !status ) {
 					return -2;
 				}
-				// the write offset should come back to the process's read maker
-				offset_offset[0] = updating ? UINT32_MAX : 0;
 				//					
 				if ( await_write_offset(read_marker,MAX_WAIT_LOOPS,delay_func) ) {
 					//

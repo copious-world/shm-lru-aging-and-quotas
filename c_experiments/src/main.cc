@@ -169,38 +169,41 @@ void f_hit(bool ab_caller,uint32_t count) {
 }
 
 void a_ping_1() {
+  //
+  while ( counter < countlimit ) {
+      while ( g_ping_lock.test(memory_order_relaxed) ) ;
+      //g_ping_lock.wait(true);
+      ++counter;
+      f_hit(true,counter);
+      g_ping_lock.test_and_set();   // set the flag to true
+      g_ping_lock.notify_one();
+  }
+  g_ping_lock.test_and_set();
+  g_ping_lock.notify_one();
 
-    // while ( counter < countlimit ) {
-    //     while ( g_ping_lock.test(memory_order_relaxed) ) ;
-    //     //g_ping_lock.wait(true);
-    //     ++counter;
-    //     f_hit(true,counter);
-    //     g_ping_lock.test_and_set();   // set the flag to true
-    //     g_ping_lock.notify_one();
-    // }
-    // g_ping_lock.test_and_set();
-    // g_ping_lock.notify_one();
-
-   // cout << "P1: " << counter << " is diff: " << (countlimit - counter) << endl;
+  cout << "P1: " << counter << " is diff: " << (countlimit - counter) << endl;
+  //
 }
 
 void a_pong_1() {
-
-    // while ( counter <= countlimit ) {
-    //     while ( !(g_ping_lock.test(memory_order_relaxed)) ) g_ping_lock.wait(false);
-    //     uint32_t old_counter = counter;
-    //     f_hit(false,counter);
-    //     g_ping_lock.clear(memory_order_release);
-    //     g_ping_lock.notify_one();
-    //     if ( counter == countlimit ) {
-    //       if ( old_counter < counter ) {
-    //         while ( !(g_ping_lock.test_and_set()) ) usleep(1);
-    //         f_hit(false,counter);
-    //       }
-    //       break;
-    //     }
-    // }
-    //cout << "P1-b: " << counter << " is diff: " << (countlimit - counter) << endl;
+  //
+  while ( counter <= countlimit ) {
+      while ( !(g_ping_lock.test(memory_order_relaxed)) ) g_ping_lock.wait(false);
+      uint32_t old_counter = counter;
+      f_hit(false,counter);
+      g_ping_lock.clear(memory_order_release);
+      g_ping_lock.notify_one();
+      if ( counter == countlimit ) {
+        if ( old_counter < counter ) {
+          while ( !(g_ping_lock.test_and_set()) ) usleep(1);
+          f_hit(false,counter);
+        }
+        break;
+      }
+  }
+  //
+  cout << "P1-b: " << counter << " is diff: " << (countlimit - counter) << endl;
+  //
 }
 
 
@@ -229,62 +232,8 @@ void f(int n)
 }
 
 
-/*
-    //atomic<bool> all_tasks_completed{false};
-    //
-    atomic_flag all_tasks_completed{false};
-    atomic<unsigned> completion_count{};
-    future<void> task_futures[16];
-    atomic<unsigned> outstanding_task_count{16};
- 
-    // Spawn several tasks which take different amounts of
-    // time, then decrement the outstanding task count.
-    for (future<void>& task_future : task_futures)
-        task_future = async([&]
-        {
-            // This sleep represents doing real work...
-            this_thread::sleep_for(50ms);
- 
-            ++completion_count;
-            --outstanding_task_count;
- 
-            // When the task count falls to zero, notify
-            // the waiter (main thread in this case).
-            if (outstanding_task_count.load() == 0)
-            {
-                //all_tasks_completed = true;
-                all_tasks_completed.test_and_set();
-                atomic_flag_notify_one( &all_tasks_completed );
-            }
-        });
- 
-    all_tasks_completed.wait(false);
- 
-    cout << "Tasks completed = " << completion_count.load() << '\n';
-*/
-
-
-int main(int argc, char **argv) {
-	//
-
-    #if defined(__cpp_lib_atomic_flag_test)
-
-        cout << "THERE REALLY ARE ATOMIC FLAGS" << endl;
-
-    #endif
-
-  #if defined(_GLIBCXX_HAVE_LINUX_FUTEX)
-        cout << "There really is a platform wait" << endl;
-  #endif
-
-  cout << "size of unsigned long: " << sizeof(unsigned long) << endl;
-
-	if ( argc == 2 ) {
-		cout << argv[1] << endl;
-	}
-
-
-
+void time_bucket_test() {
+  // ----
   uint32_t timestamp = 100;
   uint32_t N = 32; // 300000;
   Tier_time_bucket timer_table[N]; // ----
@@ -308,14 +257,6 @@ int main(int argc, char **argv) {
   // }
   // cout << endl;
 
-
-/*
-    vector<thread> v;
-    for (int n = 0; n < 10; ++n)
-        v.emplace_back(f, n);
-    for (auto& t : v)
-        t.join();
-*/
   auto NN = N*5;
   uint32_t found_1 = 0;
   uint32_t found_3 = 0;
@@ -323,7 +264,6 @@ int main(int argc, char **argv) {
 
   const auto right_now = std::chrono::system_clock::now();
   nowish = std::chrono::system_clock::to_time_t(right_now);
-
 
   for ( uint32_t i = 0; i < NN; i++ ) {
 
@@ -349,33 +289,6 @@ int main(int argc, char **argv) {
     //
   }
 
-  //
-  //
-
-	// if ( (argc == 2) && (strncmp(argv[1],"a1",2) == 0) ) {
-  //   //cout << "starting a test" << endl;
-  //   //g_ping_lock.clear();
-  //   //
-  //   //
-	// 	thread t1(a_ping_1);
-	// 	thread t2(a_pong_1);
-  //   //
-  //   //usleep(20);
-  //   start = chrono::system_clock::now();
-  //   //g_ping_lock.notify_all();
-	// 	//
-	// 	t1.join();
-	// 	t2.join();
-  // } else if ( (argc == 2) && (strncmp(argv[1],"nada",4) == 0) ) {
-  //   cout << "NADA" << endl;
-	// } else {
-	// 	thread t1(ping);
-	// 	thread t2(pong);
-	// 	//
-	// 	t1.join();
-	// 	t2.join();
-	// }
-
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 
   found_1 = time_interval_b_search(timestamp,timer_table,N);
@@ -392,137 +305,96 @@ int main(int argc, char **argv) {
   cout << "Duration test 1: " << dur_t1.count() << " seconds" << endl;
   cout << "Duration test 2: " << dur_t2.count() << " seconds" << endl;
 
+}
+
+
+void ping_pong_test() {
+
+  uint32_t nowish = 0; 
+  const auto right_now = std::chrono::system_clock::now();
+  nowish = std::chrono::system_clock::to_time_t(right_now);
+
+  chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
+
+  // test 2
+	auto start = chrono::system_clock::now();
+  //
+
+  cout << "starting a test" << endl;
+  g_ping_lock.clear();
+  
+  thread t1(a_ping_1);
+  thread t2(a_pong_1);
+  //
+  start = chrono::system_clock::now();
+  g_ping_lock.notify_all();
+  
+  t1.join();
+  t2.join();
+
+  chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
+
+  cout << "Duration test 1: " << dur_t1.count() << " seconds" << endl;
+  cout << "Duration test 2: " << dur_t2.count() << " seconds" << endl;
+}
+
+
+void mutex_ping_pong() {
+		thread t1(ping);
+		thread t2(pong);
+		//
+		t1.join();
+		t2.join();
+}
+
+void capability_test() {
+  #if defined(__cpp_lib_atomic_flag_test)
+      cout << "THERE REALLY ARE ATOMIC FLAGS" << endl;
+  #endif
+
+  #if defined(_GLIBCXX_HAVE_LINUX_FUTEX)
+        cout << "There really is a platform wait" << endl;
+  #endif
+
+  cout << "size of unsigned long: " << sizeof(unsigned long) << endl;
+}
+
+
+int main(int argc, char **argv) {
+	//
+
+	if ( argc == 2 ) {
+		cout << argv[1] << endl;
+	}
+
+  uint32_t nowish = 0; 
+  const auto right_now = std::chrono::system_clock::now();
+  nowish = std::chrono::system_clock::to_time_t(right_now);
+
+  chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
+
+  // test 2
+	auto start = chrono::system_clock::now();
+
+  
+
+  chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
+
+  cout << "Duration test 1: " << dur_t1.count() << " seconds" << endl;
+  cout << "Duration test 2: " << dur_t2.count() << " seconds" << endl;
+
 
   return(0);
 }
 
 
 
-
-
-
-
-
 /*
-
-// Following the "mutex2" implementation in Drepper's "Futexes Are Tricky"
-// Note: this version works for threads, not between processes.
-//
-// Eli Bendersky [http://eli.thegreenplace.net]
-// This code is in the public domain.
-#include <atomic>
-#include <cstdint>
-#include <iostream>
-#include <linux/futex.h>
-#include <pthread.h>
-#include <sstream>
-#include <sys/resource.h>
-#include <sys/shm.h>
-#include <sys/syscall.h>
-#include <thread>
-#include <unistd.h>
-
-// An atomic_compare_exchange wrapper with semantics expected by the paper's
-// mutex - return the old value stored in the atom.
-int cmpxchg(atomic<int>* atom, int expected, int desired) {
-  int* ep = &expected;
-  atomic_compare_exchange_strong(atom, ep, desired);
-  return *ep;
-}
-
-class Mutex {
-public:
-  Mutex() : atom_(0) {}
-
-  void lock() {
-    int c = cmpxchg(&atom_, 0, 1);
-    // If the lock was previously unlocked, there's nothing else for us to do.
-    // Otherwise, we'll probably have to wait.
-    if (c != 0) {
-      do {
-        // If the mutex is locked, we signal that we're waiting by setting the
-        // atom to 2. A shortcut checks is it's 2 already and avoids the atomic
-        // operation in this case.
-        if (c == 2 || cmpxchg(&atom_, 1, 2) != 0) {
-          // Here we have to actually sleep, because the mutex is actually
-          // locked. Note that it's not necessary to loop around this syscall;
-          // a spurious wakeup will do no harm since we only exit the do...while
-          // loop when atom_ is indeed 0.
-          syscall(SYS_futex, (int*)&atom_, FUTEX_WAIT, 2, 0, 0, 0);
-        }
-        // We're here when either:
-        // (a) the mutex was in fact unlocked (by an intervening thread).
-        // (b) we slept waiting for the atom and were awoken.
-        //
-        // So we try to lock the atom again. We set teh state to 2 because we
-        // can't be certain there's no other thread at this exact point. So we
-        // prefer to err on the safe side.
-      } while ((c = cmpxchg(&atom_, 0, 2)) != 0);
-    }
-  }
-
-  void unlock() {
-    if (atom_.fetch_sub(1) != 1) {
-      atom_.store(0);
-      syscall(SYS_futex, (int*)&atom_, FUTEX_WAKE, 1, 0, 0, 0);
-    }
-  }
-
-private:
-  // 0 means unlocked
-  // 1 means locked, no waiters
-  // 2 means locked, there are waiters in lock()
-  atomic<int> atom_;
-};
-
-// Simple function that increments the value pointed to by n, 10 million times.
-// If m is not nullptr, it's a Mutex that will be used to protect the increment
-// operation.
-void threadfunc(int64_t* n, Mutex* m = nullptr) {
-  for (int i = 0; i < 10000000; ++i) {
-    if (m != nullptr) {
-      m->lock();
-    }
-    *n += 1;
-    if (m != nullptr) {
-      m->unlock();
-    }
-  }
-}
-
-int main(int argc, char** argv) {
-  {
-    int64_t vnoprotect = 0;
-    thread t1(threadfunc, &vnoprotect, nullptr);
-    thread t2(threadfunc, &vnoprotect, nullptr);
-    thread t3(threadfunc, &vnoprotect, nullptr);
-
-    t1.join();
-    t2.join();
-    t3.join();
-
-    cout << "vnoprotect = " << vnoprotect << "\n";
-  }
-
-  {
-    int64_t v = 0;
-    Mutex m;
-
-    thread t1(threadfunc, &v, &m);
-    thread t2(threadfunc, &v, &m);
-    thread t3(threadfunc, &v, &m);
-
-    t1.join();
-    t2.join();
-    t3.join();
-
-    cout << "v = " << v << "\n";
-  }
-
-  return 0;
-}
-
-
+    vector<thread> v;
+    for (int n = 0; n < 10; ++n)
+        v.emplace_back(f, n);
+    for (auto& t : v)
+        t.join();
 */
 
 
@@ -558,3 +430,5 @@ milliseconds ms = duration_cast< milliseconds >(
 );
 
 */
+
+

@@ -29,7 +29,8 @@ typedef enum {
     CLEAR_FOR_WRITE,	// unlocked - only one process will write in this spot, so don't lock for writing. Just indicate that reading can be done
     CLEARED_FOR_ALLOC,	// the current process will set the atomic to CLEARED_FOR_ALLOC
     LOCKED_FOR_ALLOC,	// a thread (process) that picks up the reading task will block other readers from this spot
-    CLEARED_FOR_COPY	// now let the writer copy the message into storage
+    CLEARED_FOR_COPY,	// now let the writer copy the message into storage
+    FAILED_ALLOCATOR
 } COM_BUFFER_STATE;
 
 // The data storage table is arranged as an array of cells, where each cell has a header which may belong to a free list
@@ -100,6 +101,9 @@ static inline bool await_write_offset(atomic<COM_BUFFER_STATE> *read_marker,uint
         count++;
         COM_BUFFER_STATE clear = (COM_BUFFER_STATE)(p->load(std::memory_order_relaxed));
         if ( clear == CLEARED_FOR_COPY ) break;
+         if ( clear == FAILED_ALLOCATOR ) {
+            return false;
+         }
         //
         if ( count > loops ) {
             return false;
@@ -120,3 +124,10 @@ static inline void clear_for_copy(atomic<COM_BUFFER_STATE> *read_marker) {
 
 
 
+
+static inline void indicate_error(atomic<COM_BUFFER_STATE> *read_marker) {
+    auto p = read_marker;
+    auto current_marker = p->load();
+    while(!p->compare_exchange_weak(current_marker,FAILED_ALLOCATOR)
+                    && ((COM_BUFFER_STATE)(*read_marker) != FAILED_ALLOCATOR));
+}
