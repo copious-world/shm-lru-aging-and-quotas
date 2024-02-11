@@ -443,6 +443,8 @@ namespace node_shm {
 
 	// SHM   ----  ----  ----  ----  ----  ----  ----
 	/**
+	 * shm_get
+	 * 
 	 * Create or get shared memory
 	 * Params:
 	 *  key_t key
@@ -452,7 +454,7 @@ namespace node_shm {
 	 *  enum ShmBufferType type
 	 * Returns buffer or typed array, depends on input param type
 	 */
-	NAN_METHOD(get);
+	NAN_METHOD(shm_get);
 
 	/**
 	 * Destroy shared memory segment
@@ -583,11 +585,17 @@ namespace node_shm {
 	NAN_METHOD(initHopScotch);
 
 
-	// MUTEX  ----  ----  ----  ----  ----  ----
+	// CREATE  ----  ----  ----  ----  ----  ----
 	/**
-	 * Assign a memory section for a MUTEX
+	 * Assign a memory section for a CREATE
 	 */
-	NAN_METHOD(init_mutex);
+	NAN_METHOD(create);
+
+
+
+
+
+
 
 	/**
 	 * Get access to the semaphore identified by a key

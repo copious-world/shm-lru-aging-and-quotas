@@ -5,6 +5,10 @@ const { spawn } = require('child_process');
 const { XXHash32 } = require('xxhash32-node-cmake')
 
 
+const perm = Number.parseInt('660', 8);
+
+const shm_mod = {}
+
 
 var g_app_seed = 0
 var g_hasher32 = null
@@ -31,74 +35,7 @@ function init_default(seed) {
 
 
 
-const shm = {
-
-}
-
-// ---- ---- ---- ---- ---- ---- -
-
-const fs = require('fs');
-
-let g_sleepy_calls = 0;
-
-function sleepy(secs) {
-    let p = new Promise( (resolve,reject) => {
-        let sleepy_call = (g_sleepy_calls++ + 1)
-        setTimeout(() => {
-            console.log(`shutting down: ${sleepy_call}`)
-            resolve(true) 
-        },secs*1000)
-    })
-    return p
-}
-
-
-
-class TableMaster {
-
-    constructor(conf) {
-        //
-        this.master_token = default_hash(conf.identity_phrase)
-
-        let proc_count = conf.num_procs
-        let sz = shm.com_buffer_size();   // communication buffer -- implementation tells us what it needs
-
-        this.com_buffer = shm.create((proc_count*sz),'Uint32Array',this.master_token)
-
-        this.tier_tokens = {}
-        this.tier_hh_tokens = {}
-        this.tier_refs = {}
-        let count = conf.element_count
-        let hss = this.hop_scotch_scale
-        for ( let tier_conf of tiers ) {
-            let key = tier_conf.key;
-            let lru_key = default_hash(key)
-            this.tier_tokens[tier_conf.tier] = lru_key
-            //
-            let sz = shm.lru_buffer_size(count);    // communication buffer -- implementation tells us what it needs
-            this.tier_refs.lru_buffer =  shm.create(sz,'Uint32Array',lru_key)
-            this.tier_refs.count = shm.initLRU(lru_key,this.record_size,sz,true)
-
-            key = tier_conf.hh_key;
-            let hh_key = default_hash(key)
-            //
-            sz = shm.hop_scotch_buffer_size(count); // communication buffer -- implementation tells us what it needs
-            this.tier_refs.hh_bufer = shm.create(sz,'Uint32Array',hh_key)
-            //
-            this.tier_hh_tokens[tier_conf.tier] = hh_key
-            shm.initHopScotch(hh_key,this.lru_key,true,(this.count*hss))
-
-        }
-        //
-    }
-
-    init(conf) {
-        return true
-    }
-
-    async shut_down() {  // mostly turn off the shared
-        return sleepy(1)
-    }
+class SHM_CLASS {
 
 
     /**
@@ -128,12 +65,126 @@ class TableMaster {
             throw new RangeError('Count should be ' + lengthMin + ' .. ' + lengthMax);
         let res = null;
         if (key) {
-            res = shm.get(key, count, shm.IPC_CREAT|shm.IPC_EXCL|perm, 0, type);
+            res = shm_mod.get(key, count, shm_mod.IPC_CREAT|shm_mod.IPC_EXCL|perm, 0, type);
         }
         if (res) {
             res.key = key;
         }
         return res;
+    }
+
+
+
+    /**
+     * Get shared memory segment
+     * @param {int} key - integer key of shared memory segment
+     * @param {string} typeKey - see keys of BufferType
+     * @return {mixed/null} shared memory buffer/array object, see create(), or null on error
+     */
+    attach(key, typeKey /*= 'Buffer'*/) {
+        if (typeKey === undefined)
+            typeKey = 'Buffer';
+        if (BufferType[typeKey] === undefined)
+            throw new Error("Unknown type key " + typeKey);
+        var type = BufferType[typeKey];
+        if (!(Number.isSafeInteger(key) && key >= keyMin && key <= keyMax))
+            throw new RangeError('Shm key should be ' + keyMin + ' .. ' + keyMax);
+        let res = shm_mod.get(key, 0, 0, 0, type);
+        if (res) {
+            res.key = key;
+        }
+        return res;
+    }
+
+    /**
+     * Detach shared memory segment
+     * If there are no other attaches for this segment, it will be destroyed
+     * @param {int} key - integer key of shared memory segment
+     * @param {bool} forceDestroy - true to destroy even there are other attaches
+     * @return {int} count of left attaches or -1 on error
+     */
+    detach(key, forceDestroy /*= false*/) {
+        if (forceDestroy === undefined)
+            forceDestroy = false;
+        return shm_mod.detach(key, forceDestroy);
+    }
+
+    /**
+     * Detach all created and getted shared memory segments
+     * Will be automatically called on process exit/termination
+     * @return {int} count of destroyed segments
+     */
+    detachAll() {
+        return shm_mod.detachAll();
+    }
+
+}
+
+const shm = new SHM_CLASS();
+
+// ---- ---- ---- ---- ---- ---- -
+
+const fs = require('fs');
+
+let g_sleepy_calls = 0;
+
+function sleepy(secs) {
+    let p = new Promise( (resolve,reject) => {
+        let sleepy_call = (g_sleepy_calls++ + 1)
+        setTimeout(() => {
+            console.log(`shutting down: ${sleepy_call}`)
+            resolve(true) 
+        },secs*1000)
+    })
+    return p
+}
+
+
+
+class TableMaster {
+
+    constructor(conf) {
+        //
+        this.master_token = default_hash(conf.identity_phrase)
+        //
+        let proc_count = conf.num_procs
+        let sz = shm.com_buffer_size();   // communication buffer -- implementation tells us what it needs
+        //
+        this.com_buffer = shm.create(this.master_token,(proc_count*sz))
+        //
+        this.tier_tokens = {}
+        this.tier_hh_tokens = {}
+        this.tier_refs = {}
+        let count = conf.element_count
+        let hss = this.hop_scotch_scale
+        for ( let tier_conf of tiers ) {
+            //
+            let key = tier_conf.key;
+            let lru_key = default_hash(key)
+            this.tier_tokens[tier_conf.tier] = lru_key
+            //
+            let sz = shm_mod.lru_buffer_size(count);    // communication buffer -- implementation tells us what it needs
+            this.tier_refs.lru_buffer =  shm_mod.create(lru_key,sz)
+            this.tier_refs.count = shm_mod.initLRU(lru_key,this.record_size,sz,true)
+
+            key = tier_conf.hh_key;
+            let hh_key = default_hash(key)
+            //
+            sz = shm_mod.hop_scotch_buffer_size(count); // communication buffer -- implementation tells us what it needs
+            this.tier_refs.hh_bufer = shm_mod.create(hh_key,sz)
+            //
+            this.tier_hh_tokens[tier_conf.tier] = hh_key
+            shm_mod.initHopScotch(hh_key,this.lru_key,true,(this.count*hss))
+        }
+        //
+    }
+
+    init(conf) {
+        return true
+    }
+
+    async shut_down() {  // mostly turn off the shared
+        return sleepy(1)
     }
 
 
@@ -147,7 +198,7 @@ class TierOwner {
     constructor(conf) {
 
         this.tier_token = default_hash(conf.identity_phrase)
-        this.com_buffer = shm.get(this.tier_token,'Uint32Array')
+        this.com_buffer = shm.attach(this.tier_token)
         if ( this.com_buffer === null ) {
             console.dir(conf)
             console.log("module_path DOES NOT match with master_of_ceremonies OR master_of_ceremonies not yet initialized")
@@ -167,13 +218,13 @@ class TierOwner {
             //
             this.tier_tokens[tier_conf.tier] = lru_key
             //
-            this.tier_refs.lru_buffer = shm.get(lru_key);
+            this.tier_refs.lru_buffer = shm.attach(lru_key);
             let sz = shm.lru_buffer_size(count);    // communication buffer -- implementation tells us what it needs
             this.tier_refs.count = shm.initLRU(lru_key,this.record_size,sz,false)
             //
             key = tier_conf.hh_key;
             let hh_key = default_hash(key)
-            this.tier_refs.hh_bufer = shm.get(hh_key);
+            this.tier_refs.hh_bufer = shm.attach(hh_key);
 
             sz = shm.hop_scotch_buffer_size(count); // communication buffer -- implementation tells us what it needs
             this.tier_hh_tokens[tier_conf.tier] = hh_key
