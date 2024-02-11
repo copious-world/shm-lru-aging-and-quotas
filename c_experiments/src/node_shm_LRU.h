@@ -12,7 +12,6 @@
 #include <iostream>
 #include <sstream>
 
-
 #include <map>
 #include <unordered_map>
 #include <list>
@@ -178,15 +177,16 @@ class LRU_Consts {
 class LRU_cache : public LRU_Consts {
 
 	public:
+
 		// LRU_cache -- constructor
-		LRU_cache(void *region,[[maybe_unused]] size_t record_size,[[maybe_unused]] size_t region_size,[[maybe_unused]] size_t reserve_size,[[maybe_unused]] bool am_initializer,[[maybe_unused]] uint16_t proc_max,[[maybe_unused]] uint8_t tier) {
-			_Procs = proc_max;
+		LRU_cache(void *region,[[maybe_unused]] size_t record_size,[[maybe_unused]] size_t region_size,[[maybe_unused]] size_t reserve_size,[[maybe_unused]] bool am_initializer,[[maybe_unused]] uint16_t num_procs,[[maybe_unused]] uint8_t tier) {
+			_Procs = num_procs;
 			_Tier = tier;
 			//
 			_lb_time = (atomic<uint32_t> *)(region);   // these are governing time boundaries of the particular tier
 			_ub_time = _lb_time + 1;
 			_cascaded_com_area = (Com_element *)(_ub_time + 1);
-			initialize_com_area(proc_max);
+			initialize_com_area(num_procs);
 			_end_cascaded_com_area = _cascaded_com_area + _Procs;
 
 			// time lower bound and upper bound for a tier...
@@ -206,9 +206,9 @@ class LRU_cache : public LRU_Consts {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		void initialize_com_area(uint16_t proc_max) {
+		void initialize_com_area(uint16_t num_procs) {
 			Com_element *proc_entry = _cascaded_com_area;
-			uint32_t P = proc_max;
+			uint32_t P = num_procs;
 			for ( uint32_t p = 0; p < P; p++ ) {
 				proc_entry->_marker.store(CLEAR_FOR_WRITE);
 				proc_entry->_hash = 0L;
@@ -233,7 +233,7 @@ class LRU_cache : public LRU_Consts {
 
 		// HH_map method - calls get -- 
 		//
-		uint32_t 	partition_get(uint64_t key) {
+		uint32_t 		partition_get(uint64_t key) {
 			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
 			HMap_interface *T = _hmap_i[selector];
 			return get_hh_map(T, key);
@@ -405,8 +405,12 @@ class LRU_cache : public LRU_Consts {
 
 
 
+// messages_reserved is an area to store pointers to the messages that will be read.
+// duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
 
-template<const uint8_t MAX_TIERS = 8>
+
+
+template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_PERCENT = 30>
 class TierAndProcManager : public LRU_Consts {
 
 	public:
@@ -414,61 +418,97 @@ class TierAndProcManager : public LRU_Consts {
 		// regions -- the regions are shared memory (yet governed by a processes)
 		// sometimes processes will cross over in accessing each other's assigned region...
 
-		TierAndProcManager(void *regions[MAX_TIERS], size_t rc_sz, size_t seg_sz, size_t reserve_size, uint16_t proc_max, bool am_initializer, uint16_t proc_num, uint8_t num_tiers_in_use, uint32_t SUPER_HEADER, uint32_t INTER_PROC_DESCRIPTOR_WORDS) {
+		TierAndProcManager(void *com_buffer,
+								map<key_t,void *> &lru_segs, 
+									map<key_t,void *> &hh_table_segs, 
+											map<key_t,size_t> &seg_sizes,
+												bool am_initializer, uint32_t proc_number,
+													uint32_t num_procs, uint32_t num_tiers,
+														uint32_t els_per_tier, uint32_t max_obj_size) {
 			//
 			_am_initializer = am_initializer; // need to keep around for downstream initialization
 			//
-			_Procs = proc_max;
-			_proc = proc_num;
-			_NTiers = num_tiers_in_use;
+			_Procs = num_procs;
+			_proc = proc_number;
+			_NTiers = min(num_tiers,MAX_TIERS);
+			_reserve_size = RESERVE_PERCENT;	// set the precent as part of the build
+			_com_buffer = com_buffer;			// the com buffer is another share section.. separate from the shared data regions
 			//
-			for ( uint8_t i = 0; i < num_tiers_in_use; i++ ) {
-				// seg_sz -> region_size
-				//    am_initializer -- either read or set the initializer
+			uint8_t i = 0;
+			for ( auto p : lru_segs ) {
 				//
-				_tiers[i] = new LRU_cache(regions[i], rc_sz, seg_sz, reserve_size, proc_max, am_initializer, i);
+				key_t key = p.first;
+				void *lru_region = p.second;
+				size_t seg_sz = seg_sizes[key];
 				//
-				_tiers[i]->initialize_header_sizes(SUPER_HEADER,num_tiers_in_use,INTER_PROC_DESCRIPTOR_WORDS);
+				_tiers[i] = new LRU_cache(lru_region, max_obj_size, seg_sz, els_per_tier, _reserve_size, _Procs, _am_initializer, i);
 				_t_times[i]._lb_time = _tiers[i]->_lb_time;
 				_t_times[i]._ub_time = _tiers[i]->_ub_time;
+				// initialize hopscotch
+				i++;
+				if ( i > _NTiers ) break;
 			}
-			_com_buffer = nullptr;   // the com buffer is another share section.. separate from the shared data regions
+			//
+			i = 0;
+			for ( auto p : hh_table_segs ) {
+				//
+				key_t key = p.first;
+				void *hh_region = p.second;
+				size_t seg_sz = seg_sizes[key];
+				//
+				LRU_cache *lru = _tiers[i];
+				if ( lru !== nullptr ) {
+					HH_map *hmap = new HH_map(hh_region,els_per_tier,_am_initializer);
+					lru->set_hash_impl(hmap);
+				}
+				// initialize hopscotch
+				i++;
+				if ( i > _NTiers ) break;
+			}
 		}
 
-		// -- set_com_buffer
+		// -- set_owner_proc_area
 		// 		the com buffer is set separately outside the constructor... this may just be stylistic. 
 		//		the com buffer services the acceptance of new data and the output of secondary processes.
 		//
-		bool		set_com_buffer(void *com_buffer) {
-			if ( com_buffer == nullptr ) return false;
-			_com_buffer = com_buffer;
-			_owner_proc_area = ((Com_element *)_com_buffer) + (_proc*_NTiers);
+		bool		set_owner_proc_area(void) {
+			if ( _com_buffer != nullptr ) {
+				_owner_proc_area = ((Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *)) + (_proc*_NTiers);
+			}
 			return true;
 		}
 
-		void 		*set_reader_atomic_tags() {
+		// -- set_reader_atomic_tags
+		void 		set_reader_atomic_tags() {
 			if ( _com_buffer != nullptr ) {
 				atomic_flag *af = (atomic_flag *)_com_buffer;
 				for ( int i; i < _NTiers; i++ ) {
 					_readerAtomicFlag[i] = af;
 					af++;
 				}
-				return ((void *)af);
 			}
-			return nullptr;
 		}
+
+
+		// -- get_proc_entry
+		Com_element *get_proc_entries() {
+			return ((Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *));
+		}
+
+
 
 		// -- set_and_init_com_buffer
 		//		the com buffer is retains a set of values or each process 
 		//		
-		bool 		set_and_init_com_buffer(void *com_buffer) {
+		bool 		set_and_init_com_buffer() {
 			//
-			void *data = set_reader_atomic_tags();
-			if ( data == nullptr ) return false;
+			if ( _com_buffer == nullptr ) return false;
+			set_reader_atomic_tags();
+			set_owner_proc_area();
 			//
-			if ( set_com_buffer(data) && _am_initializer ) {
+			if ( _am_initializer ) {
 				// _com_buffer is now pointing at the com_buffer... but it has not been essentially formatted.
-				Com_element *proc_entry = (Com_element *)(data);  // start after shared tier tags
+				Com_element *proc_entry = this->get_proc_entries();  // start after shared tier tags (all proc entries)
 				//
 				//  N = _Procs*_NTiers :: Maybe overkill, except that may prove useful for processes to contend over individual tiers.
 				uint32_t P = _Procs;
@@ -565,7 +605,7 @@ class TierAndProcManager : public LRU_Consts {
 
 		// run_evictions
 
-		bool run_evictions(LRU_cache *lru,uint32_t source_tier,uint32_t ready_msg_count) {
+		bool		run_evictions(LRU_cache *lru,uint32_t source_tier,uint32_t ready_msg_count) {
 			//
 			// lru - is a source tier
 			uint32_t req_count = lru->free_mem_requested();
@@ -610,7 +650,7 @@ class TierAndProcManager : public LRU_Consts {
 
 
 		// Stop the process on a futex until notified...
-		void wait_for_data_presenet_notification(uint8_t tier) {
+		void		wait_for_data_presenet_notification(uint8_t tier) {
 			_readerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
 		}
 
@@ -809,7 +849,7 @@ class TierAndProcManager : public LRU_Consts {
 		 * Any number of processes may place a message into a tier. 
 		 * If the tier is full, the reader has the job of kicking off the eviction process.
 		*/
-		bool wake_up_write_handlers(uint32_t tier) {
+		bool		wake_up_write_handlers(uint32_t tier) {
 			_readerAtomicFlag[tier]->test_and_set();
 			_readerAtomicFlag[tier]->notify_all();
 			return true;
@@ -817,7 +857,7 @@ class TierAndProcManager : public LRU_Consts {
 
 
 		/**
-		 * put_method
+		 *		put_method
 		 * 
 		 * Initiates the process by which the system find a place to write data. This method waits on the position to write data.
 		 * 
@@ -951,12 +991,12 @@ class TierAndProcManager : public LRU_Consts {
 		Tier_time_bucket		_t_times[MAX_TIERS];	// shared mem storage
 		uint16_t				_proc;					// calling proc index (assigned by configuration) (indicates offset in com buffer)
 		Com_element				*_owner_proc_area;
+		uint8_t					_reserve_size;
 
 	protected:
 
 	//
 		atomic_flag 		*_readerAtomicFlag[MAX_TIERS];
-
 
 };
 

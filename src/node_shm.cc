@@ -12,6 +12,13 @@ using namespace Nan;
 namespace node {
 namespace node_shm {
 
+
+	const uint32_t keyMin = 1;
+	const uint32_t keyMax = UINT32_MAX - keyMin;
+	const uint32_t lengthMin = 1;
+	const uint32_t lengthMax = UINT16_MAX;   // for now
+
+
 	using node::AtExit;
 	using v8::Local;
 	using v8::Number;
@@ -21,9 +28,6 @@ namespace node_shm {
 
 	map<key_t,LRU_cache *>		g_LRU_caches_per_segment;
 	map<key_t,HH_map *>			g_HMAP_caches_per_segment;
-	map<key_t,MutexHolder *>	g_MUTEX_per_segment;
-
-	void *g_com_buffer = NULL;
 
 
 
@@ -31,7 +35,9 @@ namespace node_shm {
 
 		public:
 
-			SharedSegmentsManager() {}
+			SharedSegmentsManager() {
+				_container_node_size = sizeof(uint32_t)*8;
+			}
 			virtual ~SharedSegmentsManager() {}
 
 		public:
@@ -73,7 +79,7 @@ namespace node_shm {
 					//
 					if ( res == (void *)-1 ) return -2;
 					//
-					_seg_to_addrs[key] = res;
+					_ids_to_seg_addrs[key] = res;
 				}
 				
 				return 0;
@@ -117,7 +123,7 @@ namespace node_shm {
 				if ( resId < 0 ) return resId;
 				//
 
-				void *addr = _seg_to_addrs[key];
+				void *addr = _ids_to_seg_addrs[key];
 				struct shmid_ds shminf;
 				int err = shmdt(addr);
 				if ( err ) {
@@ -139,7 +145,7 @@ namespace node_shm {
 						return err;
 					}
 					//
-					delete _seg_to_addrs[key];
+					delete _ids_to_seg_addrs[key];
 					delete _ids_to_seg_sizes[key];
 					//
 					return 0;
@@ -149,6 +155,9 @@ namespace node_shm {
 				return -1;
 			}
 
+			/**
+			 * detach
+			*/
 
 			size_t detach(key_t key,bool forceDestroy) {
 				//
@@ -157,12 +166,17 @@ namespace node_shm {
 					this->remove_if_lru(key);
 					this->remove_if_hh_map(key);
 					this->remove_if_com_buffer(key);
-					return _seg_to_addrs.size();
+					return _ids_to_seg_addrs.size();
 				}
 				//
 				return status;
 			}
 
+
+
+			/**
+			 * detach_all
+			*/
 
 			pair<uint16_t,size_t> detach_all(bool forceDestroy = false) {
 				unsigned int deleted = 0;
@@ -182,7 +196,6 @@ namespace node_shm {
 			void remove_if_hh_map(key_t key) {}
 			void remove_if_com_buffer(key_t key) {}
 
-
 			/**
 			 * key_to_id
 			*/
@@ -201,6 +214,9 @@ namespace node_shm {
 			}
 
 
+			/**
+			 * total_mem_allocated
+			*/
 			size_t total_mem_allocated(void) {
 				size_t total_mem = 0;
 				for ( auto p : _ids_to_seg_sizes ) {
@@ -209,27 +225,130 @@ namespace node_shm {
 				return total_mem;
 			}
 
+
+			/**
+			 * check_key
+			*/
 			bool check_key(key_t key) {
-				if ( find(_seg_to_addrs.begin(),_seg_to_addrs.end(),key) != _seg_to_addrs.end() ) return true;
+				if ( find(_ids_to_seg_addrs.begin(),_ids_to_seg_addrs.end(),key) != _ids_to_seg_addrs.end() ) return true;
 				int resId  this->key_to_id(key);
 				if ( resId == -1 ) { return false; }
 				return true;
 			}
 
 
-
+			/**
+			 * get_addr
+			*/
 			void *get_addr(key_t key) {
-				auto seg = _seg_to_addrs[key];
+				auto seg = _ids_to_seg_addrs[key];
 				return seg;
 			}
-			
 
+			/**
+			 * _shm_creator
+			*/
+
+			int _shm_creator(key_t key,size_t seg_size) {
+				auto perm = 0660;
+				int at_shmflg = 0;
+				int shmflg = IPC_CREAT | IPC_EXCL | perm;
+				int status = this->shm_getter(key, at_shmfl, shmflg, true, seg_size);
+				return status;
+			}
 			
+			int _shm_attacher(key_t key,int at_shmflg) {
+				int status = this->shm_getter(key, at_shmfl);
+				return status;
+			}
+
+			/**
+			 * initialize_com
+			*/
+			int initialize_com_shm(key_t com_key, bool am_initializer, uint32_t num_procs, uint32_t num_tiers, uint32_t max_obj_size) {
+				//
+				int status = 0;
+				if ( am_initializer ) {
+					size_t seg_size = num_procs*num_tiers*max_obj_size + num_procs*num_tiers*sizof(uint32_t);   // CHECK
+					status = _shm_creator(com_key,seg_size);
+				} else {
+					int at_shmflg = 0;
+					int shmflg = 0;
+					//
+					status = this->_shm_attacher(key, at_shmfl);
+				}
+				//
+				if ( status == 0 ) _com_buffer = _ids_to_seg_addrs[com_key];
+				//
+				return status;
+			}
+
+			int initialize_lru_shm(key_t key, bool am_initializer, uint32_t els_per_tier, uint32_t max_obj_size, uint32_t control_words_per_tier) {
+				int status = 0;
+				if ( am_initializer ) {
+					size_t seg_size = els_per_tier*max_obj_size*_container_node_size + control_words_per_tier*sizof(uint32_t);   // CHECK
+					status = _shm_creator(com_key,seg_size);
+				} else {
+					int at_shmflg = 0;
+					int shmflg = 0;
+					//
+					status = this->_shm_attacher(key, at_shmfl);
+				}
+				//
+				if ( status == 0 ) {
+					_seg_to_lrus[key] = _ids_to_seg_addrs[key];
+				}
+				return status;
+			}
+
+			int initialize_hmm_shm(key_t key,  bool am_initializer, uint32_t els_per_tier,uint32_t control_words_per_tier) {
+				int status = 0;
+				if ( am_initializer ) {
+					size_t seg_size = 4*els_per_tier*sizeof(uint64_t) + control_words_per_tier*sizof(uint32_t);   // CHECK
+					status = _shm_creator(com_key,seg_size);
+				} else {
+					int at_shmflg = 0;
+					int shmflg = 0;
+					//
+					status = this->_shm_attacher(key, at_shmfl);
+				}
+				if ( status == 0 ) {
+					_seg_to_hh_tables[key] = _ids_to_seg_addrs[key];
+				}
+				return status;
+			}
+
+
+			int tier_segments_initializers(bool am_initializer,list<uint32_t> &lru_keys,list<uint32_t> &hh_keys) {
+				//
+				for ( auto lru_key : lru_keys ) {
+					if ( lru_key < keyMin || lru_key >= keyMax ) {
+						return -(i+1);
+					}
+					status = this->initialize_lru_shm(lru_key,am_initializer,els_per_tier);
+					if ( status != 0 ) { return status; }
+				}
+				for ( auto hh_key : hh_keys ) {
+					if ( hh_key < keyMin || hh_key >= keyMax ) {
+						return -(i+1);
+					}
+					status = this->initialize_hmm_shm(hh_key,am_initializer,els_per_tier);
+					if ( status != 0 ) { return status; }
+				}
+				//
+				return 0;
+			}
+
 	public:
 //--
-			map<key_t,void *>					_seg_to_addrs;
+			map<key_t,void *>					_ids_to_seg_addrs;
 			map<key_t,size_t> 					_ids_to_seg_sizes;
-
+			//
+			void 								*_com_buffer;
+			map<key_t,void *>					_seg_to_lrus;
+			map<key_t,void *>					_seg_to_hh_tables;
+			//
+			size_t								_container_node_size;
 
 	};
 
@@ -381,13 +500,14 @@ namespace node_shm {
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-	const uint32_t keyMin = 1;
-	const uint32_t keyMax = UINT32_MAX - keyMin;
-	const uint32_t lengthMin = 1;
-	const uint32_t lengthMax = UINT16_MAX;   // for now
 
 	NAN_METHOD(create) {
 		Nan::HandleScope scope;
+		//
+		if ( g_segments_manager == nullptr ) {		// initialized
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return
+		}
 		//
 		if ( info.Length() < 2 ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -408,35 +528,32 @@ namespace node_shm {
 			return;
 		}
 		//
-		if ( g_segments_manager != nullptr ) {		// initialized
-
-			auto perm = 0660;
-			//
-			int at_shmflg = 0;
-			int shmflg = IPC_CREAT | IPC_EXCL | perm;
-			//
-			int status = g_segments_manager->shm_getter(key, at_shmfl, shmflg, true, seg_size);
-			//
-			if ( status != 0 ) {		// error
-				status = -status;
-				switch ( status ) {
-					case 1 : {
-						info.GetReturnValue().SetNull();
-						return;
-					}
-					case 2 :
-					default: {
-						return Nan::ThrowRangeError(strerror(errno));
-					}
+		auto perm = 0660;
+		//
+		int at_shmflg = 0;
+		int shmflg = IPC_CREAT | IPC_EXCL | perm;
+		//
+		int status = g_segments_manager->shm_getter(key, at_shmfl, shmflg, true, seg_size);
+		//
+		if ( status != 0 ) {		// error
+			status = -status;
+			switch ( status ) {
+				case 1 : {
+					info.GetReturnValue().SetNull();
+					return;
+				}
+				case 2 :
+				default: {
+					return Nan::ThrowRangeError(strerror(errno));
 				}
 			}
-			//
-			size_t seg_size =  g_segments_manager->_ids_to_seg_sizes[key];
-			info.GetReturnValue().Set(Nan::New<Number>(seg_size));
-		} else {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
 		}
+		//
+		size_t seg_size =  g_segments_manager->_ids_to_seg_sizes[key];
+		info.GetReturnValue().Set(Nan::New<Number>(seg_size));
 	}
+
+
 
 
 	NAN_METHOD(attach) {
@@ -483,39 +600,93 @@ namespace node_shm {
 
 
 
-// class SHM_CLASS {
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+	// SUPER_HEADER,NTiers,INTER_PROC_DESCRIPTOR_WORDS
+	// let p_offset = sz*(this.proc_index)*i + SUPER_HEADER*NTiers
 
 
-// #include <stdio.h>                                                                                                                  
-
-// #define SHMMAX_SYS_FILE "/proc/sys/kernel/shmmax"
-
-// int main(int argc, char **argv)
-// {
-//     unsigned int shmmax;
-//     FILE *f = fopen(SHMMAX_SYS_FILE, "r");
-
-//     if (!f) {
-//         fprintf(stderr, "Failed to open file: `%s'\n", SHMMAX_SYS_FILE);
-//         return 1;
-//     }
-
-//     if (fscanf(f, "%u", &shmmax) != 1) {
-//         fprintf(stderr, "Failed to read shmmax from file: `%s'\n", SHMMAX_SYS_FILE);
-//         fclose(f);
-//         return 1;
-//     }
-
-//     fclose(f);
-
-//     printf("shmmax: %u\n", shmmax);
-
-//     return 0;
-// }
+	static TierAndProcManager<3> *g_tiers_procs = nullptr;
 
 
+	// fixed size data elements 
+	NAN_METHOD(initialize_com_and_all_tiers) {
+		Nan::HandleScope scope;
+		//
+		if ( g_segments_manager == nullptr ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+		//
+		if ( info.Length() < 2 ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+		//
+		bool am_initializer			= Nan::To<bool>(info[0]).FromJust(); 	 // 0
+		uint32_t proc_number		= Nan::To<uint32_t>(info[1]).FromJust(); // 1
+		uint32_t num_procs 			= Nan::To<uint32_t>(info[2]).FromJust(); // 2
+		uint32_t num_tiers 			= Nan::To<uint32_t>(info[3]).FromJust(); // 3
+		uint32_t els_per_tier 		= Nan::To<uint32_t>(info[4]).FromJust(); // 4
+		uint32_t max_obj_size 		= Nan::To<uint32_t>(info[5]).FromJust(); // 5
+		key_t com_key 				= Nan::To<uint32_t>(info[6]).FromJust(); // 6
+		//
+		if ( com_key < keyMin || com_key >= keyMax ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+		//
+		Local<Array> jsArray		= Local<Array>::Cast(info[6]);			 // 7
+		uint16_t n = jsArray->Length();
+		//
+		// initialize com buffer....
+		int status = g_segments_manager->initialize_com_shm(com_key,am_initializer,num_procs,num_tiers,max_obj_size);
+		if ( status != 0 ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+
+		v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();
+		//
+		list<uint32_t> lru_keys;
+		list<uint32_t> hh_keys;
+
+		//
+		for ( uint16_t i = 0; i < n; i++ ) {
+			uint16_t j = 2*i;
+			uint16_t k = j + 1;
+			// data is stored in the lru... the hash table is divided into regions for control and integer sized entries
+			uint32_t lru_key  = Local<Array>::Cast(jsArray->Get(context, j)->Uint32Value(context).FromJust();
+			lru_keys.push_back(lru_key);
+			uint32_t hh_key  = Local<Array>::Cast(jsArray->Get(context, k)->Uint32Value(context).FromJust();
+			hh_keys.push_back(lru_key);
+		}
+
+		status = g_segments_manager->tier_segments_initializers(am_initializer,lru_keys,hh_keys);
+
+		if ( status != 0 ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+
+		//
+		//	launch readers after hopscotch tables are put into place
+		//	The g_tiers_procs are initialized with the regions as communication buffers...
+		//
+
+		g_tiers_procs = new TierAndProcManager<3>(g_segments_manager->_com_buffer,
+													g_segments_manager->_seg_to_lrus,
+														g_segments_manager->_seg_to_hh_tables,
+															g_segments_manager->_ids_to_seg_sizes,
+																am_initializer, proc_number,
+																	num_procs, num_tiers, els_per_tier, max_obj_size);
+		g_tiers_procs->set_and_init_com_buffer();
 
 
+
+		//
+		int count_segs = g_segments_manager->_ids_to_seg_addrs.size();
+		info.GetReturnValue().Set(Nan::New<Number>(count_segs));
+	}
 
 
 
@@ -524,133 +695,6 @@ namespace node_shm {
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-
-	// fixed size data elements 
-	NAN_METHOD(initLRU) {
-		Nan::HandleScope scope;
-		key_t key = 			Nan::To<uint32_t>(info[0]).FromJust();
-		size_t rc_sz = 			Nan::To<uint32_t>(info[1]).FromJust();
-		size_t seg_sz = 		Nan::To<uint32_t>(info[2]).FromJust();
-		bool am_initializer = 	Nan::To<bool>(info[3]).FromJust();
-		//
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-		//
-		int resId = g_segments_manager->key_to_id(key);
-		if ( resId != - 0 ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		//		
-		LRU_cache *plr = g_LRU_caches_per_segment[key];
-		//
-		if ( g_segments_manager->check_key(key) ) {
-			if ( plr != nullptr ) {
-				info.GetReturnValue().Set(Nan::New<Number>(plr->max_count()));
-			} else {
-				void *region = g_segments_manager->get_addr(key);
-				if ( region == nullptr ) {
-					info.GetReturnValue().Set(Nan::New<Number>(-1));
-					return;
-				}
-				//
-				size_t rec_size = rc_sz;
-				size_t seg_size = g_ids_to_seg_sizes[resId];
-				seg_size = ( seg_size > seg_sz ) ? seg_sz : seg_size;
-				g_ids_to_seg_sizes[resId] = seg_size;
-
-				LRU_cache *lru_cache = new LRU_cache(region,rec_size,seg_size,am_initializer);
-				if ( lru_cache->ok() ) {
-					g_LRU_caches_per_segment[key] = lru_cache;
-					info.GetReturnValue().Set(Nan::New<Number>(lru_cache->max_count()));
-				} else {
-					return Nan::ThrowError("Bad parametes for initLRU");
-				}
-			}
-		} else {
-			if ( plr != nullptr ) {
-				g_LRU_caches_per_segment.erase(key);
-			}
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-		}
-	}
-
-
-	
-	// fixed size data elements 
-	NAN_METHOD(initHopScotch) {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		key_t lru_key =  Nan::To<uint32_t>(info[1]).FromJust();
-		bool am_initializer = Nan::To<bool>(info[2]).FromJust();
-		size_t max_element_count = Nan::To<uint32_t>(info[3]).FromJust();
-		//
-		//
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-
-		int resId = shmget(key, 0, 0);
-		if (resId == -1) {
-			switch(errno) {
-				case ENOENT: // not exists
-				case EIDRM:  // scheduled for deletion
-					info.GetReturnValue().Set(Nan::New<Number>(-1));
-					return;
-				default:
-					return Nan::ThrowError(strerror(errno));
-			}
-		}
-		//
-		HH_map *phm = g_HMAP_caches_per_segment[key];
-		//
-		if ( shmCheckKey(key) ) {
-			if ( phm != nullptr ) {
-				info.GetReturnValue().Set(Nan::New<Number>(key));
-			} else {
-				void *region = g_segments_manager->get_addr(key);
-				if ( region == nullptr ) {
-					info.GetReturnValue().Set(Nan::New<Number>(-1));
-					return;
-				}
-				//
-				HH_map *hmap = new HH_map(region,max_element_count,am_initializer);
-				if ( hmap->ok() ) {
-					g_HMAP_caches_per_segment[key] = hmap;
-					// assign this HH_map to an LRU
-					LRU_cache *lru_cache = g_LRU_caches_per_segment[lru_key];
-					if ( lru_cache == nullptr ) {
-						if ( shmCheckKey(key) ) {
-							info.GetReturnValue().Set(Nan::New<Boolean>(false));
-						} else {
-							info.GetReturnValue().Set(Nan::New<Number>(-2));
-						}
-					} else {
-						lru_cache->set_hash_impl(hmap);
-						info.GetReturnValue().Set(Nan::New<Boolean>(true));
-					}
-					//
-				} else {
-					return Nan::ThrowError("Bad parametes for initLRU");
-				}
-				//
-			}
-
-		} else {
-			if ( phm != nullptr ) {
-				g_HMAP_caches_per_segment.erase(key);
-			}
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-		}
-	}
-
-
 
 
 	NAN_METHOD(getMaxCount) {
@@ -729,6 +773,14 @@ namespace node_shm {
 		epoch_time = epoch_ms();
 		info.GetReturnValue().Set(Nan::New<Number>(epoch_time));
 	}
+
+
+
+
+
+
+
+
 
 
 	// set el -- add a new entry to the LRU.  IF the LRU is full, return indicative value.
@@ -1037,6 +1089,8 @@ namespace node_shm {
 		}
 	}
 
+
+
 	NAN_METHOD(get_last_reason)  {
 		Nan::HandleScope scope;
 		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
@@ -1058,6 +1112,8 @@ namespace node_shm {
 			info.GetReturnValue().Set(New(reason).ToLocalChecked());
 		}
 	}
+
+
 
 	NAN_METHOD(reload_hash_map)  {
 		Nan::HandleScope scope;
@@ -1082,18 +1138,18 @@ namespace node_shm {
 		}
 	}
 
+
+
 	NAN_METHOD(reload_hash_map_update)  {
 		Nan::HandleScope scope;
 		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
 		uint32_t share_key = Nan::To<uint32_t>(info[0]).FromJust();
 		//
-
 		if ( g_segments_manager == nullptr ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
 			return;
 		}
-
-
+		//
 		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
 		if ( lru_cache == nullptr ) {
 			if ( shmCheckKey(key) ) {
@@ -1107,522 +1163,12 @@ namespace node_shm {
 		}
 	}
 
-	NAN_METHOD(run_lru_eviction)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		time_t cutoff = Nan::To<uint32_t>(info[1]).FromJust();
-		uint32_t max_evict_b = Nan::To<uint32_t>(info[2]).FromJust();
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
-
-		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			list<uint64_t> evict_list;
-			uint8_t max_evict = (uint8_t)(max_evict_b);
-			time_t time_shift = epoch_ms();
-			time_shift -= cutoff;
-			lru_cache->evict_least_used(time_shift,max_evict,evict_list);
-			string evicted_hash_as_str = joiner(evict_list);
-			info.GetReturnValue().Set(New(evicted_hash_as_str.c_str()).ToLocalChecked());
-		}
-	}
-
-	NAN_METHOD(run_lru_eviction_get_values)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		time_t cutoff = Nan::To<uint32_t>(info[1]).FromJust();
-		uint32_t max_evict_b = Nan::To<uint32_t>(info[2]).FromJust();
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
-		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			map<uint64_t,char *> evict_map;
-			uint8_t max_evict = (uint8_t)(max_evict_b);
-			time_t time_shift = epoch_ms();
-			time_shift -= cutoff;
-			lru_cache->evict_least_used_to_value_map(time_shift,max_evict,evict_map);
-
-			//string test = map_maker_destruct(evict_map);
-			//cout << test << endl;
-
-			Local<Object> jsObject = Nan::New<Object>();
-			js_map_maker_destruct(evict_map,jsObject);
-			info.GetReturnValue().Set(jsObject);
-		}
-	}
-
-	NAN_METHOD(run_lru_targeted_eviction_get_values)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		time_t cutoff = Nan::To<uint32_t>(info[1]).FromJust();
-		uint32_t max_evict_b = Nan::To<uint32_t>(info[2]).FromJust();
-		//
-		uint32_t hash_bucket = Nan::To<uint32_t>(info[3]).FromJust();
-		uint32_t original_hash = Nan::To<uint32_t>(info[4]).FromJust();
-		//
-		uint64_t hash64 = (((uint64_t)index << HALF) | (uint64_t)original_hash);
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
-		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			map<uint64_t,char *> evict_map;
-			uint8_t max_evict = (uint8_t)(max_evict_b);
-			time_t time_shift = epoch_ms();
-			time_shift -= cutoff;
-			//
-			uint8_t evict_count = lru_cache->evict_least_used_near_hash(hash_bucket,time_shift,max_evict,evict_map);
-			//
-			if ( evict_count < max_evict ) {
-				uint8_t remaining = max_evict - evict_count;
-				lru_cache->evict_least_used_to_value_map(time_shift,remaining,evict_map);
-			}
-
-			//string test = map_maker_destruct(evict_map);
-			//cout << test << endl;
-
-			Local<Object> jsObject = Nan::New<Object>();
-			js_map_maker_destruct(evict_map,jsObject);
-			info.GetReturnValue().Set(jsObject);
-		}
-	}
-
-
-	/**
-	 * 
-	*/
-	NAN_METHOD(run_lru_eviction_move_values)  {
-		Nan::HandleScope scope;
-		key_t key1 = Nan::To<uint32_t>(info[0]).FromJust();
-		key_t key2 = Nan::To<uint32_t>(info[1]).FromJust();
-		time_t cutoff = Nan::To<uint32_t>(info[2]).FromJust();
-		uint32_t max_evict_b = Nan::To<uint32_t>(info[3]).FromJust();
-
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		//
-		LRU_cache *from_lru_cache = g_LRU_caches_per_segment[key1];
-		LRU_cache *to_lru_cache = g_LRU_caches_per_segment[key2];
-		if ( from_lru_cache == nullptr ) {
-			if ( shmCheckKey(key1) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else if ( to_lru_cache == nullptr ) {
-			if ( shmCheckKey(key2) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			map<uint64_t,char *> evict_map;
-			uint8_t max_evict = (uint8_t)(max_evict_b);
-			time_t time_shift = epoch_ms();
-			time_shift -= cutoff;
-			from_lru_cache->evict_least_used_to_value_map(time_shift,max_evict,evict_map);
-
-			map<uint64_t,uint32_t> offsets;
-
-			for ( auto p : evict_map ) {
-				uint64_t hash64 = p.first;
-				char *data = p.second;
-				uint32_t offset = to_lru_cache->check_for_hash(hash64);
-				if ( offset == UINT32_MAX ) {  // no -- go ahead and add a new element  >> add_el
-					offset = to_lru_cache->add_el(data,hash64);
-					if ( offset != UINT32_MAX ) {
-						offsets[hash64] = offset;
-					}
-				}
-			}
-			//
-			info.GetReturnValue().Set(Nan::New<Boolean>(true));
-		}
-	}
-
-
-	NAN_METHOD(debug_dump_list)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		bool backwards = Nan::To<bool>(info[1]).FromJust();
-
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		//
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
-		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			list<uint32_t> evict_list;
-			lru_cache->_walk_allocated_list(3,backwards);
-			info.GetReturnValue().Set(Nan::New<Boolean>(true));
-		}	
-	}
-
-
-	// MUTEX
-
-	// fixed size data elements 
-	NAN_METHOD(init_mutex) {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		bool am_initializer = Nan::To<bool>(info[1]).FromJust();
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		//
-		int resId = shmget(key, 0, 0);
-		if (resId == -1) {
-			switch(errno) {
-				case ENOENT: // not exists
-				case EIDRM:  // scheduled for deletion
-					info.GetReturnValue().Set(Nan::New<Number>(-1));
-					return;
-				default:
-					return Nan::ThrowError(strerror(errno));
-			}
-		}
-		
-		MutexHolder *mtx = g_MUTEX_per_segment[key];
-		//
-		if ( shmCheckKey(key) ) {
-			if ( mtx != nullptr ) {
-				// just say that access through the key is possible
-				info.GetReturnValue().Set(Nan::New<Boolean>(true));
-			} else {
-				// setup the access
-				void *region = g_segments_manager->get_addr(key);
-				if ( region == nullptr ) {
-					info.GetReturnValue().Set(Nan::New<Number>(-1));
-					return;
-				}
-				//
-				mtx = new MutexHolder(region,am_initializer);
-
-				if ( mtx->ok() ) {
-					g_MUTEX_per_segment[key] = mtx;
-					info.GetReturnValue().Set(Nan::New<Boolean>(true));
-				} else {
-					string throw_message = mtx->get_last_reason();
-					return Nan::ThrowError(throw_message.c_str());
-				}
-			}
-		} else {
-			if ( mtx != nullptr ) {
-				g_MUTEX_per_segment.erase(key);
-			}
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-		}
-	}
-
-
-	NAN_METHOD(get_last_mutex_reason)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		//
-		MutexHolder *mtx = g_MUTEX_per_segment[key];
-		if ( mtx == nullptr ) {
-			if ( shmCheckKey(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			string mtx_reason = mtx->get_last_reason();
-			const char *reason = mtx_reason.c_str();
-			info.GetReturnValue().Set(New(reason).ToLocalChecked());
-		}
-	}
-
-
-
-	NAN_METHOD(try_lock)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		//
-		MutexHolder *mtx = g_MUTEX_per_segment[key];
-		if ( mtx == nullptr ) {
-			if ( shmCheckKey(key) ) {
-				info.GetReturnValue().Set(Nan::New<Number>(-3));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			if ( mtx->try_lock() ) {  // returns true if the lock is acquired
-				info.GetReturnValue().Set(Nan::New<Boolean>(true));
-			} else {
-				if ( mtx->ok() ) {  // the lock aquizition failed but the reason was useful (EBUSY)
-					info.GetReturnValue().Set(Nan::New<Boolean>(false));
-				} else {  // the lock aquizition failed but the reason indicated bad state
-					info.GetReturnValue().Set(Nan::New<Number>(-1));
-				}
-			}
-		}
-	}
-
-
-	NAN_METHOD(lock)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		//
-		MutexHolder *mtx = g_MUTEX_per_segment[key];
-		if ( mtx == nullptr ) {
-			if ( shmCheckKey(key) ) {
-				info.GetReturnValue().Set(Nan::New<Number>(-3));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			if ( mtx->lock() ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(true));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			}
-		}
-	}
-
-
-
-	NAN_METHOD(unlock)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		//
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-
-		MutexHolder *mtx = g_MUTEX_per_segment[key];
-		if ( mtx == nullptr ) {
-			if ( shmCheckKey(key) ) {
-				info.GetReturnValue().Set(Nan::New<Number>(-3));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			if ( mtx->unlock() ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(true));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			}
-		}
-	}
-
-
-
-	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-	// SUPER_HEADER,NTiers,INTER_PROC_DESCRIPTOR_WORDS
-	// let p_offset = sz*(this.proc_index)*i + SUPER_HEADER*NTiers
-
-
-	static TierAndProcManager *g_tiers_procs = nullptr;
-
-
-	NAN_METHOD(set_com_buf)  {
-		Nan::HandleScope scope;
-
-		uint32_t com_key = Nan::To<uint32_t>(info[0]).FromJust();
-		Local<Array> keys = Local<Array>::Cast(info[1]);
-
-		uint32_t SUPER_HEADER = Nan::To<uint32_t>(info[2]).FromJust();
-		uint32_t NTiers = Nan::To<uint32_t>(info[3]).FromJust();
-		uint32_t INTER_PROC_DESCRIPTOR_WORDS = Nan::To<uint32_t>(info[3]).FromJust();
-		//
-		//
-		size_t rc_sz = Nan::To<uint32_t>(info[4]).FromJust();
-		size_t seg_sz = Nan::To<uint32_t>(info[5]).FromJust();
-		bool am_initializer = Nan::To<bool>(info[6]).FromJust();
-		//
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-
-		uint16_t n = keys->Length();
-		v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();Value(context).FromJust();
-		//
-		void *regions[MAX_TIERS];
-
-		for ( int i = 0; i < min(NTiers,n); i++ ) {
-			uint32_t key = keys->Get(context, i).ToLocalChecked()->Uint32Value(context).FromJust();
-			//
-			int resId = shmget(key, 0, 0);
-			if (resId == -1) {
-				switch(errno) {
-					case ENOENT: // not exists
-					case EIDRM:  // scheduled for deletion
-						info.GetReturnValue().Set(Nan::New<Number>(-1));
-						return;
-					default:
-						return Nan::ThrowError(strerror(errno));
-				}
-			}
-			//
-			void *region = g_segments_manager->get_addr(key);
-			if ( region == nullptr ) {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-				return;
-			}
-			//
-			regions[i] = = region;
-		}
-
-		// ----
-
-		{
-			int resId = shmget(com_key, 0, 0);
-			if (resId == -1) {
-				switch(errno) {
-					case ENOENT: // not exists
-					case EIDRM:  // scheduled for deletion
-						info.GetReturnValue().Set(Nan::New<Number>(-1));
-						return;
-					default:
-						return Nan::ThrowError(strerror(errno));
-				}
-			}
-			//
-			void *region = g_segments_manager->get_addr(key);
-			if ( region == nullptr ) {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-				return;
-			}
-			g_com_buffer = region;
-		}
-
-		//
-		//	launch readers after hopscotch tables are put into place
-		//	The g_tiers_procs are initialized with the regions as communication buffers...
-		//
-		g_tiers_procs = new TierAndProcManager(regions, rc_sz, am_initializer, NTiers, SUPER_HEADER, INTER_PROC_DESCRIPTOR_WORDS);
-		g_tiers_procs->set_and_init_com_buffer(g_com_buffer);
-
-		info.GetReturnValue().Set(Nan::New<Boolean>(true));
-	}
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-	static_assert(sizeof(T) == sizeof(std::atomic<T>), 
-			"atomic<T> isn't the same size as T");
-
-	static_assert(std::atomic<T>::is_always_lock_free,  // C++17
-			"atomic<T> isn't lock-free, unusable on shared mem");
-			
-	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-
-
-	// messages_reserved is an area to store pointers to the messages that will be read.
-	// duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
-
-	// 				(TBD)
-	//  	attach_to_lru_list(LRU_element *first,LRU_element *last);
-	//		pair<uint32_t,uint32_t> filter_existence_check(messages,accesses,ready_msg_count);
-	//		LRU_element *claim_free_mem(ready_msg_count,assigned_tier)
-
-
-
-
-/*
-template<typename T, typename OP>
-T manipulate_bit(std::atomic<T> &a, unsigned n, OP bit_op) {
-    static_assert(std::is_integral<T>::value, "atomic type not integral");
-
-    T val = a.load();
-    while (!a.compare_exchange_weak(val, bit_op(val, n)));
-
-    return val;
-}
-
-auto set_bit = [](auto val, unsigned n) { return val | (1 << n); };
-auto clr_bit = [](auto val, unsigned n) { return val & ~(1 << n); };
-auto tgl_bit = [](auto val, unsigned n) { return val ^ (1 << n); };
-
-int main() {
-    std::atomic<int> a{0x2216};
-    manipulate_bit(a, 3, set_bit);  // set bit 3
-    manipulate_bit(a, 7, tgl_bit);  // toggle bit 7
-    manipulate_bit(a, 13, clr_bit);  // clear bit 13
-    bool isset = (a.load() >> 5) & 1;  // testing bit 5
-}
-*/
-
 
 
 	// LRU_cache method
-
-
-
 
 	void allow_delay() {
 		usleep(2);
@@ -1671,8 +1217,6 @@ int main() {
 		}
 		//
 
-
-
 		if ( g_segments_manager == nullptr ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
 			return;
@@ -1687,7 +1231,7 @@ int main() {
 			return;
 		}
 		//
-		if ( g_com_buffer == NULL ) {
+		if ( g_segments_manager->_com_buffer == NULL ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
 			return;
 		} else {
@@ -1722,11 +1266,12 @@ int main() {
 		Nan::SetMethod(target, "detachAll", detachAll);
 		Nan::SetMethod(target, "getTotalSize", getTotalSize);
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+		Nan::SetMethod(target, "initialize_com_and_all_tiers", initialize_com_and_all_tiers);
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		Nan::SetMethod(target, "epoch_time", time_since_epoch);
 
-
-		Nan::SetMethod(target, "initLRU", initLRU);
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		Nan::SetMethod(target, "getSegSize", getSegSize);
 		Nan::SetMethod(target, "max_count", getMaxCount);
 		Nan::SetMethod(target, "current_count", getCurrentCount);
@@ -1749,44 +1294,7 @@ int main() {
 		Nan::SetMethod(target, "set_share_key", set_share_key);
 		//
 		Nan::SetMethod(target, "debug_dump_list", debug_dump_list);
-		//
-		// HOPSCOTCH HASH
-		Nan::SetMethod(target, "initHopScotch", initHopScotch);
-		//
-		Nan::SetMethod(target, "run_lru_eviction", run_lru_eviction);
-		Nan::SetMethod(target, "run_lru_eviction_get_values", run_lru_eviction_get_values);
-		Nan::SetMethod(target, "run_lru_eviction_move_values", run_lru_eviction_move_values);
-		
-		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-		Nan::SetMethod(target, "init_mutex", init_mutex);
-		Nan::SetMethod(target, "try_lock", try_lock);
-		Nan::SetMethod(target, "lock", lock);
-		Nan::SetMethod(target, "unlock", unlock);
-		Nan::SetMethod(target, "get_last_mutex_reason", get_last_mutex_reason);
-	
-		//
-
-
-
-		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-		Nan::Set(target, Nan::New("IPC_PRIVATE").ToLocalChecked(), Nan::New<Number>(IPC_PRIVATE));
-		Nan::Set(target, Nan::New("IPC_CREAT").ToLocalChecked(), Nan::New<Number>(IPC_CREAT));
-		Nan::Set(target, Nan::New("IPC_EXCL").ToLocalChecked(), Nan::New<Number>(IPC_EXCL));
-		Nan::Set(target, Nan::New("SHM_RDONLY").ToLocalChecked(), Nan::New<Number>(SHM_RDONLY));
-		Nan::Set(target, Nan::New("NODE_BUFFER_MAX_LENGTH").ToLocalChecked(), Nan::New<Number>(node::Buffer::kMaxLength));
-		//enum ShmBufferType
-		Nan::Set(target, Nan::New("SHMBT_BUFFER").ToLocalChecked(), Nan::New<Number>(SHMBT_BUFFER));
-		Nan::Set(target, Nan::New("SHMBT_INT8").ToLocalChecked(), Nan::New<Number>(SHMBT_INT8));
-		Nan::Set(target, Nan::New("SHMBT_UINT8").ToLocalChecked(), Nan::New<Number>(SHMBT_UINT8));
-		Nan::Set(target, Nan::New("SHMBT_UINT8CLAMPED").ToLocalChecked(), Nan::New<Number>(SHMBT_UINT8CLAMPED));
-		Nan::Set(target, Nan::New("SHMBT_INT16").ToLocalChecked(), Nan::New<Number>(SHMBT_INT16));
-		Nan::Set(target, Nan::New("SHMBT_UINT16").ToLocalChecked(), Nan::New<Number>(SHMBT_UINT16));
-		Nan::Set(target, Nan::New("SHMBT_INT32").ToLocalChecked(), Nan::New<Number>(SHMBT_INT32));
-		Nan::Set(target, Nan::New("SHMBT_UINT32").ToLocalChecked(), Nan::New<Number>(SHMBT_UINT32));
-		Nan::Set(target, Nan::New("SHMBT_FLOAT32").ToLocalChecked(), Nan::New<Number>(SHMBT_FLOAT32));
-		Nan::Set(target, Nan::New("SHMBT_FLOAT64").ToLocalChecked(), Nan::New<Number>(SHMBT_FLOAT64));
-
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----	
 
 		Isolate* isolate = target->GetIsolate();
 		AddEnvironmentCleanupHook(isolate,AtNodeExit,nullptr);

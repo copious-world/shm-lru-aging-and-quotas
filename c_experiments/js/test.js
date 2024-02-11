@@ -5,8 +5,6 @@ const { spawn } = require('child_process');
 const { XXHash32 } = require('xxhash32-node-cmake')
 
 
-const perm = Number.parseInt('660', 8);
-
 const shm_mod = {}
 
 
@@ -36,88 +34,7 @@ function init_default(seed) {
 
 
 class SHM_CLASS {
-
-
-    /**
-     * Create shared memory segment
-     * @param {int} count - number of elements
-     * @param {string} typeKey - see keys of BufferType
-     * @param {int/null} key - integer key of shared memory segment, or null to autogenerate
-     * @return {mixed/null} shared memory buffer/array object, or null on error
-     *  Class depends on param typeKey: Buffer or descendant of TypedArray
-     *  Return object has property 'key' - integer key of created shared memory segment
-     */
-    create(count, typeKey /*= 'Buffer'*/, key /*= null*/) {
-        if (typeKey === undefined)
-            typeKey = 'Buffer';
-        if (key === undefined)
-            key = null;
-        if (BufferType[typeKey] === undefined)
-            throw new Error("Unknown type key " + typeKey);
-        if (key !== null) {
-            if (!(Number.isSafeInteger(key) && key >= keyMin && key <= keyMax))
-                throw new RangeError('Shm key should be ' + keyMin + ' .. ' + keyMax);
-        }
-        var type = BufferType[typeKey];
-        //var size1 = BufferTypeSizeof[typeKey];
-        //var size = size1 * count;
-        if (!(Number.isSafeInteger(count) && (count >= lengthMin && count <= lengthMax)))
-            throw new RangeError('Count should be ' + lengthMin + ' .. ' + lengthMax);
-        let res = null;
-        if (key) {
-            res = shm_mod.get(key, count, shm_mod.IPC_CREAT|shm_mod.IPC_EXCL|perm, 0, type);
-        }
-        if (res) {
-            res.key = key;
-        }
-        return res;
-    }
-
-
-
-    /**
-     * Get shared memory segment
-     * @param {int} key - integer key of shared memory segment
-     * @param {string} typeKey - see keys of BufferType
-     * @return {mixed/null} shared memory buffer/array object, see create(), or null on error
-     */
-    attach(key, typeKey /*= 'Buffer'*/) {
-        if (typeKey === undefined)
-            typeKey = 'Buffer';
-        if (BufferType[typeKey] === undefined)
-            throw new Error("Unknown type key " + typeKey);
-        var type = BufferType[typeKey];
-        if (!(Number.isSafeInteger(key) && key >= keyMin && key <= keyMax))
-            throw new RangeError('Shm key should be ' + keyMin + ' .. ' + keyMax);
-        let res = shm_mod.get(key, 0, 0, 0, type);
-        if (res) {
-            res.key = key;
-        }
-        return res;
-    }
-
-    /**
-     * Detach shared memory segment
-     * If there are no other attaches for this segment, it will be destroyed
-     * @param {int} key - integer key of shared memory segment
-     * @param {bool} forceDestroy - true to destroy even there are other attaches
-     * @return {int} count of left attaches or -1 on error
-     */
-    detach(key, forceDestroy /*= false*/) {
-        if (forceDestroy === undefined)
-            forceDestroy = false;
-        return shm_mod.detach(key, forceDestroy);
-    }
-
-    /**
-     * Detach all created and getted shared memory segments
-     * Will be automatically called on process exit/termination
-     * @return {int} count of destroyed segments
-     */
-    detachAll() {
-        return shm_mod.detachAll();
-    }
-
+    constructor() {}
 }
 
 const shm = new SHM_CLASS();
@@ -148,9 +65,9 @@ class TableMaster {
         this.master_token = default_hash(conf.identity_phrase)
         //
         let proc_count = conf.num_procs
-        let sz = shm.com_buffer_size();   // communication buffer -- implementation tells us what it needs
+        let sz = shm_mod.com_buffer_size();   // communication buffer -- implementation tells us what it needs
         //
-        this.com_buffer = shm.create(this.master_token,(proc_count*sz))
+        this.com_buffer = shm_mod.create(this.master_token,(proc_count*sz))
         //
         this.tier_tokens = {}
         this.tier_hh_tokens = {}
@@ -198,7 +115,7 @@ class TierOwner {
     constructor(conf) {
 
         this.tier_token = default_hash(conf.identity_phrase)
-        this.com_buffer = shm.attach(this.tier_token)
+        this.com_buffer = shm_mod.attach(this.tier_token)
         if ( this.com_buffer === null ) {
             console.dir(conf)
             console.log("module_path DOES NOT match with master_of_ceremonies OR master_of_ceremonies not yet initialized")
@@ -218,13 +135,13 @@ class TierOwner {
             //
             this.tier_tokens[tier_conf.tier] = lru_key
             //
-            this.tier_refs.lru_buffer = shm.attach(lru_key);
+            this.tier_refs.lru_buffer = shm_mod.attach(lru_key);
             let sz = shm.lru_buffer_size(count);    // communication buffer -- implementation tells us what it needs
             this.tier_refs.count = shm.initLRU(lru_key,this.record_size,sz,false)
             //
             key = tier_conf.hh_key;
             let hh_key = default_hash(key)
-            this.tier_refs.hh_bufer = shm.attach(hh_key);
+            this.tier_refs.hh_bufer = shm_mod.attach(hh_key);
 
             sz = shm.hop_scotch_buffer_size(count); // communication buffer -- implementation tells us what it needs
             this.tier_hh_tokens[tier_conf.tier] = hh_key
@@ -302,3 +219,43 @@ for ( let [key,tier_owner] of child_refs.entries() ) {
     await Promise.all(shut_down_promises)
     await master.shut_down()    
 })()
+
+
+
+
+
+
+
+
+
+
+
+
+// class SHM_CLASS {
+
+// #include <stdio.h>                                                                                                                  
+
+// #define SHMMAX_SYS_FILE "/proc/sys/kernel/shmmax"
+
+// int main(int argc, char **argv)
+// {
+//     unsigned int shmmax;
+//     FILE *f = fopen(SHMMAX_SYS_FILE, "r");
+
+//     if (!f) {
+//         fprintf(stderr, "Failed to open file: `%s'\n", SHMMAX_SYS_FILE);
+//         return 1;
+//     }
+
+//     if (fscanf(f, "%u", &shmmax) != 1) {
+//         fprintf(stderr, "Failed to read shmmax from file: `%s'\n", SHMMAX_SYS_FILE);
+//         fclose(f);
+//         return 1;
+//     }
+
+//     fclose(f);
+
+//     printf("shmmax: %u\n", shmmax);
+
+//     return 0;
+// }

@@ -376,7 +376,7 @@ int main(int argc, char **argv) {
   // test 2
 	auto start = chrono::system_clock::now();
 
-  
+
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 
@@ -431,4 +431,28 @@ milliseconds ms = duration_cast< milliseconds >(
 
 */
 
+
+/*
+template<typename T, typename OP>
+T manipulate_bit(std::atomic<T> &a, unsigned n, OP bit_op) {
+    static_assert(std::is_integral<T>::value, "atomic type not integral");
+
+    T val = a.load();
+    while (!a.compare_exchange_weak(val, bit_op(val, n)));
+
+    return val;
+}
+
+auto set_bit = [](auto val, unsigned n) { return val | (1 << n); };
+auto clr_bit = [](auto val, unsigned n) { return val & ~(1 << n); };
+auto tgl_bit = [](auto val, unsigned n) { return val ^ (1 << n); };
+
+int main() {
+    std::atomic<int> a{0x2216};
+    manipulate_bit(a, 3, set_bit);  // set bit 3
+    manipulate_bit(a, 7, tgl_bit);  // toggle bit 7
+    manipulate_bit(a, 13, clr_bit);  // clear bit 13
+    bool isset = (a.load() >> 5) & 1;  // testing bit 5
+}
+*/
 
