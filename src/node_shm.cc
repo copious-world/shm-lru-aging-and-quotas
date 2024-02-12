@@ -12,346 +12,6 @@ using namespace Nan;
 namespace node {
 namespace node_shm {
 
-
-	const uint32_t keyMin = 1;
-	const uint32_t keyMax = UINT32_MAX - keyMin;
-	const uint32_t lengthMin = 1;
-	const uint32_t lengthMax = UINT16_MAX;   // for now
-
-
-	using node::AtExit;
-	using v8::Local;
-	using v8::Number;
-	using v8::Object;
-	using v8::Value;
-
-
-	map<key_t,LRU_cache *>		g_LRU_caches_per_segment;
-	map<key_t,HH_map *>			g_HMAP_caches_per_segment;
-
-
-
-	class SharedSegmentsManager {
-
-		public:
-
-			SharedSegmentsManager() {
-				_container_node_size = sizeof(uint32_t)*8;
-			}
-			virtual ~SharedSegmentsManager() {}
-
-		public:
-
-			/**
-			 * shm_getter
-			*/
-			int shm_getter(key_t key, int at_shmflg,  int shmflg = 0, bool isCreate = false, size_t size = 0) {
-				//
-				int res_id = shmget(key, size, shmflg);
-				//
-				if ( res_id == -1 ) {
-					switch(errno) {
-						case EEXIST: // already exists
-						case EIDRM:  // scheduled for deletion
-						case ENOENT: // not exists
-							return -1;
-						case EINVAL: // should be SHMMIN <= size <= SHMMAX
-							return -2;
-						default:
-							return -2;  // tells caller to get the errno
-					}
-				} else {
-					//
-					if ( !isCreate ) {		// means to attach.... 
-						//
-						struct shmid_ds shminf;
-						//
-						err = shmctl(res_id, IPC_STAT, &shminf);
-						if ( err == 0 ) {
-							size = shminf.shm_segsz;   // get the seg size from the system
-							_ids_to_seg_sizes[key] = size;
-						} else {
-							return return -2;							
-						}
-					}
-					//
-					void* res = shmat(resId, NULL, at_shmflg);
-					//
-					if ( res == (void *)-1 ) return -2;
-					//
-					_ids_to_seg_addrs[key] = res;
-				}
-				
-				return 0;
-			}
-
-			/**
-			 * get_seg_size
-			*/
-			size_t get_seg_size(key_t key) {
-				int resId = shmget(key, 0, 0);
-				if (resId == -1) {
-					switch(errno) {
-						case ENOENT: // not exists
-						case EIDRM:  // scheduled for deletion
-							info.GetReturnValue().Set(Nan::New<Number>(-1));
-							return;
-						default:
-							return Nan::ThrowError(strerror(errno));
-					}
-				}
-				struct shmid_ds shminf;
-				size_t seg_size;
-				//
-				err = shmctl(res_id, IPC_STAT, &shminf);
-				if ( err == 0 ) {
-					seg_size = shminf.shm_segsz;   // get the seg size from the system
-					_ids_to_seg_sizes[key] = seg_size;
-				} else {
-					return return -2;							
-				}
-				return seg_size;
-			}
-
-
-			/**
-			 * _detach_op
-			*/
-			int _detach_op(key_t key, bool force, bool onExit) {
-				//
-				int resId = this->key_to_id(key);
-				if ( resId < 0 ) return resId;
-				//
-
-				void *addr = _ids_to_seg_addrs[key];
-				struct shmid_ds shminf;
-				int err = shmdt(addr);
-				if ( err ) {
-					if ( !(onExit) ) return -2;
-					return err;
-				}
-					//get stat
-				err = shmctl(resId, IPC_STAT, &shminf);
-				if ( err ) {
-					if ( !(onExit) ) return -2;
-					return err;
-				}
-				//destroy if there are no more attaches or force==true
-				if ( force || shminf.shm_nattch == 0 ) {
-					//
-					err = shmctl(resId, IPC_RMID, 0);
-					if ( err ) {
-						if ( !(onExit) ) return -2;
-						return err;
-					}
-					//
-					delete _ids_to_seg_addrs[key];
-					delete _ids_to_seg_sizes[key];
-					//
-					return 0;
-				} else {
-					return shminf.shm_nattch; //detached, but not destroyed
-				}
-				return -1;
-			}
-
-			/**
-			 * detach
-			*/
-
-			size_t detach(key_t key,bool forceDestroy) {
-				//
-				int status = this->_detach_op(key,forceDestroy);
-				if ( status == 0 ) {
-					this->remove_if_lru(key);
-					this->remove_if_hh_map(key);
-					this->remove_if_com_buffer(key);
-					return _ids_to_seg_addrs.size();
-				}
-				//
-				return status;
-			}
-
-
-
-			/**
-			 * detach_all
-			*/
-
-			pair<uint16_t,size_t> detach_all(bool forceDestroy = false) {
-				unsigned int deleted = 0;
-				size_t total_freed = 0;
-				for ( auto p : _ids_to_seg_sizes ) {
-					key_t key = p.first;
-					if ( this->detach(key,forceDestroy) == 0 ) {
-						deleted++;
-						total_freed += p.second;
-					}
-				}
-				return pair<uint16_t,size_t>(deleted,total_freed);
-			}
-
-
-			void remove_if_lru(key_t key) {}
-			void remove_if_hh_map(key_t key) {}
-			void remove_if_com_buffer(key_t key) {}
-
-			/**
-			 * key_to_id
-			*/
-			int key_to_id(key_t key) {
-				int resId = shmget(key, 0, 0);
-				if ( resId == -1 ) {
-					switch(errno) {
-						case ENOENT: // not exists
-						case EIDRM:  // scheduled for deletion
-							return(-1);
-						default:
-							return(-1);
-					}
-				}
-				return resId;
-			}
-
-
-			/**
-			 * total_mem_allocated
-			*/
-			size_t total_mem_allocated(void) {
-				size_t total_mem = 0;
-				for ( auto p : _ids_to_seg_sizes ) {
-					total_mem += p.second;
-				}
-				return total_mem;
-			}
-
-
-			/**
-			 * check_key
-			*/
-			bool check_key(key_t key) {
-				if ( find(_ids_to_seg_addrs.begin(),_ids_to_seg_addrs.end(),key) != _ids_to_seg_addrs.end() ) return true;
-				int resId  this->key_to_id(key);
-				if ( resId == -1 ) { return false; }
-				return true;
-			}
-
-
-			/**
-			 * get_addr
-			*/
-			void *get_addr(key_t key) {
-				auto seg = _ids_to_seg_addrs[key];
-				return seg;
-			}
-
-			/**
-			 * _shm_creator
-			*/
-
-			int _shm_creator(key_t key,size_t seg_size) {
-				auto perm = 0660;
-				int at_shmflg = 0;
-				int shmflg = IPC_CREAT | IPC_EXCL | perm;
-				int status = this->shm_getter(key, at_shmfl, shmflg, true, seg_size);
-				return status;
-			}
-			
-			int _shm_attacher(key_t key,int at_shmflg) {
-				int status = this->shm_getter(key, at_shmfl);
-				return status;
-			}
-
-			/**
-			 * initialize_com
-			*/
-			int initialize_com_shm(key_t com_key, bool am_initializer, uint32_t num_procs, uint32_t num_tiers, uint32_t max_obj_size) {
-				//
-				int status = 0;
-				if ( am_initializer ) {
-					size_t seg_size = num_procs*num_tiers*max_obj_size + num_procs*num_tiers*sizof(uint32_t);   // CHECK
-					status = _shm_creator(com_key,seg_size);
-				} else {
-					int at_shmflg = 0;
-					int shmflg = 0;
-					//
-					status = this->_shm_attacher(key, at_shmfl);
-				}
-				//
-				if ( status == 0 ) _com_buffer = _ids_to_seg_addrs[com_key];
-				//
-				return status;
-			}
-
-			int initialize_lru_shm(key_t key, bool am_initializer, uint32_t els_per_tier, uint32_t max_obj_size, uint32_t control_words_per_tier) {
-				int status = 0;
-				if ( am_initializer ) {
-					size_t seg_size = els_per_tier*max_obj_size*_container_node_size + control_words_per_tier*sizof(uint32_t);   // CHECK
-					status = _shm_creator(com_key,seg_size);
-				} else {
-					int at_shmflg = 0;
-					int shmflg = 0;
-					//
-					status = this->_shm_attacher(key, at_shmfl);
-				}
-				//
-				if ( status == 0 ) {
-					_seg_to_lrus[key] = _ids_to_seg_addrs[key];
-				}
-				return status;
-			}
-
-			int initialize_hmm_shm(key_t key,  bool am_initializer, uint32_t els_per_tier,uint32_t control_words_per_tier) {
-				int status = 0;
-				if ( am_initializer ) {
-					size_t seg_size = 4*els_per_tier*sizeof(uint64_t) + control_words_per_tier*sizof(uint32_t);   // CHECK
-					status = _shm_creator(com_key,seg_size);
-				} else {
-					int at_shmflg = 0;
-					int shmflg = 0;
-					//
-					status = this->_shm_attacher(key, at_shmfl);
-				}
-				if ( status == 0 ) {
-					_seg_to_hh_tables[key] = _ids_to_seg_addrs[key];
-				}
-				return status;
-			}
-
-
-			int tier_segments_initializers(bool am_initializer,list<uint32_t> &lru_keys,list<uint32_t> &hh_keys) {
-				//
-				for ( auto lru_key : lru_keys ) {
-					if ( lru_key < keyMin || lru_key >= keyMax ) {
-						return -(i+1);
-					}
-					status = this->initialize_lru_shm(lru_key,am_initializer,els_per_tier);
-					if ( status != 0 ) { return status; }
-				}
-				for ( auto hh_key : hh_keys ) {
-					if ( hh_key < keyMin || hh_key >= keyMax ) {
-						return -(i+1);
-					}
-					status = this->initialize_hmm_shm(hh_key,am_initializer,els_per_tier);
-					if ( status != 0 ) { return status; }
-				}
-				//
-				return 0;
-			}
-
-	public:
-//--
-			map<key_t,void *>					_ids_to_seg_addrs;
-			map<key_t,size_t> 					_ids_to_seg_sizes;
-			//
-			void 								*_com_buffer;
-			map<key_t,void *>					_seg_to_lrus;
-			map<key_t,void *>					_seg_to_hh_tables;
-			//
-			size_t								_container_node_size;
-
-	};
-
 	//
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- 
 
@@ -622,11 +282,12 @@ namespace node_shm {
 			return;
 		}
 		//
+		//
 		bool am_initializer			= Nan::To<bool>(info[0]).FromJust(); 	 // 0
 		uint32_t proc_number		= Nan::To<uint32_t>(info[1]).FromJust(); // 1
 		uint32_t num_procs 			= Nan::To<uint32_t>(info[2]).FromJust(); // 2
 		uint32_t num_tiers 			= Nan::To<uint32_t>(info[3]).FromJust(); // 3
-		uint32_t els_per_tier 		= Nan::To<uint32_t>(info[4]).FromJust(); // 4
+		uint32_t els_per_tier 		= Nan::To<uint32_t>(info[4]).FromJust(); // 4  // els per tier includes expecter # legal sessions + reserve...
 		uint32_t max_obj_size 		= Nan::To<uint32_t>(info[5]).FromJust(); // 5
 		key_t com_key 				= Nan::To<uint32_t>(info[6]).FromJust(); // 6
 		//
@@ -639,7 +300,7 @@ namespace node_shm {
 		uint16_t n = jsArray->Length();
 		//
 		// initialize com buffer....
-		int status = g_segments_manager->initialize_com_shm(com_key,am_initializer,num_procs,num_tiers,max_obj_size);
+		int status = g_segments_manager->initialize_com_shm(com_key,am_initializer,num_procs,num_tiers);
 		if ( status != 0 ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
 			return;
@@ -661,8 +322,8 @@ namespace node_shm {
 			hh_keys.push_back(lru_key);
 		}
 
-		status = g_segments_manager->tier_segments_initializers(am_initializer,lru_keys,hh_keys);
-
+		status = g_segments_manager->tier_segments_initializers(am_initializer,lru_keys,hh_keys,max_obj_size,num_procs,num_tiers,els_per_tier);
+		//
 		if ( status != 0 ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
 			return;
@@ -679,9 +340,15 @@ namespace node_shm {
 															g_segments_manager->_ids_to_seg_sizes,
 																am_initializer, proc_number,
 																	num_procs, num_tiers, els_per_tier, max_obj_size);
+		//
 		g_tiers_procs->set_and_init_com_buffer();
-
-
+		//
+		status = g_tiers_procs->launch_second_phase_threads();
+		//
+		if ( status != 0 ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
 
 		//
 		int count_segs = g_segments_manager->_ids_to_seg_addrs.size();
@@ -706,9 +373,9 @@ namespace node_shm {
 			return;
 		}
 
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -728,9 +395,9 @@ namespace node_shm {
 			return;
 		}
 
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -751,9 +418,9 @@ namespace node_shm {
 			return;
 		}
 
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -802,9 +469,9 @@ namespace node_shm {
 
 
 		// First check to see if a buffer was every allocated
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {		// buffer was not set yield an error
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -847,9 +514,9 @@ namespace node_shm {
 
 		//
 		// First check to see if a buffer was every allocated
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {		// buffer was not set yield an error
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -906,10 +573,10 @@ namespace node_shm {
 			return;
 		}
 
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -952,9 +619,9 @@ namespace node_shm {
 		//
 //cout << "get h> " << hash << " i> " << index << " " << hash64 << endl;
 		//
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -989,9 +656,9 @@ namespace node_shm {
 			return;
 		}
 
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -1004,6 +671,7 @@ namespace node_shm {
 			}
 		}
 	}
+
 
 	NAN_METHOD(del_key)  {
 		Nan::HandleScope scope;
@@ -1018,9 +686,9 @@ namespace node_shm {
 			return;
 		}
 
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -1054,9 +722,9 @@ namespace node_shm {
 		}
 
 
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -1067,15 +735,18 @@ namespace node_shm {
 		}
 	}
 
+
+
+
 	NAN_METHOD(set_share_key)  {
 		Nan::HandleScope scope;
 		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
 		key_t index = Nan::To<uint32_t>(info[1]).FromJust();
 		uint32_t share_key = Nan::To<uint32_t>(info[2]).FromJust();
 		//
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -1100,9 +771,9 @@ namespace node_shm {
 			return;
 		}
 
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -1125,9 +796,9 @@ namespace node_shm {
 			return;
 		}
 
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -1150,9 +821,9 @@ namespace node_shm {
 			return;
 		}
 		//
-		LRU_cache *lru_cache = g_LRU_caches_per_segment[key];
+		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
 		if ( lru_cache == nullptr ) {
-			if ( shmCheckKey(key) ) {
+			if ( g_segments_manager->check_key(key) ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 			} else {
 				info.GetReturnValue().Set(Nan::New<Number>(-1));

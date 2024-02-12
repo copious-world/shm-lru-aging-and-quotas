@@ -1,3 +1,5 @@
+// ---- ---- ---- ---- ---- ---- ---- ----
+
 #include <node.h>
 #include <node_buffer.h>
 #include <v8.h>
@@ -5,6 +7,7 @@
 #include <errno.h>
 #include <asm/errno.h>
 
+// ---- ---- ---- ---- ---- ---- ---- ----
 
 #include <unistd.h>
 #include <sys/ipc.h>
@@ -18,6 +21,8 @@
 
 #include <iostream>
 #include <sstream>
+
+// ---- ---- ---- ---- ---- ---- ---- ----
 
 
 #ifndef _POSIX_THREAD_PROCESS_SHARED
@@ -38,382 +43,13 @@ using namespace std;
 #include "node_shm_LRU.h"
 
 
-class MutexHolder {
-	public:
-		//
-		MutexHolder(void *mem_ptr,bool am_initializer) {
-			_mutex_ptr = nullptr;
-			_status = true;
-			if ( am_initializer ) {
-				this->init_mutex(mem_ptr);
-			} else {
-				_mutex_ptr = (pthread_mutex_t *)(mem_ptr);
-			}
-		}
 
-		// ~
-		virtual ~MutexHolder(void) {
-			if ( _mutex_ptr ) {
-				pthread_mutex_destroy(_mutex_ptr);
-			}
-		}
-
-		/**
-		 * Called by the constructor if the `am_initializer` parameter is **true**.
-		 * Performs standard POSIX style mutex initizalization.
-		*/
-		void init_mutex(void *mutex_mem) {
-			//
-			_mutex_ptr = (pthread_mutex_t *)mutex_mem;
-			//
-			int result = pthread_mutexattr_init(&_mutex_attributes);
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthreas_mutexattr_init: ";
-				_last_reason += strerror(result);
-				return;
-			}
-			result = pthread_mutexattr_setpshared(&_mutex_attributes,PTHREAD_PROCESS_SHARED);
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthread_mutexattr_setpshared: ";
-				_last_reason += strerror(result);
-				return;
-			}
-
-			result = pthread_mutex_init(_mutex_ptr, &_mutex_attributes);
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthread_mutex_init: ";
-				_last_reason += strerror(result);
-				return;
-			}
-			//
-		}
-
-		/**
-		 * Calls the posix mutex try lock. Hence, if the thread is locked this will return
-		 * immediatly. If the mutex is locked, the status EBUSY will be returned to this method, and the method
-		 * will return **false** with the object `_status` set to true.
-		 */
-		bool try_lock() {
-			reset_status();
-			if ( _mutex_ptr == nullptr ) {
-				return(false);
-			}
-			 int result = pthread_mutex_trylock( _mutex_ptr );
-			 if ( result == EBUSY ) {
-				 _status = true;
-				 return(false);
-			 }
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthread_mutex_trylock: ";
-				_last_reason += strerror(result);
-				return (false);
-			}
-			return(true);
-		}
-
-		bool lock() {
-			reset_status();
-			if ( _mutex_ptr == nullptr ) {
-				return(false);
-			}
-			int result = pthread_mutex_lock( _mutex_ptr );
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthread_mutex_lock: ";
-				_last_reason += strerror(result);
-				return (false);
-			}
-			return(true);
-		}
-
-		bool unlock() {
-			reset_status();
-			if ( _mutex_ptr == nullptr ) {
-				return(false);
-			}
-			int result = pthread_mutex_unlock( _mutex_ptr );
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthread_mutex_lock: ";
-				_last_reason += strerror(result);
-				return (false);
-			}
-			return(true);
-		}
-
-
-		/// status ---- ---- ---- ---- ---- ---- ---- ----
-
-		//
-		bool ok(void) {
-			return _status;
-		}
-
-		void reset_status(void) {
-			_status = true;
-		}
-
-		string get_last_reason(void) {
-			if ( _status ) return("OK");
-			string report = _last_reason;
-			_last_reason = "OK";
-			_status = true;
-			return report;
-		}
-
-		// 
-		pthread_mutex_t		*_mutex_ptr;
-		pthread_mutexattr_t	_mutex_attributes;
-		bool				_status;
-		string				_last_reason;
-};
-
-
-
-
-// There is one condition variable per tier
-
-class ConditionHolder {
-	public:
-		// (+)
-		ConditionHolder(void *mem_ptr,MutexHolder *mutex_lock,bool am_initializer) {
-			_cond_ptr = nullptr;
-			_status = true;
-			if ( am_initializer ) {
-				this->init_condition(mem_ptr);
-			} else {
-				_cond_ptr = (pthread_cond_t *)(mem_ptr);
-			}
-			_mutex_lock = mutex_lock;
-		}
-
-		// ~
-		virtual ~ConditionHolder(void) {
-			if ( _cond_ptr ) {
-				pthread_cond_destroy(_cond_ptr);
-			}
-		}
-
-		// ----
-		//
-		void init_condition(void *cond_mem) {
-			//
-			_cond_ptr = (pthread_cond_t *)cond_mem;
-			//
-			int result = pthread_condattr_init(&_cond_attributes);
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthread_condattr_init: ";
-				_last_reason += strerror(result);
-				return;
-			}
-			result = pthread_condattr_getpshared(&_cond_attributes,PTHREAD_PROCESS_SHARED);
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthread_condattr_getpshared: ";
-				_last_reason += strerror(result);
-				return;
-			}
-			result = pthread_cond_init(_cond_ptr, &_cond_attributes);
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthread_cond_init: ";
-				_last_reason += strerror(result);
-				return;
-			}
-			//
-		}
-
-		// 
-
-		bool signal() {
-			int result = pthread_cond_signal(_cond_ptr);
-			if ( result != 0 ) {
-				_status = false;
-				_last_reason = "pthread_cond_signal: ";
-				_last_reason += strerror(result);
-				return (false);
-			}
-			return true;
-		}
-
-		// ---- 
-		//
-		bool wait_on(char *shared_state) {
-			if ( _mutex_lock->lock() ) {
-				if ( *shared_state == 0 ) {
-					int result = pthread_cond_wait(_cond_ptr,_mutex_lock->_mutex_ptr);
-				} else {
-					_status = false;
-					_last_reason = "pthread_cond_wait: ";
-					_last_reason += strerror(result);
-					return (false);
-				}
-				_mutex_lock->unlock();
-			} else {
-				return false;
-			}
-			return true;
-		}
-
-
-		/**
-		*/
-		bool wait_on_timed(char *shared_state,uint8_t delta_seconds) {
-			return wait_on_timed(shared_state,delta_seconds,-1);
-		}
-
-
-		bool wait_on_timed(char *shared_state,uint8_t delta_seconds,int32_t max_reps) {
-			if ( _mutex_lock->lock() ) {
-				// timespec is a structure holding an interval broken down into seconds and nanoseconds.
-				struct timespec max_wait = {0, 0};
-				//
-				int result = clock_gettime(CLOCK_REALTIME, &max_wait);
-				if ( result !== 0 ) {
-					_status = false;
-					_last_reason = "wait_on_timed: Could not get time from clock.\n ";
-					_last_reason += strerror(result);
-					_mutex_lock->unlock();
-					return (false);
-				}
-				//
-				max_wait.tv_sec += delta_seconds;
-
-				while ( (*shared_state) == 0 ) {
-					result = pthread_cond_timedwait(_cond_ptr,_mutex_lock->_mutex_ptr, &max_wait);
-					if ( (result != 0) && (result != ETIMEDOUT || (max_reps == 0) ) ) {
-						_status = false;
-						_last_reason = "wait_on_timed: condition variable failed but not a timeout.\n ";
-						_last_reason += strerror(result);
-						_mutex_lock->unlock();
-						return (false);
-					}
-					if ( result == 0 ) {
-						*shared_state = 1;
-						break;
-					}
-					if ( max_reps > 0 ) {
-						max_reps--;
-					}
-					//
-					max_wait.tv_sec += delta_seconds;
-				}
-				_mutex_lock->unlock();
-			} else {
-				return false
-			}
-			return true
-		}
-
-		// 
-		pthread_cond_t		*_cond_ptr;
-		pthread_condattr_t	_cond_attributes;
-		MutexHolder 		*_mutex_lock
-		bool				_status;
-		string				_last_reason;
-};
-
-
-
-
-/*
-namespace imp {
-	static const size_t kMaxLength = 0x3fffffff;
-}
-
-namespace node {
-namespace Buffer {
-	// 2^31 for 64bit, 2^30 for 32bit
-	static const unsigned int kMaxLength = 
-		sizeof(int32_t) == sizeof(intptr_t) ? 0x3fffffff : 0x7fffffff;
-}
-}
-*/
 
 #define SAFE_DELETE(a) if( (a) != NULL ) delete (a); (a) = NULL;
 #define SAFE_DELETE_ARR(a) if( (a) != NULL ) delete [] (a); (a) = NULL;
 
 
-enum ShmBufferType {
-	SHMBT_BUFFER = 0, //for using Buffer instead of TypedArray
-	SHMBT_INT8,
-	SHMBT_UINT8,
-	SHMBT_UINT8CLAMPED,
-	SHMBT_INT16,
-	SHMBT_UINT16,
-	SHMBT_INT32,
-	SHMBT_UINT32,
-	SHMBT_FLOAT32,
-	SHMBT_FLOAT64
-};
-
-inline int getSize1ForShmBufferType(ShmBufferType type) {
-	size_t size1 = 0;
-	switch(type) {
-		case SHMBT_BUFFER:
-		case SHMBT_INT8:
-		case SHMBT_UINT8:
-		case SHMBT_UINT8CLAMPED:
-			size1 = 1;
-		break;
-		case SHMBT_INT16:
-		case SHMBT_UINT16:
-			size1 = 2;
-		break;
-		case SHMBT_INT32:
-		case SHMBT_UINT32:
-		case SHMBT_FLOAT32:
-			size1 = 4;
-		break;
-		default:
-		case SHMBT_FLOAT64:
-			size1 = 8;
-		break;
-	}
-	return size1;
-}
-
-
-namespace node {
-namespace Buffer {
-
-	MaybeLocal<Object> NewTyped(
-		Isolate* isolate, 
-		char* data, 
-		size_t length
-	#if NODE_MODULE_VERSION > IOJS_2_0_MODULE_VERSION
-	    , node::Buffer::FreeCallback callback
-	#else
-	    , node::smalloc::FreeCallback callback
-	#endif
-	    , void *hint
-		, ShmBufferType type = SHMBT_FLOAT64
-	);
-
-}
-}
-
-
-namespace Nan {
-
-	inline MaybeLocal<Object> NewTypedBuffer(
-	      char *data
-	    , size_t length
-#if NODE_MODULE_VERSION > IOJS_2_0_MODULE_VERSION
-	    , node::Buffer::FreeCallback callback
-#else
-	    , node::smalloc::FreeCallback callback
-#endif
-	    , void *hint
-		, ShmBufferType type = SHMBT_FLOAT64
-	);
-
-}
+#define NUM_ATOMIC_FLAG_OPS_PER_TIER		(4)
 
 
 namespace node {
@@ -491,11 +127,6 @@ namespace node_shm {
 
 	// LRU -   ----  ----  ----  ----  ----  ----  ----
 	//	hash default or Hop Scotch
-
-	/**
-	 * Setup LRU data structure on top of the shared memory
-	 */
-	NAN_METHOD(initLRU);
 
 	/**
 	 * get LRU segment size
@@ -578,12 +209,6 @@ namespace node_shm {
 	NAN_METHOD(debug_dump_list);
 
 
-	// HOPSCOTCH  ----  ----  ----  ----  ----
-	/**
-	 * Setup LRU data structure on top of the shared memory
-	 */
-	NAN_METHOD(initHopScotch);
-
 
 	// CREATE  ----  ----  ----  ----  ----  ----
 	/**
@@ -592,30 +217,384 @@ namespace node_shm {
 	NAN_METHOD(create);
 
 
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+	const uint32_t keyMin = 1;
+	const uint32_t keyMax = UINT32_MAX - keyMin;
+	const uint32_t lengthMin = 1;
+	const uint32_t lengthMax = UINT16_MAX;   // for now
+
+
+	using node::AtExit;
+	using v8::Local;
+	using v8::Number;
+	using v8::Object;
+	using v8::Value;
 
 
 
+	class SharedSegmentsManager {
+
+		public:
+
+			SharedSegmentsManager() {
+				_container_node_size = sizeof(uint32_t)*8;
+			}
+			virtual ~SharedSegmentsManager() {}
+
+		public:
+
+			/**
+			 * shm_getter
+			*/
+			int shm_getter(key_t key, int at_shmflg,  int shmflg = 0, bool isCreate = false, size_t size = 0) {
+				//
+				int res_id = shmget(key, size, shmflg);
+				//
+				if ( res_id == -1 ) {
+					switch(errno) {
+						case EEXIST: // already exists
+						case EIDRM:  // scheduled for deletion
+						case ENOENT: // not exists
+							return -1;
+						case EINVAL: // should be SHMMIN <= size <= SHMMAX
+							return -2;
+						default:
+							return -2;  // tells caller to get the errno
+					}
+				} else {
+					//
+					if ( !isCreate ) {		// means to attach.... 
+						//
+						struct shmid_ds shminf;
+						//
+						err = shmctl(res_id, IPC_STAT, &shminf);
+						if ( err == 0 ) {
+							size = shminf.shm_segsz;   // get the seg size from the system
+							_ids_to_seg_sizes[key] = size;
+						} else {
+							return return -2;							
+						}
+					}
+					//
+					void* res = shmat(resId, NULL, at_shmflg);
+					//
+					if ( res == (void *)-1 ) return -2;
+					//
+					_ids_to_seg_addrs[key] = res;
+				}
+				
+				return 0;
+			}
+
+			/**
+			 * get_seg_size
+			*/
+			size_t get_seg_size(key_t key) {
+				int resId = shmget(key, 0, 0);
+				if (resId == -1) {
+					switch(errno) {
+						case ENOENT: // not exists
+						case EIDRM:  // scheduled for deletion
+							info.GetReturnValue().Set(Nan::New<Number>(-1));
+							return;
+						default:
+							return Nan::ThrowError(strerror(errno));
+					}
+				}
+				struct shmid_ds shminf;
+				size_t seg_size;
+				//
+				err = shmctl(res_id, IPC_STAT, &shminf);
+				if ( err == 0 ) {
+					seg_size = shminf.shm_segsz;   // get the seg size from the system
+					_ids_to_seg_sizes[key] = seg_size;
+				} else {
+					return return -2;							
+				}
+				return seg_size;
+			}
 
 
-	/**
-	 * Get access to the semaphore identified by a key
-	 */
-	NAN_METHOD(init_mutex);
+			/**
+			 * _detach_op
+			*/
+			int _detach_op(key_t key, bool force, bool onExit) {
+				//
+				int resId = this->key_to_id(key);
+				if ( resId < 0 ) return resId;
+				//
 
-	/**
-	 * 	Wrap try_wait ... try_lock  ... will return if the lock is busy...
-	 */
-	NAN_METHOD(try_lock);
+				void *addr = _ids_to_seg_addrs[key];
+				struct shmid_ds shminf;
+				int err = shmdt(addr);
+				if ( err ) {
+					if ( !(onExit) ) return -2;
+					return err;
+				}
+					//get stat
+				err = shmctl(resId, IPC_STAT, &shminf);
+				if ( err ) {
+					if ( !(onExit) ) return -2;
+					return err;
+				}
+				//destroy if there are no more attaches or force==true
+				if ( force || shminf.shm_nattch == 0 ) {
+					//
+					err = shmctl(resId, IPC_RMID, 0);
+					if ( err ) {
+						if ( !(onExit) ) return -2;
+						return err;
+					}
+					//
+					delete _ids_to_seg_addrs[key];
+					delete _ids_to_seg_sizes[key];
+					//
+					return 0;
+				} else {
+					return shminf.shm_nattch; //detached, but not destroyed
+				}
+				return -1;
+			}
 
-	/**
-	 * 	Wrap lock  ... queue up for the lock...
-	 */
-	NAN_METHOD(lock);
+			/**
+			 * detach
+			*/
 
-	/**
-	 *  Release the lock
-	 */
-	NAN_METHOD(unlock);
+			size_t detach(key_t key,bool forceDestroy) {
+				//
+				int status = this->_detach_op(key,forceDestroy);
+				if ( status == 0 ) {
+					this->remove_if_lru(key);
+					this->remove_if_hh_map(key);
+					this->remove_if_com_buffer(key);
+					return _ids_to_seg_addrs.size();
+				}
+				//
+				return status;
+			}
+
+
+
+			/**
+			 * detach_all
+			*/
+
+			pair<uint16_t,size_t> detach_all(bool forceDestroy = false) {
+				unsigned int deleted = 0;
+				size_t total_freed = 0;
+				for ( auto p : _ids_to_seg_sizes ) {
+					key_t key = p.first;
+					if ( this->detach(key,forceDestroy) == 0 ) {
+						deleted++;
+						total_freed += p.second;
+					}
+				}
+				return pair<uint16_t,size_t>(deleted,total_freed);
+			}
+
+
+			void remove_if_lru(key_t key) {}
+			void remove_if_hh_map(key_t key) {}
+			void remove_if_com_buffer(key_t key) {}
+
+			/**
+			 * key_to_id
+			*/
+			int key_to_id(key_t key) {
+				int resId = shmget(key, 0, 0);
+				if ( resId == -1 ) {
+					switch(errno) {
+						case ENOENT: // not exists
+						case EIDRM:  // scheduled for deletion
+							return(-1);
+						default:
+							return(-1);
+					}
+				}
+				return resId;
+			}
+
+
+			/**
+			 * total_mem_allocated
+			*/
+			size_t total_mem_allocated(void) {
+				size_t total_mem = 0;
+				for ( auto p : _ids_to_seg_sizes ) {
+					total_mem += p.second;
+				}
+				return total_mem;
+			}
+
+
+			/**
+			 * check_key
+			*/
+			bool check_key(key_t key) {
+				if ( find(_ids_to_seg_addrs.begin(),_ids_to_seg_addrs.end(),key) != _ids_to_seg_addrs.end() ) return true;
+				int resId  this->key_to_id(key);
+				if ( resId == -1 ) { return false; }
+				return true;
+			}
+
+
+			/**
+			 * get_addr
+			*/
+			void *get_addr(key_t key) {
+				auto seg = _ids_to_seg_addrs[key];
+				return seg;
+			}
+
+			/**
+			 * _shm_creator
+			*/
+
+			int _shm_creator(key_t key,size_t seg_size) {
+				auto perm = 0660;
+				int at_shmflg = 0;
+				int shmflg = IPC_CREAT | IPC_EXCL | perm;
+				int status = this->shm_getter(key, at_shmfl, shmflg, true, seg_size);
+				return status;
+			}
+			
+			int _shm_attacher(key_t key,int at_shmflg) {
+				int status = this->shm_getter(key, at_shmfl);
+				return status;
+			}
+
+			/**
+			 * initialize_com
+			*/
+
+			// return ((Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *));
+			// _owner_proc_area = ((Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *)) + (_proc*_NTiers);
+
+			int initialize_com_shm(key_t com_key, bool am_initializer, uint32_t num_procs, uint32_t num_tiers) {
+				//
+				int status = 0;
+				//
+				size_t tier_atomics_sz = NUM_ATOMIC_FLAG_OPS_PER_TIER*num_tiers*sizeof(atomic_flag *);  // ref to the atomic flag
+				size_t proc_tier_com_sz = sizeof(Com_element)*num_procs*num_tiers;
+				//
+				size_t seg_size = tier_atomics_sz + proc_tier_com_sz;
+				_com_buffer_size = seg_size;
+				//
+				if ( am_initializer ) {
+					status = _shm_creator(com_key,seg_size);
+				} else {
+					int at_shmflg = 0;
+					int shmflg = 0;
+					//
+					status = this->_shm_attacher(key, at_shmfl);
+				}
+				//
+				if ( status == 0 ) _com_buffer = _ids_to_seg_addrs[com_key];
+				//
+				return status;
+			}
+
+
+			// _step = (sizeof(LRU_element) + _record_size);
+			// _lb_time = (atomic<uint32_t> *)(region);   // these are governing time boundaries of the particular tier
+			// _ub_time = _lb_time + 1;
+			// _cascaded_com_area = (Com_element *)(_ub_time + 1);
+			// _end_cascaded_com_area = _cascaded_com_area + _Procs;
+			// initialize_com_area(num_procs)  .. 
+			// _max_count*_step;
+			// _reserve_end = _region + _region_size;
+			// _reserve_start = end;
+			// _reserve_count_free = (_max_count/100)*_reserve_percent;
+
+			int initialize_lru_shm(key_t key, bool am_initializer, uint32_t els_per_tier, uint32_t max_obj_size, uint32_t num_procs, uint32_t num_tiers, uint32_t els_per_tier) {
+				int status = 0;
+				//
+				size_t boundaries_atomics_sz = 2*sizeof(atomic<uint32_t>);
+				size_t com_read_per_proc_sz = sizeof(Com_element)*num_procs;
+				size_t max_count_lru_regions_sz = (sizeof(LRU_element) + max_obj_size)*(els_per_tier  + 4);
+				//
+				size_t seg_size = boundaries_atomics_sz + com_read_per_proc_sz + max_count_lru_regions_sz;
+				//
+				if ( am_initializer ) {
+					status = _shm_creator(com_key,seg_size);
+				} else {
+					int at_shmflg = 0;
+					int shmflg = 0;
+					//
+					status = this->_shm_attacher(key, at_shmfl);
+				}
+				//
+				if ( status == 0 ) {
+					_seg_to_lrus[key] = _ids_to_seg_addrs[key];
+				}
+				return status;
+			}
+
+			// x2 the sum of the following
+			//uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
+			//uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
+			//sz = sizeof(HHash)
+			//uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
+
+			int initialize_hmm_shm(key_t key,  bool am_initializer, uint32_t els_per_tier) {
+				int status = 0;
+				//
+				size_t hhash_header_allotment_sz = 2*sizeof(HHash);
+				size_t value_reagion_sz = sizeof(uint64_t)*els_per_tier;
+				size_t bucket_region_sz = sizeof(uint32_t)*els_per_tier;
+				size_t control_bits_sz = sizeof(atomic<uint32_t>)*els_per_tier;
+				size_t seg_size = hhash_header_allotment_sz + value_reagion_sz + bucket_region_sz + control_bits_sz;
+				//
+				if ( am_initializer ) {
+					status = _shm_creator(com_key,seg_size);
+				} else {
+					int at_shmflg = 0;
+					int shmflg = 0;
+					//
+					status = this->_shm_attacher(key, at_shmfl);
+				}
+				if ( status == 0 ) {
+					_seg_to_hh_tables[key] = _ids_to_seg_addrs[key];
+				}
+				return status;
+			}
+
+
+			int tier_segments_initializers(bool am_initializer,list<uint32_t> &lru_keys,list<uint32_t> &hh_keys,uint32_t max_obj_size,uint32_t num_procs,uint32_t num_tiers,uint32_t els_per_tier) {
+				//
+				for ( auto lru_key : lru_keys ) {
+					if ( lru_key < keyMin || lru_key >= keyMax ) {
+						return -(i+1);
+					}
+					status = this->initialize_lru_shm(lru_key,am_initializer,max_obj_size,num_procs,num_tiers,els_per_tier);
+					if ( status != 0 ) { return status; }
+				}
+				for ( auto hh_key : hh_keys ) {
+					if ( hh_key < keyMin || hh_key >= keyMax ) {
+						return -(i+1);
+					}
+					status = this->initialize_hmm_shm(hh_key,am_initializer,els_per_tier);
+					if ( status != 0 ) { return status; }
+				}
+				//
+				return 0;
+			}
+
+	public:
+
+			map<key_t,void *>					_ids_to_seg_addrs;
+			map<key_t,size_t> 					_ids_to_seg_sizes;
+			//
+			void 								*_com_buffer;
+			size_t								_com_buffer_size;
+			map<key_t,void *>					_seg_to_lrus;
+			map<key_t,void *>					_seg_to_hh_tables;
+			//
+			size_t								_container_node_size;
+
+	};
 
 }
 }
