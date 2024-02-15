@@ -17,7 +17,6 @@
 #include <assert.h>
 #include <signal.h>
 #include <pthread.h>
- 
 
 #include <iostream>
 #include <sstream>
@@ -50,6 +49,9 @@ using namespace std;
 
 
 #define NUM_ATOMIC_FLAG_OPS_PER_TIER		(4)
+#define LRU_ATOMIC_HEADER_WORDS				(8)
+
+
 
 
 namespace node {
@@ -506,16 +508,17 @@ namespace node_shm {
 			// _max_count*_step;
 			// _reserve_end = _region + _region_size;
 			// _reserve_start = end;
-			// _reserve_count_free = (_max_count/100)*_reserve_percent;
+			// _reserve_count_free = factor*num_procs// (_max_count/100)*_reserve_percent;
 
 			int initialize_lru_shm(key_t key, bool am_initializer, uint32_t els_per_tier, uint32_t max_obj_size, uint32_t num_procs, uint32_t num_tiers, uint32_t els_per_tier) {
 				int status = 0;
 				//
-				size_t boundaries_atomics_sz = 2*sizeof(atomic<uint32_t>);
-				size_t com_read_per_proc_sz = sizeof(Com_element)*num_procs;
-				size_t max_count_lru_regions_sz = (sizeof(LRU_element) + max_obj_size)*(els_per_tier  + 4);
+				size_t boundaries_atomics_sz = LRU_ATOMIC_HEADER_WORDS*sizeof(atomic<uint32_t>);		// atomics used to gain control of specific ops
+				size_t com_read_per_proc_sz = sizeof(Com_element)*num_procs;	// for requesting and returning values 
+				size_t max_count_lru_regions_sz = (sizeof(LRU_element) + max_obj_size)*(els_per_tier  + 4); // storage
+				size_t holey_buffer_sz = sizeof(pair<uint32_t,uint32_t>)*els_per_tier + sizeof(pair<uint32_t,uint32_t>)*num_procs; // storage for timeout management
 				//
-				size_t seg_size = boundaries_atomics_sz + com_read_per_proc_sz + max_count_lru_regions_sz;
+				size_t seg_size = (boundaries_atomics_sz + com_read_per_proc_sz + max_count_lru_regions_sz + holey_buffer_sz);
 				//
 				if ( am_initializer ) {
 					status = _shm_creator(com_key,seg_size);

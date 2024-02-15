@@ -395,10 +395,10 @@ public:
 
 			// # 1
 			//
-			T->_region_V = (uint64_t *)(start + header_size);  // start on word boundary
+			_region_V_1 = (uint64_t *)(start + header_size);  // start on word boundary
 			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
 			//
-			T->_region_H = (uint32_t *)(start + header_size + v_regions_size);
+			_region_H_1 = (uint32_t *)(start + header_size + v_regions_size);
 			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
 			//
 			if ( am_initializer ) {
@@ -422,10 +422,10 @@ public:
 
 			// # 2
 			//
-			T->_region_V = (uint64_t *)(start + header_size);  // start on word boundary
+			_region_V_2 = (uint64_t *)(start + header_size);  // start on word boundary
 			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
 			//
-			T->_region_H = (uint32_t *)(start + header_size + v_regions_size);
+			_region_H_2 = (uint32_t *)(start + header_size + v_regions_size);
 			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
 			//
 			if ( am_initializer ) {
@@ -869,6 +869,10 @@ public:
 		const char 						*_reason;
 		uint8_t		 					*_region;
 		//
+		uint32_t		 				*_region_H_1;
+		uint64_t		 				*_region_V_1;
+		uint32_t		 				*_region_H_2;
+		uint64_t		 				*_region_V_2;
 
 		// threads ...
 

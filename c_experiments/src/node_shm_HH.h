@@ -1,11 +1,9 @@
 #ifndef _H_HOPSCOTCH_HASH_SHM_
 #define _H_HOPSCOTCH_HASH_SHM_
 
-#include "node.h"
-#include "node_buffer.h"
-#include "v8.h"
-#include "nan.h"
+
 #include "errno.h"
+
 
 #include <sys/ipc.h>
 #include <sys/types.h>
@@ -19,9 +17,6 @@
 #include <thread>
 #include <mutex>
 
-#include <random>
-#include <bitset>
-
 #include <map>
 #include <unordered_map>
 #include <list>
@@ -29,16 +24,7 @@
 
  
 #include "hmap_interface.h"
-
-
-
-constexpr int SECS_TO_SLEEP = 3;
-constexpr int NSEC_TO_SLEEP = 3;
-
-struct timespec request {
-	SECS_TO_SLEEP, NSEC_TO_SLEEP
-}, remaining{SECS_TO_SLEEP, NSEC_TO_SLEEP};
-
+#include "random_selector.h"
 
 
 /*
@@ -50,8 +36,6 @@ std::uint8_t padding[S_CACHE_PADDING - (sizeof(Object) % S_CACHE_PADDING)];
 
 
 // USING
-using namespace node;
-using namespace v8;
 using namespace std;
 // 
 
@@ -93,9 +77,9 @@ class HH_map;
 */
 class ThreadWrapper {
 
-
 	public:
-		ThreadWrapper() : _stopped(false), _ready(false), _lk(_mtx), _w_thread(&ThreadWrapper::runner,this) {
+
+		ThreadWrapper() : _stopped(false), _ready(false), _w_thread(&ThreadWrapper::runner,this) {
 			_hh_container = nullptr;
 		}
 		virtual ~ThreadWrapper() {
@@ -109,7 +93,6 @@ class ThreadWrapper {
 		 * the future hash
 		*/
 		void prep_value(uint32_t value) {
-			lock_guard _lk(_mtx);
 			_last_value = value;
 		}
 
@@ -118,31 +101,19 @@ class ThreadWrapper {
 		*/
 		void signal(uint64_t hash) {  // awaken local threads and aprise them of the requested hash
 			_hash = hash;
-			_ready = true
+			_ready = true;
 			_cv.notify_one();
 		}
 
 		/**
 		 * 
 		*/
-		void runner() {
-			while (true) {
-				_lk.lock();
-				cv.wait(_lk, []{ return _ready || _stopped; });
-				if ( _stopped ) break;
-				else _ready = false;
-				//
-				uint64_t hash = _hash;
-				uint32_t value = _last_value;
-
-				if ( _hh_container != nullptr ) {
-					// adding the value to the table... in this region...
-				}
-				_lk.unlock();
-			}
-		}
+		void runner() {		}
 
 
+		/**
+		 * 
+		*/
 		void set_hh(HHash *hc) {
 			_hh_container = hc;		// may be nullptr
 		}
@@ -153,7 +124,6 @@ class ThreadWrapper {
 		thread				_w_thread;
 		mutex				_mtx;
 		condition_variable	_cv;
-		unique_lock 		_lk;
 
 		bool				_ready;
 		bool				_stopped;
@@ -161,76 +131,10 @@ class ThreadWrapper {
 		uint64_t			_hash;
 		uint32_t			_last_value;
 		HHash				*_hh_container;
-		
-
-}
-
-#define  BITS_GEN_COUNT_LAPSE (3)
-
-class Random_bits_generator {
-
-    bernoulli_distribution	_distribution;
-	list<uint32_t>			_bits;
-
-	mt19937 				_engine;
-	uint32_t				_last_bits;
-	uint8_t					_bcount;
-	uint8_t					_gen_count;
-
-public:
-
-	Random_bits_generator() : _bcount(0), _gen_count(0) {
-		_create_random_bits();
-	}
-
-public:
-
-
-	uint32_t generate_word() {
-		uint32_t bits = 0;
-		for ( uint8_t i = 0; i < 32; i++ ) {
-			bool bit = _distribution(_engine);
-			bits = (bits << 1) | (bit ? 1 : 0);
-		}
-		return bits;
-	}
-
-    template <typename OutputIt>
-    void generate(OutputIt first, OutputIt last)
-    {
-        while ( first != last ) {
-			uint32_t bits = generate_word();
-            *first++ = bits;
-        }
-    }
-
-
-	void _create_random_bits() {
-		_bits.resize(256);   // fr list ??
-		generate(_bits.begin(), _bits.end());
-	}
-
-	uint8_t pop_bit() {
-		//
-		if ( _bcount == 0 ) {
-			_last_bits = _bits.pop_front();
-			_gen_count = (_gen_count + 1) % BITS_GEN_COUNT_LAPSE;
-			if ( _gen_count == 0 ) {
-				for ( uint8_t i = 0; i < BITS_GEN_COUNT_LAPSE; i++ ) {
-					_bits.push_back(generate_word());
-				}
-			}
-		}
-		//
-		_bcount = _bcount++ % 32;
-		uint8_t the_bit = _last_bits & 0x1;
-		_last_bits = (_last_bits >> 1);
-		//
-		return the_bit;
-	}
-
 
 };
+
+
 
 
 class HH_map : public HMap_interface, public Random_bits_generator {
@@ -251,6 +155,85 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		}
 
 
+		// REGIONS...
+
+		// setup_region -- part of initialization if the process is the intiator..
+		// -- header_size --> HHash
+		void setup_region(bool am_initializer,uint8_t header_size,uint32_t max_count) {
+			// ----
+			uint8_t *start = _region;
+			HHash *T = (HHash *)start;
+			//
+			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);  // should be one half of the total elements configured
+			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
+			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
+
+			_T1 = T;   // keep the reference handy
+
+			// # 1
+			// ----
+			if ( am_initializer ) {
+				T->_count = 0;
+				T->_max_n = max_count;
+				T->_neighbor = FLS(max_count - 1);
+				T->_control_bits = 0;
+			} else {
+				max_count = T->_max_n;	// just in case
+			}
+
+			// # 1
+			//
+			_region_V_1 = (uint64_t *)(start + header_size);  // start on word boundary
+			_region_H_1 = (uint32_t *)(start + header_size + v_regions_size);
+			//
+			if ( am_initializer ) {
+				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
+				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size ));
+			}
+
+			// # 2
+			// ----
+			T = (HHash *)(start + h_regions_size + v_regions_size + c_regions_size);
+			_T2 = T;   // keep the reference handy
+			
+			start = (uint8_t *)(T);
+
+			if ( am_initializer ) {
+				T->_count = 0;
+				T->_max_n = max_count;
+				T->_neighbor = FLS(max_count - 1);
+				T->_control_bits = 1;
+			} else {
+				max_count = T->_max_n;	// just in case
+			}
+
+			// # 2
+			//
+			_region_V_2 = (uint64_t *)(start + header_size);  // start on word boundary
+			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
+			//
+			_region_H_2 = (uint32_t *)(start + header_size + v_regions_size);
+			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
+			//
+			if ( am_initializer ) {
+				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
+				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
+			}
+			//
+			_T1->_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
+			_T2->_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
+			//
+			auto c_offset = (header_size + v_regions_size + h_regions_size)*2;
+
+			if ( am_initializer ) {
+				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
+				memset((void *)(_region + c_offset),0,((sizeof(uint32_t)*max_count)));
+				memset((void *)(  start + c_offset),0,((sizeof(uint32_t)*max_count)));
+			}
+
+		}
+
+
 
 		// THREAD CONTROL
 
@@ -258,71 +241,36 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 			nanosleep(&request, &remaining);
 		}
 
-		void sleepy_atomic_load_winner_thread_id() {
-
+		uint8_t sleepy_atomic_load_winner_thread_id() {
+			return 0;
 		}
 
 
-
-
-
-/*
-
-
-template< size_t size>
-typename std::bitset<size> random_bitset( double p = 0.5) {
-
-    typename std::bitset<size> bits;
-    std::random_device rd;
-    std::mt19937 gen( rd());
-    std::bernoulli_distribution d( p);
-
-    for( int n = 0; n < size; ++n) {
-        bits[ n] = d( gen);
-    }
-
-    return bits;
-}
-
-
-template <typename Engine = std::mt19937>
-class random_bits_generator
-{
-    std::bernoulli_distribution distribution;
-public:
-    template <typename OutputIt>
-    void operator()(OutputIt first, OutputIt last)
-    {
-        while (first != last)
-        {
-            *first++ = distribution(engine);
-        }
-    }
-
-    Engine get()
-    {
-        return engine;
-    }
-};
-*/
-
-		_pop_random_bits() {
+		int _pop_random_bits() {
 			return pop_bit();
 		}
 
 
+		
+
+	// uint32_t *buffer = _region_H;
+	// uint64_t *v_buffer = _region_V;
+
 		/**
 		 * 
 		*/
-		pair<uint16_t,uint16_t> bucket_counts(uint32_t h_bucket) {
+		pair<uint16_t,uint16_t> bucket_counts(uint32_t h_bucket) {   // where are the bucket counts??
 			//
 			pair<uint16_t,uint16_t> counts;
 			uint8_t *start = _region;
 
-			uint32_t c_offset = _C_Offset;
-			uint32_t *controllers = (uint32_t *)(start + sizof(struct HHASH) + c_offset);
+			HHash *T_1 = _T1;
+			HHash *T_2 = _T2;
+
+			uint32_t c_offset = T_1->_C_Offset;
+			uint32_t *controllers = (uint32_t *)(start + sizeof(struct HHASH) + c_offset);
 			//
-			auto controller = static_cast<atomic<uint32_t>*>(&controllers[h_bucket]);
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
 			//
 			uint32_t controls = controller->load(std::memory_order_consume);
 			while ( controls & HOLD_BIT_MASK ) {  // while some other process is using this count bucket
@@ -342,11 +290,16 @@ public:
 		*/
 		void bucket_count_incr(uint32_t h_bucket,uint8_t which_thread) {
 			uint8_t *start = _region;
+
+
+			HHash *T_1 = _T1;
+			HHash *T_2 = _T2;
+
 			//
-			uint32_t c_offset = _C_Offset;
-			uint32_t *controllers = (uint32_t *)(start + sizof(struct HHASH) + c_offset);
+			uint32_t c_offset = T_1->_C_Offset;
+			uint32_t *controllers = (uint32_t *)(start + sizeof(struct HHASH) + c_offset);
 			//
-			auto controller = static_cast<atomic<uint32_t>*>(&controllers[h_bucket]);
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
 			//
 			uint32_t controls = controller->load(std::memory_order_consume);
 			if ( !(controls & HOLD_BIT_MASK) ) {	// should be the only one able to get here on this bucket.
@@ -362,89 +315,12 @@ public:
 			} else {
 				counter = (controls>>QUARTER) & COUNT_MASK;
 				counter++;
-				uint32_t update = (counter) << QUARTER) & HI_COUNT_MASK;
+				uint32_t update = (counter << QUARTER) & HI_COUNT_MASK;
 				controls = (controls & ~HI_COUNT_MASK) | update;
 			}
 			//
 			controller->store(controls & FREE_BIT_MASK,std::memory_order_release);
 		}
-
-
-		// REGIONS...
-
-		// setup_region -- part of initialization if the process is the intiator..
-		// -- header_size --> HHash
-		void setup_region(bool am_initializer,uint8_t header_size,uint32_t max_count) {
-			// ----
-			uint8_t *start = _region;
-			HHash *T = (HHash *)start;
-
-			_h_tables[0] = T;			// ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-			// # 1
-			// ----
-			if ( am_initializer ) {
-				T->_count = 0;
-				T->_max_n = max_count;
-				T->_neighbor = FLS(max_count - 1);
-				T->_control_bits = 0;
-			} else {
-				max_count = T->_max_n;	// just in case
-			}
-
-			// # 1
-			//
-			T->_region_V = (uint64_t *)(start + header_size);  // start on word boundary
-			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
-			//
-			T->_region_H = (uint32_t *)(start + header_size + v_regions_size);
-			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
-			//
-			if ( am_initializer ) {
-				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
-				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size ));
-			}
-
-			// # 2
-			// ----
-			T = _h_tables[1] = (HHash *)(start + h_regions_size + v_regions_size + c_regions_size);
-			start = (char *)(&_h_tables[1]);
-
-			if ( am_initializer ) {
-				T->_count = 0;
-				T->_max_n = max_count;
-				T->_neighbor = FLS(max_count - 1);
-				T->_control_bits = 1;
-			} else {
-				max_count = T->_max_n;	// just in case
-			}
-
-			// # 2
-			//
-			T->_region_V = (uint64_t *)(start + header_size);  // start on word boundary
-			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
-			//
-			T->_region_H = (uint32_t *)(start + header_size + v_regions_size);
-			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
-			//
-			if ( am_initializer ) {
-				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
-				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
-			}
-
-
-			_h_tables[0]->_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
-			_h_tables[1]->_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
-			//
-			_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
-
-			if ( am_initializer ) {
-				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
-				memset((void *)(_region + _C_Offset),0,((sizeof(uint32_t)*max_count));
-			}
-
-		}
-
 
 
 
@@ -456,10 +332,13 @@ public:
 		uint64_t store(uint32_t hash_bucket, uint32_t el_key, uint32_t v_value) {
 			if ( v_value == 0 ) return false;
 			//
-			HHash *T = (HHash *)_region;
+			uint8_t selector = ((el_key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = (selector ? _T1 : _T2);
+			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
+			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
 			//
 			uint64_t loaded_value = (((uint64_t)v_value) << HALF) | el_key;
-			bool put_ok = put_hh_hash(T, hash_bucket, loaded_value);
+			bool put_ok = put_hh_hash(T, hash_bucket, loaded_value, buffer, v_buffer);
 			if ( put_ok ) {
 				uint64_t loaded_key = (((uint64_t)el_key) << HALF) | hash_bucket; // LOADED
 				return(loaded_key);
@@ -468,26 +347,31 @@ public:
 			}
 		}
 
-
-
 		// get
 		uint32_t get(uint64_t key) {
-			HHash *T = (HHash *)_region;
-			return get_hh_map(T, key);
+			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = (selector ? _T1 : _T2);
+			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
+			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
+			return get_hh_map(T, key, buffer, v_buffer);
 		}
+
 
 		// get
 		uint32_t get(uint32_t key,uint32_t bucket) {  // full_hash,hash_bucket
-			HHash *T = (HHash *)_region;
-			return (uint32_t)(get_hh_set(T, key, bucket) >> HALF);  // the value is in the top half of the 64 bits.
+			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = (selector ? _T1 : _T2);
+			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
+			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
+			return (uint32_t)(get_hh_set(T, key, bucket, buffer, v_buffer) >> HALF);  // the value is in the top half of the 64 bits.
 		}
 
-		
 
 		// bucket probing
 		// 
 		uint8_t get_bucket(uint32_t h, uint32_t xs[32]) {
-			HHash *T = (HHash *)_region;
+			uint8_t selector = ((h & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = (selector ? _T1 : _T2);
 			uint8_t count = 0;
 			uint32_t i = _succ_hh_hash(T, h, 0);
 			while ( i != UINT32_MAX ) {
@@ -501,7 +385,8 @@ public:
 
 		// del
 		uint32_t del(uint64_t key) {
-			HHash *T = (HHash *)_region;
+			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			HHash *T = (selector ? _T1 : _T2);
 			return del_hh_map(T, key);
 		}
 
@@ -512,9 +397,6 @@ public:
 				this->setup_region(_initializer,header_size,_max_count);
 			}
 		}
-
-
-
 
 
 	// HH_map method - calls partition_get -- 
@@ -528,10 +410,10 @@ public:
 	*/
 	bool add_key_value(uint64_t hash64,uint32_t offset_value) {
 		//
-		HHash *T_1 = (HHash *)(&_h_tables[0]);
-		HHash *T_2 = (HHash *)(&_h_tables[1]);
+		HHash *T_1 = _T1;
+		HHash *T_2 = _T2;
 		//
-		uint32_t h_bucket = (uint32_t)(key & HASH_MASK);
+		uint32_t h_bucket = (uint32_t)(hash64 & HASH_MASK);
 		
 		// Threads from this process will not contend with each other.
 		// They will work on two different memory sections.
@@ -593,37 +475,36 @@ public:
 		}
 
 		// operate on the hash bucket bits  -- find the next set bit
-		uint32_t _succ(uint32_t h_bucket, uint32_t i) {
-			uint32_t *bit_mask_buckets = _region_H;		// the binary pattern storage area
+		uint32_t _succ(uint32_t h_bucket, uint32_t i, uint32_t *bit_mask_buckets) {
 			uint32_t H = bit_mask_buckets[h_bucket];	// the one for the bucket
    			if ( GET(H, i) ) return i;			// look at the control bits of the test position... see if the position is set.
   			return _next(H, i);					// otherwise, what's next...
 		}
 
 		// operate on the hash bucket bits .. take into consideration that the bucket range is limited
-		uint32_t _succ_hh_hash(HHash *T, uint32_t h_bucket, uint32_t i) {
+		uint32_t _succ_hh_hash(HHash *T, uint32_t h_bucket, uint32_t i, uint32_t *buffer) {
+			//
 			if ( i == 32 ) return(UINT32_MAX);  // all the bits in the bucket have been checked
 			uint32_t N = T->_max_n;
 			uint32_t h = (h_bucket % N);
-			return _succ(h, i);
+			return _succ(h, i, buffer);
+			//
 		}
 
 
-		void del_hh_hash(HHash *T, uint32_t h, uint32_t i) {
-			uint32_t *buffer = _region_H;
-			uint64_t *buffer_v = _region_V;
-
+		void del_hh_hash(HHash *T, uint32_t h, uint32_t i, uint32_t *buffer, uint64_t *v_buffer) {
+			//
 			uint32_t N = T->_max_n;
 			h = (h % N);
 			uint32_t j = MOD(h + i, N);  // the offset relative to the original hash bucket + bucket position = absolute address
 			//
-			uint32_t V = buffer_v[j];
+			uint32_t V = v_buffer[j];
 			uint32_t H = buffer[h];		// the control bit in the original hash bucket
 			//
 			if ( (V == 0) || !GET(H, i)) return;
 			//
 			// reset the hash machine
-			buffer_v[j] = 0;	// clear the value slot
+			v_buffer[j] = 0;	// clear the value slot
 			UNSET(H,i);			// remove relative position from the hash bucket
 			buffer[h] = H;		// store it
 			// lower the count
@@ -635,34 +516,33 @@ public:
 		// (If the buffer is nearly full, this can take considerable time)
 		// Attempt to keep things organized in buckets, indexed by the hash module the number of elements
 		//
-		bool put_hh_hash(HHash *T, uint32_t h, uint64_t v) {
+		bool put_hh_hash(HHash *T, uint32_t h, uint64_t v, uint32_t *buffer, uint64_t *v_buffer) {
+			//
 			uint32_t N = T->_max_n;
 			if ( (T->_count == N) || (v == 0) ) return(false);  // FULL
 			//
 			h = h % N;  // scale the hash .. make sure it indexes the array...
-			uint32_t d = _probe(T, h);  // a distance starting from h (if wrapped, then past N)
+			uint32_t d = _probe(T, h, v_buffer);  // a distance starting from h (if wrapped, then past N)
 			if ( d == UINT32_MAX ) return(false); // the positions in the entire buffer are full.
 	//cout << "put_hh_hash: d> " << d;
 			//
 			uint32_t K =  T->_neighbor;
 			while ( d >= K ) {						// the number may be bigger than K. if wrapping, then bigger than N. 2N < UINT32_MAX.
 				uint32_t hd = MOD( (h + d), N );	// d is allowed to wrap around.
-				uint32_t z = _hop_scotch(T, hd);	// hop scotch back to a moveable positions
+				uint32_t z = _hop_scotch(T, hd, buffer);	// hop scotch back to a moveable positions
 	//cout << " put_hh_hash: z> " << z;
 				if ( z == 0 ) return(false);			// could not find anything that could move. (Frozen at this point..)
 				// found a position that can be moved... (offset from h <= d closer to the neighborhood)
 				uint32_t j = z;
 				z = MOD((N + hd - z), N);		// hd - z is an (offset from h) < h + d or (h + z) < (h + d)  ... see hopscotch 
 				uint32_t i = _succ(z, 0);		// either this is moveable or there's another one. (checking the bitmap ...)
-				_swap(T, z, i, j);				// swap bits and values between i and j offsets within the bucket h
+				_swap(z, i, j, T, buffer, v_buffer);				// swap bits and values between i and j offsets within the bucket h
 				d = MOD( (N + z + i - h), N );  // N + z - (h - i) ... a new distance, should be less than before
 			}
 			//
-			uint32_t *buffer = _region_H;
-			uint64_t *buffer_v = _region_V;
 			//
 			uint32_t hd = MOD( (h + d), N );  // store the value
-			buffer_v[hd] = v;
+			v_buffer[hd] = v;
 	//cout << " put_hh_hash: hd> " << hd  << " val: "  << v;
 
 			//
@@ -682,9 +562,7 @@ public:
 		 * 
 		 * i and j are used later as offsets from h when doing the value swap. 
 		*/
-		void _swap(HHash *T, uint32_t h, uint32_t i, uint32_t j) {
-			uint32_t *buffer = _region_H;
-			uint64_t *v_buffer = _region_V;
+		void _swap(uint32_t h, uint32_t i, uint32_t j, HHash *T, uint32_t *buffer, uint64_t *v_buffer) {
 			//
 			uint32_t H = buffer[h];
 			UNSET(H, i);
@@ -700,6 +578,7 @@ public:
 			v_buffer[j] = v;
 		}
 
+
 		/**
 		 *  _probe -- search for a free space within a bucket
 		 * 		h : the bucket starts at h (an offset in _region_V)
@@ -711,23 +590,23 @@ public:
 		 * 
 		 * @returns {uint32_t} distance of the bucket from h
 		*/
-		uint32_t _probe(HHash *T, uint32_t h) {   // value probe ... looking for zero
-			uint64_t *v_buffer = _region_V;
+		uint32_t _probe(HHash *T, uint32_t h, uint64_t *v_buffer) {   // value probe ... looking for zero
 			// // 
 			uint32_t N = T->_max_n;		// upper bound (count of elements in buffer)
 			//
 			// search in the bucket
-			v_buffer += h;
+			uint64_t *vb_probe = v_buffer;
+			vb_probe += h;
 			for ( uint32_t i = h; i < N; ++i ) {			// search forward to the end of the array (all the way even it its millions.)
-				uint64_t V = *v_buffer++;	// is this an empty slot? Usually, when the table is not very full.
+				uint64_t V = *vb_probe++;	// is this an empty slot? Usually, when the table is not very full.
 				if ( V == 0 ) return (i-h);			// look no further
 			}
 			//
 			// look for anything starting at the beginning of the segment
 			// wrap... start searching from the start of all data...
-			v_buffer = _region_V;
+			vb_probe = v_buffer;
 			for ( uint32_t j = 0; j < h ; ++j ) {
-				uint64_t V = *v_buffer++;	// is this an empty slot? Usually, when the table is not very full.
+				uint64_t V = *vb_probe++;	// is this an empty slot? Usually, when the table is not very full.
 				if ( V == 0 ) return (N + j - h);	// look no further (notice quasi modular addition)
 			}
 			return UINT32_MAX;  // this will be taken care of by a modulus in the caller
@@ -738,8 +617,7 @@ public:
 		 * Loosen the restriction on the distance of the new buffer until K (the max) away from h is reached.
 		 * If something within K (for swapping) can be found return it, otherwise 0 (indicates frozen)
 		*/
-		uint32_t _hop_scotch(HHash *T, uint32_t hd) {  // return an index
-			uint32_t *buffer = _region_H;
+		uint32_t _hop_scotch(HHash *T, uint32_t hd, uint32_t *buffer) {  // return an index
 			uint32_t N = T->_max_n;
 			uint32_t K =  T->_neighbor;
 			for ( uint32_t i = (K - 1); i > 0; --i ) {
@@ -751,15 +629,14 @@ public:
 		}
 
 
-
 		/**
 		 * Returns the value (for this use an offset into the data storage area.)
 		*/
-		uint64_t get_val_at_hh_hash(HHash *T, uint32_t h_bucket, uint32_t i) {
+		uint64_t get_val_at_hh_hash(HHash *T, uint32_t h_bucket, uint32_t i, uint64_t *v_buffer) {
 			uint32_t offset = (h_bucket + i);		// offset from the hash position...
 			uint32_t N = T->_max_n;
 			uint32_t j = (offset % N);		// if wrapping around
-			return(_region_V[j]);			// return value
+			return(v_buffer[j]);			// return value
 		}
 
 
@@ -777,16 +654,16 @@ public:
 		// In this applicatoin k is a value comparison... and the k value is an offset into an array of stored objects 
 		// walk through the list of position occupied by bucket members. (Those are the ones with the positional bit set.)
 		//
-		uint64_t hunt_hash_set(HHash *T, uint32_t h_bucket, uint64_t key_null, bool kill) {
-			uint32_t i = _succ_hh_hash(T, h_bucket, 0);   // i is the offset into the hash bucket.
+		uint64_t hunt_hash_set(HHash *T, uint32_t h_bucket, uint64_t key_null, bool kill, uint32_t *buffer, uint64_t *v_buffer) {
+			uint32_t i = _succ_hh_hash(T, h_bucket, 0, buffer);   // i is the offset into the hash bucket.
 			while ( i != UINT32_MAX ) {
 				// x is from the value region..
-				uint64_t x = get_val_at_hh_hash(T, h_bucket, i);  // get ith value matching this hash (collision)
+				uint64_t x = get_val_at_hh_hash(T, h_bucket, i, v_buffer);  // get ith value matching this hash (collision)
 				if ( _cmp(key_null, x) ) {		// compare the discerning hash part of the values (in the case of map, hash of the stored value)
-					if (kill) del_hh_hash(T, h_bucket, i);
+					if (kill) del_hh_hash(T, h_bucket, i, buffer, v_buffer);
 					return x;   // the value is a pair of 32 bit words. The top 32 bits word is the actual value.
 				}
-				i = _succ_hh_hash(T, h_bucket, (i + 1));  // increment i in some sense (skip unallocated holes)
+				i = _succ_hh_hash(T, h_bucket, (i + 1), buffer);  // increment i in some sense (skip unallocated holes)
 			}
 			return 0;		// no value  (values will always be positive, perhaps a hash or'ed onto a 0 value)
 		}
@@ -796,29 +673,29 @@ public:
 		// the top 32 bits will contain a value if it is stored. Otherwise, it will be zero (no value stored).
 		// In the main use of this code, the value will be an offset into an array of objects.
 
-		uint64_t get_hh_set(HHash *T, uint32_t hbucket, uint32_t key) {  // T, full_hash, hash_bucket
+		uint64_t get_hh_set(HHash *T, uint32_t hbucket, uint32_t key, uint32_t *buffer, uint64_t *v_buffer) {  // T, full_hash, hash_bucket
 			uint64_t zero = 0;
 			uint64_t key_null = (zero | (uint64_t)key); // hopefully this explains it... top 32 are zero (hence no value represented)
 //cout << "get_hh_set: key_null: " << key_null << " hash: " << hash <<  endl;
 			bool flag_delete = false;
-			return hunt_hash_set(T, hbucket, key_null, flag_delete);
+			return hunt_hash_set(T, hbucket, key_null, flag_delete, buffer, v_buffer);
 		}
 
 
-		bool put_hh_set(HHash *T, uint32_t h, uint64_t key_val) {
+		bool put_hh_set(HHash *T, uint32_t h, uint64_t key_val, uint32_t *buffer, uint64_t *v_buffer) {
 			if ( key_val == 0 ) return 0;		// cannot store zero values
-			if ( get_hh_set(T, h, (uint32_t)key_val) != 0 ) return (true);  // found, do not duplicate ... _cmp has been called
-			if ( put_hh_hash(T, h, key_val)) return (true); // success
+			if ( get_hh_set(T, h, (uint32_t)key_val, buffer, v_buffer) != 0 ) return (true);  // found, do not duplicate ... _cmp has been called
+			if ( put_hh_hash(T, h, key_val,buffer,v_buffer) ) return (true); // success
 			// not implementing resize
 			return (false);
 		}
 
 
-		uint64_t del_hh_set(HHash *T, uint32_t hbucket, uint32_t key) { 
+		uint64_t del_hh_set(HHash *T, uint32_t hbucket, uint32_t key, uint32_t *buffer, uint64_t *v_buffer) {
 			uint64_t zero = 0;
 			uint64_t key_null = (zero | (uint64_t)key); // hopefully this explains it... 
 			bool flag_delete = true;
-			return hunt_hash_set(T, hbucket, key_null, flag_delete); 
+			return hunt_hash_set(T, hbucket, key_null, flag_delete, buffer, v_buffer); 
 		}
 
 		// note: not implementing resize since the size of the share segment is controlled by the application..
@@ -829,12 +706,12 @@ public:
 
 		// T, hash_bucket, el_key, v_value   el_key == full_hash
 
-		uint64_t put_hh_map(HHash *T, uint32_t hash_bucket, uint32_t full_hash, uint32_t value) {
+		uint64_t put_hh_map(HHash *T, uint32_t hash_bucket, uint32_t full_hash, uint32_t value, uint32_t *buffer, uint64_t *v_buffer) {
 			if ( value == 0 ) return false;
 //cout <<  " put_hh_map: loaded_value [value] " << value << " loaded_value [index] " << index;
 			uint64_t loaded_value = (((uint64_t)value) << HALF) | full_hash;
 //cout << " loaded_value: " << loaded_value << endl;
-			bool put_ok = put_hh_set(T, hash_bucket, loaded_value);
+			bool put_ok = put_hh_set(T, hash_bucket, loaded_value, buffer, v_buffer);
 			if ( put_ok ) {
 				uint64_t loaded_key = (((uint64_t)full_hash) << HALF) | hash_bucket; // LOADED
 				return(loaded_key);
@@ -843,21 +720,20 @@ public:
 			}
 		}
 
-		uint32_t get_hh_map(HHash *T, uint64_t key) { 
+		uint32_t get_hh_map(HHash *T, uint64_t key, uint32_t *buffer, uint64_t *v_buffer) { 
 			 // UNLOADED
 			uint32_t element_diff = (uint32_t)((key >> HALF) & HASH_MASK);  // just unloads it (was index)
 			uint32_t hash = (uint32_t)(key & HASH_MASK);
 //cout << "get_hh_map>> element_diff: " << element_diff << " hash: " << hash << " ";
 //cout << " _region_H[hash] " << _region_H[hash] << " _region_V[hash]  "  << _region_V[hash]  << endl;
-
-			return (uint32_t)(get_hh_set(T, hash, element_diff) >> HALF); 
+			return (uint32_t)(get_hh_set(T, hash, element_diff,buffer,v_buffer) >> HALF); 
 		}
 
-		uint32_t del_hh_map(HHash *T, uint64_t key) {
+		uint32_t del_hh_map(HHash *T, uint64_t key, uint32_t *buffer, uint64_t *v_buffer) {
 			 // UNLOADED
 			uint32_t element_diff = (uint32_t)((key >> HALF) & HASH_MASK);
 			uint32_t hash = (uint32_t)(key & HASH_MASK);
-			return (uint32_t)(del_hh_set(T, hash, element_diff) >> HALF);
+			return (uint32_t)(del_hh_set(T, hash, element_diff,buffer,v_buffer) >> HALF);
 		}
 
 		// ---- ---- ---- ---- ---- ---- ----
@@ -868,27 +744,17 @@ public:
 		const char 						*_reason;
 		uint8_t		 					*_region;
 		//
-
+		HHash							*_T1;
+		HHash							*_T2;
+		uint32_t		 				*_region_H_1;
+		uint64_t		 				*_region_V_1;
+		uint32_t		 				*_region_H_2;
+		uint64_t		 				*_region_V_2;
 		// threads ...
 
 		ThreadWrapper					_threads[2];
-		HHASH							*_h_tables[2];
 
 };
-
-
-namespace node {
-namespace node_shm {
-
-	/**
-	 * Setup a segment as a container of a hop scotch hash table
-	 * Params:
-	 *  key_t key
-	 */
-	NAN_METHOD(get_HH);
-
-}
-}
 
 
 #endif // _H_HOPSCOTCH_HASH_SHM_

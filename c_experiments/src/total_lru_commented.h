@@ -147,7 +147,7 @@
 
 // 		// setup_region -- part of initialization if the process is the intiator..
 // 		void setup_region(size_t record_size) {
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			size_t region_size = _region_size;
 // 			_count_free = setup_region_free_list(record_size,start,_step,region_size);
 // 		}
@@ -159,13 +159,6 @@
 // 			_count_free = setup_region_free_list(record_size,start,_step);
 // 		}
 
-
-// 		// set_hash_impl - called by initHopScotch -- set two paritions servicing a random selection.
-// 		//
-// 		void set_hash_impl(HMap_interface *hmap1,HMap_interface *hmap2) {
-// 			_hmap_i[0] = hmap1;
-// 			_hmap_i[1] = hmap2;
-// 		}
 
 // 		// add_el
 // 		// 		data -- data that will be stored at the end of the free list
@@ -194,7 +187,7 @@
 
 // 		uint32_t add_el(char *data,uint32_t full_hash,uint32_t hash_bucket) {
 // 			//
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			size_t step = _step;
 
 // 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);
@@ -242,7 +235,7 @@
 // 		uint8_t get_el(uint32_t offset,char *buffer) {
 // 			if ( !this->check_offset(offset) ) return(2);
 // 			//
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			LRU_element *stored = (LRU_element *)(start + offset);
 // 			char *store_data = (char *)(stored + 1);
 // 			memcpy(buffer,store_data,this->_record_size);
@@ -254,7 +247,7 @@
 // 		uint8_t get_el_untouched(uint32_t offset,char *buffer) {
 // 			if ( !this->check_offset(offset) ) return(2);
 // 			//
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			LRU_element *stored = (LRU_element *)(start + offset);
 // 			char *store_data = (char *)(stored + 1);
 // 			memcpy(buffer,store_data,this->_record_size);
@@ -265,7 +258,7 @@
 // 		bool update_el(uint32_t offset,char *buffer) {
 // 			if ( !this->check_offset(offset) ) return(false);
 // 			//
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			LRU_element *stored = (LRU_element *)(start + offset);
 // 			if ( this->touch(stored,offset) ) {
 // 				char *store_data = (char *)(stored + 1);
@@ -280,7 +273,7 @@
 // 		// del_el
 // 		bool del_el(uint32_t offset) {
 // 			if ( !this->check_offset(offset) ) return(false);
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			//
 // 			LRU_element *stored = (LRU_element *)(start + offset);
 // 			//
@@ -342,26 +335,6 @@
 
 // 		}
 
-// 		uint64_t store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
-// 			uint8_t selector = ((full_hash & HH_SELECT_BIT) == 0) ? 0 : 1;
-// 			HMap_interface *T = _hmap_i[selector];
-// 			if ( T == nullptr ) {   // no call to set_hash_impl
-// 				uint64_t key64 = (((uint64_t)full_hash << HALF) | (uint64_t)hash_bucket);				
-// 				_local_hash_table[key64] = new_el_offset;
-// 			} else {
-// 				uint64_t result = T->store(hash_bucket,full_hash,new_el_offset); //UINT64_MAX
-// 				//count << "store_in_hash: " << result << endl;
-// 				return result;
-// 			}
-// 			return 0;
-// 		}
-
-
-// 		uint64_t store_in_hash(uint64_t hash64,uint32_t new_el_offset) {
-// 			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
-// 			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
-// 			return store_in_hash(full_hash,hash_bucket,new_el_offset);
-// 		}
 
 
 // 		// check_for_hash
@@ -399,7 +372,7 @@
 
 // 		// evict_least_used
 // 		void evict_least_used(time_t cutoff,uint8_t max_evict,list<uint64_t> &ev_list) {
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			size_t step = _step;
 // 			LRU_element *ctrl_tail = (LRU_element *)(start + step);
 // 			time_t test_time = 0;
@@ -418,7 +391,7 @@
 
 // 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 // 		void evict_least_used_to_value_map(time_t cutoff,uint8_t max_evict,map<uint64_t,char *> &ev_map) {
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			size_t step = _step;
 // 			LRU_element *ctrl_tail = (LRU_element *)(start + step);
 // 			time_t test_time = 0;
@@ -449,7 +422,7 @@
 
 // 				uint8_t count = T->get_bucket(hash, xs);
 // 				//
-// 				uint8_t *start = _region;
+// 				uint8_t *start = this->start();
 // 				size_t step = _step;
 // 				LRU_element *ctrl_tail = (LRU_element *)(start + step);
 // 				time_t test_time = 0;
@@ -489,7 +462,7 @@
 // 		}
 
 // 		size_t _walk_allocated_list_forwards(uint8_t call_mapper) {
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			LRU_element *header = (LRU_element *)(start);
 // 			size_t count = 0;
 // 			uint32_t next_off = header->_next;
@@ -515,7 +488,7 @@
 // 		}
 
 // 		size_t _walk_allocated_list_backwards(uint8_t call_mapper) {
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			uint32_t step = _step;
 // 			LRU_element *tail = (LRU_element *)(start + step);  // tail is one elemet after head
 // 			size_t count = 0;
@@ -542,7 +515,7 @@
 // 		}
 
 // 		size_t _walk_free_list(void) {
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			LRU_element *ctrl_free = (LRU_element *)(start + 2*(this->_step));
 // 			size_t count = 0;
 // 			LRU_element *next_free = (LRU_element *)(start + ctrl_free->_next);
@@ -580,7 +553,7 @@
 
 // 		bool set_share_key(uint32_t offset,uint32_t share_key) {
 // 			if ( !this->check_offset(offset) ) return(false);
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			//
 // 			LRU_element *stored = (LRU_element *)(start + offset);
 // 			_share_key = share_key;
@@ -616,53 +589,10 @@
 // 		// LRU_cache method
 // 		//
 // 		//
-// 		uint32_t		free_mem_requested(void) {
-// 			//
-// 			uint8_t *start = _region;
-// 			size_t step = _step;
-// 			//
-// 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-// 			//
-// 			auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
-// 			uint32_t total_requested = requested->load(std::memory_order_relaxed);
-
-// 			return total_requested;
-// 		}
-
-
-// 		// LRU_cache method
-// 		void free_mem_claim_satisfied(uint32_t msg_count) {   // stop requesting the memory... 
-// 			uint8_t *start = _region;
-// 			size_t step = _step;
-// 			//
-// 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-// 			auto requested = static_cast<atomic<uint32_t>*>(&(ctrl_free->_hash));
-// 			if ( requested->load() <= msg_count ) {
-// 				requested->store(0);
-// 			} else {
-// 				requested->fetch_sub(msg_count);
-// 			}
-// 		}
-
-
-// 		void _atomic_stack_push(uint8_t *start,size_t step) {
-// 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-// 			auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_next));
-// 			auto count_free = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
-// 			//
-// 			uint32_t el_offset = (uint32_t)(el - start);
-// 			uint32_t h_offset = head->load(std::memory_order_relaxed);
-// 			while(!head->compare_exchange_weak(h_offset, el_offset));
-// 			count_free->fetch_add(1, std::memory_order_relaxed);
-// 		}
 
 // 		// LRU_cache method
 // 		void return_to_free_mem(LRU_element *el) {				// a versions of push
-// 			atomic_stack_push(_region,_step);
-// 		}
-
-// 		void return_to_reserve_mem(LRU_element *el) {
-// 			atomic_stack_push(_reserve,_step);
+// 			_atomic_stack_push(_region,_step);
 // 		}
 
 
@@ -670,7 +600,7 @@
 // 		uint32_t claim_free_mem(uint32_t ready_msg_count,uint32_t *reserved_offsets) {
 // 			LRU_element *first = NULL;
 // 			//
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			size_t step = _step;
 // 			//
 // 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
@@ -780,7 +710,7 @@
 // 			uint32_t last = lru_element_offsets[(ready_msg_count - 1)];  // freed and assigned to hashes...
 // 			uint32_t first = lru_element_offsets[0];  // freed and assigned to hashes...
 // 			//
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			size_t step = _step;
 // 			//
 // 			LRU_element *ctrl_hdr = (LRU_element *)start;
@@ -812,7 +742,7 @@
 // 		// LRU_cache method
 // 		inline pair<uint32_t,uint32_t> lru_remove_last() {
 // 			//
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			size_t step = _step;
 // 			//
 // 			LRU_element *ctrl_tail = (LRU_element *)(start + step);
@@ -836,18 +766,6 @@
 // 		}
 
 
-
-
-
-
-
-// 		// HH_map method - calls get -- 
-// 		//
-// 		uint32_t 	partition_get(uint64_t key) {
-// 			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
-// 			HMap_interface *T = _hmap_i[selector];
-// 			return get_hh_map(T, key);
-// 		}
 
 
 
@@ -876,12 +794,11 @@
 // 		}
 
 
-	
 
 // 		// LRU_cache method
 // 		bool check_free_mem(uint32_t msg_count,bool add) {
 // 			//
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			size_t step = _step;
 // 			//
 // 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
@@ -1016,12 +933,11 @@
 // 		 * is that the primary memory of a tier will be utilized as the storage or the elements put into the reseve, where the
 // 		 * primary storage has been previously cleared of evicted objects.
 // 		 * 
-// 		 * As a result this is the final stage of a four stage process in which the reserve is takes steps as follows: first, used to quickly store
+// 		 * As a result this is the final stage of a four stage process in which the reserve takes steps as follows: first, used to quickly store
 // 		 * elements under keys accessible to the application; second, older elements are evicted from the keyed tables, 
 // 		 * the hash table and the timer table, and then placed in the hashes of the next tier; third, the moved hashes leave their objects
 // 		 * behind with offset values referencing them from the next tier until the process runs to copy out the objects and free
-// 		 * the primary memory; fourth, the newly freed memory can accomodate the objects relegated to the reserve and the reserve 
-// 		 * can be reclaimed for the next push of additions.
+// 		 * the primary memory;
 // 		 * 
 // 		*/
 
@@ -1068,10 +984,9 @@
 // 					_timeout_table.update_entry(el->_when,el->_when,new_offset);
 // 				} // else  need some way to cure this at this point...
 // 				//
-// 				this->return_to_reserve_mem(el_to_move);
+// 				this->return_to_free_mem(el_to_move);
 // 				_N_reserved--;
 // 			}
-
 
 // 		}
 
@@ -1079,7 +994,7 @@
 // 	private:
 
 // 		bool touch(LRU_element *stored,uint32_t offset) {
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			//
 // 			uint32_t prev_off = stored->_prev;
 // 			if ( prev_off == UINT32_MAX ) return(false);
@@ -1137,7 +1052,7 @@
 // 		}
 
 // 		void _console_dump(LRU_element *el) {
-// 			uint8_t *start = _region;
+// 			uint8_t *start = this->start();
 // 			uint64_t offset = (uint64_t)(el) - (uint64_t)(start);
 // 			cout << "{" << endl;
 // 			cout << "\t\"offset\": " << offset <<  ", \"hash\": " << el->_hash << ',' << endl;

@@ -30,6 +30,7 @@ using namespace std;
 
 #include "time_bucket.h"
 
+#include "atomic_stack.h"
 
 using namespace std::chrono;
 
@@ -50,7 +51,6 @@ using namespace std::chrono;
 
 
 
-
 inline uint64_t epoch_ms(void) {
 	uint64_t ms;
 	ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
@@ -58,51 +58,28 @@ inline uint64_t epoch_ms(void) {
 }
 
 
-template<typename T>
-inline string joiner(list<T> &jlist) {
-	if ( jlist.size() == 0 ) {
-		return("");
+
+uint32_t g_prev_time = 0;
+uint32_t g_interval_counter = 0;
+//
+inline uint32_t current_time_next() {
+	//
+	uint32_t probe_time = epoch_ms();
+	if ( (g_prev_time == probe_time ) {
+		g_interval_counter++
+	} else {
+		g_interval_counter = 0;
+		g_prev_time = probe_time;
 	}
-	stringstream ss;
-	for ( auto v : jlist ) {
-		ss << v;
-		ss << ',';
-	}
-	string out = ss.str();
-	return(out.substr(0,out.size()-1));
+	//
+	uint32_t timemarker = (g_interval_counter & (~0x1111)) | (uint32_t)(g_prev_time << 4);
+	return timemarker;
 }
 
-template<typename K,typename V>
-inline string map_maker_destruct(map<K,V> &jmap) {
-	if ( jmap.size() == 0 ) {
-		return "{}";
-	}
-	stringstream ss;
-	char del = 0;
-	ss << "{";
-	for ( auto p : jmap ) {
-		if ( del ) { ss << del; }
-		del = ',';
-		K h = p.first;
-		V v = p.second;
-		ss << "\""  << h << "\" : \""  << v << "\"";
-		delete p.second;
-	}
-	ss << "}";
-	string out = ss.str();
-	return(out.substr(0,out.size()));
+void init_diff_timer() {
+	g_prev_time = (uint32_t)epoch_ms();
+	g_interval_counter = 0;
 }
-
-
-typedef struct LRU_ELEMENT_HDR {
-	uint32_t	_prev;
-	uint32_t	_next;
-	uint64_t 	_hash;
-	time_t		_when;
-	uint32_t	_share_key;
-} LRU_element;
-
-
 
 const uint32_t MAX_MESSAGE_SIZE = 128;
 //
@@ -133,6 +110,16 @@ typedef union {
 	uint32_t			_offset;
 	Com_element			*_cel;
 } com_or_offset;
+
+
+typedef struct LRU_ELEMENT_HDR {
+	uint32_t	_prev;
+	uint32_t	_next;
+	uint64_t 	_hash;
+	time_t		_when;
+	uint32_t	_share_key;
+} LRU_element;
+
 
 
 //
@@ -171,22 +158,36 @@ class LRU_Consts {
 // 	public:
 // 		// LRU_cache -- constructor
 
-class LRU_cache : public LRU_Consts {
+
+/**
+ * LRU_cache
+ * 		The LRU cache manages a reference to a hopscotch hash table and to a storage area.
+ * 		The storage area is managed as a free mem stack. 
+ * 		Contention for the stack is managed by atomic access.  
+*/
+
+class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 	public:
 
 		// LRU_cache -- constructor
-		LRU_cache(void *region,size_t record_size, size_t seg_sz, size_t els_per_tier,size_t reserve_percent,uint16_t num_procs, bool am_initializer, uint8_t tier) {
+		LRU_cache(void *region,size_t record_size, size_t seg_sz, size_t els_per_tier, size_t reserve, uint16_t num_procs, bool am_initializer, uint8_t tier) {
+			//
+			init_diff_timer();
 			//
 			_region = region;
 			_record_size = record_size;
 			_region_size = seg_sz;
 			_max_count = els_per_tier;
-			_reserve_percent = reserve_size;
+			_reserve = reserve_size*num_procs;  // when the count become this, the reserve is being used and it is time to clean up
 			//
 			_am_initializer = am_initializer;
 			//
-			_count_free = _max_count;
+			//
+			// if the reserve goes down, an attempt to increase _count_free should take place
+			// if _count_free becomes zero, all memory is used up
+			//
+			_count_free->store(_max_count);				
 			_count = 0;
 
 			_Procs = num_procs;
@@ -196,29 +197,45 @@ class LRU_cache : public LRU_Consts {
 			//
 			_lb_time = (atomic<uint32_t> *)(region);   // these are governing time boundaries of the particular tier
 			_ub_time = _lb_time + 1;
-
+			_memory_requested = (_ub_time + 1); // the next pointer in memory
+			_reserve_evictor =  (_memory_requested + 1); // the next pointer in memory
 			//
-			_cascaded_com_area = (Com_element *)(_ub_time + 1);
+			_cascaded_com_area = (Com_element *)(_memory_requested + 1);
 			initialize_com_area(num_procs);
 			_end_cascaded_com_area = _cascaded_com_area + _Procs;
+
+
+			_all_tiers = nullptr;
 
 
 			_start = start();
 			_end = end();
 			//
-			_reserve_end = _region + _region_size;
-			_reserve_start = end;
-			_reserve_count_free = (_max_count/100)*_reserve_percent;
 
 			// time lower bound and upper bound for a tier...
 			_lb_time->store(UINT32_MAX);
 			_ub_time->store(UINT32_MAX);
+			_memory_requested->store(0);
+			_reserve_evictor->clear();
+
+			pair<uint32_t,uint32_t> *holey_buffer = (pair<uint32_t,uint32_t> *)(_region + _region_size);
+			pair<uint32_t,uint32_t> *shared_queue = holey_buffer + _max_count;  // late arrivals
+			//
+			_timeout_table = new KeyValueManager(holey_buffer, _max_count, shared_queue, num_procs);
+			_configured_tier_cooling = ONE_HOUR;
+			_configured_shrinkage = 0.3333;
 
 		}
 
 		virtual ~LRU_cache() {}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+		void set_tier_table(LRU_cache *siblings_and_self,uint8_t max_tiers) {
+			_all_tiers = siblings_and_self;
+			_max_tiers = max_tiers;
+		}
+
 
 		uint8_t *start(void) {
 			uint8_t *rr = (uint8_t *)(_end_cascaded_com_area);
@@ -234,19 +251,13 @@ class LRU_cache : public LRU_Consts {
 
 
 
+
 		// set_hash_impl - called by initHopScotch -- set two paritions servicing a random selection.
 		//
 		void set_hash_impl(void *hh_region,size_t seg_size) {
-			//
 			uint8_t *reg1 = hh_region;
-			uint8_t *reg2 = reg1 + (seg_size/2);
-			HH_map *hmap1 = new HH_map(reg1,els_per_tier/2,_am_initializer);
-			HH_map *hmap2 = new HH_map(reg2,els_per_tier/2,_am_initializer);
-			//
-			_hmap_i[0] = hmap1;
-			_hmap_i[1] = hmap2;
+			_hmap = new HH_map(reg1,els_per_tier,_am_initializer);
 		}
-
 
 
 
@@ -269,13 +280,10 @@ class LRU_cache : public LRU_Consts {
 		}
 
 
-		// HH_map method - calls get -- 
+
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		//
-		uint32_t 		partition_get(uint64_t key) {
-			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
-			HMap_interface *T = _hmap_i[selector];
-			return get_hh_map(T, key);
-		}
 
 		// LRU_cache method - calls get -- 
 		/**
@@ -291,7 +299,7 @@ class LRU_cache : public LRU_Consts {
 			while ( --ready_msg_count >= 0 ) {
 				//
 				uint64_t hash = (uint64_t *)(messages[ready_msg_count]->_cel->_hash);
-				uint32_t data_loc = this->partition_get(hash);
+				uint32_t data_loc = _hmap->get(hash);
 				//
 				if ( data_loc != 0 ) {    // check if this message is already stored
 					messages[ready_msg_count]->_offset = data_loc;  // just putting in an offset... maybe something better
@@ -303,123 +311,297 @@ class LRU_cache : public LRU_Consts {
 			return new_msgs_count;
 		}
 
-		uint32_t		free_mem_requested(void) {
-			return 0;
-		}
 
-		uint32_t claim_free_mem([[maybe_unused]] uint32_t ready_msg_count,[[maybe_unused]] uint32_t *reserved_offsets) {
-			return 0;
-		}
+		/*
+			Free memory is a stack with atomic var protection.
+			If a basket of new entries is available, then claim a basket's worth of free nodes and return them as a 
+			doubly linked list for later entry. Later, add at most two elements to the LIFO queue the LRU.
 
-
-
-
-		// LRU_cache method
-		atomic<uint32_t> *wait_on_tail(LRU_element *ctrl_tail,bool set_high = false,uint32_t delay = 4) {
-			//
-			auto flag_pos = static_cast<atomic<uint32_t>*>(&(ctrl_tail->_share_key));
-			if ( set_high ) {
-				uint32_t check = UINT32_MAX;
-				while ( check !== 0 ) {
-					check = flag_pos->load(std::memory_order_relaxed);
-					if ( check != 0 )  {			// waiting until everyone is done with it
-						usleep(delay);
-					}
-				}
-				while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,UINT32_MAX)
-							&& (ctrl_tail->_share_key) !== UINT32_MAX));
-			} else {
-				uint32_t check = UINT32_MAX;
-				while ( check == UINT32_MAX ) {
-					check = flag_pos->load(std::memory_order_relaxed);
-					if ( check == UINT32_MAX )  {
-						usleep(delay);
-					}
-				}
-				while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,(check+1))
-							&& (ctrl_tail->_share_key < UINT32_MAX) );
-			}
-			return flag_pos;
-		}
-
-
-		// LRU_cache method
-		void done_with_tail(LRU_element *ctrl_tail,atomic<uint32_t> *flag_pos,bool set_high = false) {
-			if ( set_high ) {
-				while (!flag_pos->compare_exchange_weak(ctrl_tail->_share_key,0)
-							&& (ctrl_tail->_share_key == UINT32_MAX));   // if some others have gone through OK
-			} else {
-				auto prev_val = flag_pos->load();
-				if ( prev_val == 0 ) return;  // don't go below zero
-				flag_pos->fetch_sub(ctrl_tail->_share_key,1);
-			}
-		}
-
-		/**
-		 * Prior to attachment, the required space availability must be checked.
+			Take note that the reserve is just free memory that is untouched unless demand spikes.
+			When reserve is called on, the process of eviction has to begin...
 		*/
-		void attach_to_lru_list(uint32_t *lru_element_offsets,uint32_t ready_msg_count) {
-			//
-			uint32_t last = lru_element_offsets[(ready_msg_count - 1)];  // freed and assigned to hashes...
-			uint32_t first = lru_element_offsets[0];  // freed and assigned to hashes...
+
+		//
+		uint32_t		free_mem_requested(void) {
+			// the requested free memory requested 
+			uint32_t total_requested = _memory_requested->load(std::memory_order_relaxed);
+			return total_requested;
+		}
+
+		// LRU_cache method
+		void			free_mem_claim_satisfied(uint32_t msg_count) {   // stop requesting the memory... 
+			if ( _memory_requested->load() <= msg_count ) {
+				_memory_requested->store(0);
+			} else {
+				_memory_requested->fetch_sub(msg_count);
+			}
+		}
+
+		// check_count_free_against_reserve
+		void			check_count_free_against_reserve() {
+			auto boundary = _reserve;
+			auto current_count = _count_free->load();
+			if ( current_count < boundary ) {
+				notify_evictor(boundary - current_count);
+			}
+		}
+
+
+		void notify_evictor(uint32_t reclaim_target) {
+			while !( _reserve_evictor->test_and_set() );
+			test_and_set->notify_one();
+		}
+
+
+
+		// claim_free_mem
+		// 
+		//		The free memory is a stack that is shared. 
+		//		A number of items are requested. This method takes as many requested 
+		// 		items off the stack as it can and puts the offset into reserved_offsets.
+		//		The number of items to be taken should have already been settled prior to a call
+		//		to this method. If the reserve is being use, it will be pulled out of the stack 
+		//		just the same. Calling method will know about the reserve.
+		//
+
+		uint32_t		claim_free_mem(uint32_t ready_msg_count,uint32_t *reserved_offsets) {
+			LRU_element *first = NULL;
 			//
 			uint8_t *start = this->start();
 			size_t step = _step;
 			//
-			LRU_element *ctrl_hdr = (LRU_element *)start;
-			//
-			// wait
-			LRU_element *ctrl_tail = (LRU_element *)(start + step);
-			auto tail_block = wait_on_tail(ctrl_tail,false); // WAIT :: stops if the tail hash is set high ... this call does not set it
 
-			// new head
-			auto head = static_cast<atomic<uint32_t>*>(&(ctrl_hdr->_next));
+			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
 			//
-			uint32_t next = head->exchange(first);  // ensure that some next (another basket first perhaps) is available for buidling the LRU
+			uint32_t status = pop_number(start,ctrl_free,ready_msg_count);
+			if ( status == UINT32_MAX ) {
+				_status = false;
+				_reason = "out of free memory: free count == 0";
+				return(UINT32_MAX);
+			}
 			//
-			LRU_element *old_first = (LRU_element *)(start + next);  // this has been settled
+			_count_free->fetch_sub(ready_msg_count, std::memory_order_relaxed);
+
+			// If the request cuts into reserves, then the handling thread will 
+			// be flagged with a state indicating that some offline eviction should be starting 
+			// or should have already been started.
+
+			check_count_free_against_reserve();      // check_count_free_against_reserve
+
 			//
-			old_first->_prev = last;			// ---- ---- ---- ---- ---- ---- ---- ----
+			free_mem_claim_satisfied(ready_msg_count);
+			//
+			return 0;
+		}
+
+
+		void			return_to_free_mem(LRU_element *el) {			// a versions of push
+			uint8_t *start = this->start();
+			_atomic_stack_push(start,(start + 2*_step),el);
+			_count_free->fetch_add(1, std::memory_order_relaxed);
+		}
+
+
+
+
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+		/**
+		 * Prior to attachment, the required space availability must be checked.
+		 * This is going away... we are using the sorted time stamp buffer...
+		*/
+		void 			attach_to_lru_list(uint32_t *lru_element_offsets, uint32_t ready_msg_count) {
+			//
+			uint32_t last = lru_element_offsets[(ready_msg_count - 1)];  // freed and assigned to hashes...
+			uint32_t first = lru_element_offsets[0];  // freed and assigned to hashes...
 			//
 			// thread the list
 			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
-				LRU_element *current_el = (LRU_element *)(start + lru_element_offsets[i]);
-				current_el->_prev = ( i > 0 ) ? lru_element_offsets[i-1] : 0;
-				current_el->_next = ((i+1) < ready_msg_count) ? lru_element_offsets[i+1] : next;
+				uint32_t value = lru_element_offsets[0];
+				uint32_t key = current_time_next();
+				_timeout_table->add_entry(key, value);
 			}
 			//
-
-			done_with_tail(ctrl_tail,tail_block,false);
 		}
 
 
-	
-
-		void			wait_for_reserves([[maybe_unused]] uint32_t req_count) {}
-
-		bool			has_reserve(void) { return true; }
-
-		bool			check_free_mem([[maybe_unused]] uint32_t msg_count,[[maybe_unused]] bool add) {
+		// checks to see if there is enough memory for the request.
+		
+		bool 			check_free_mem(uint32_t msg_count,bool add) {
+			//
+			uint8_t *start = this->start();
+			size_t step = _step;
+			//
+			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
+			// using _prev to count the free elements... it is not updated in this check (just inspected)
+			auto count_free = _count_free->load();
+			//
+			auto total_requested = _memory_requested->load(std::memory_order_relaxed);
+			if ( add ) {
+				total_requested += msg_count;			// update public info about the amount requested 
+				_memory_requested->fetch_add(msg_count);		// should be the amount of all curren requests
+			}
+			if ( count_free < total_requested ) return false;
 			return true;
 		}
 
-		bool 			transfer_out_of_tier(void) { return false; }
 
-		void 			move_from_reserve_to_primary(void) { }
 
-		void 			from_reserve([[maybe_unused]] list<LRU_element *> &free_reserve,[[maybe_unused]] uint32_t req_count) {}
-
-		void			return_to_free_mem([[maybe_unused]] LRU_element *el) {}
-
-		uint32_t		timeout_table_evictions([[maybe_unused]] list<uint32_t> &moving,[[maybe_unused]] uint32_t req_count) { return 0; }
-
-		void 			claim_hashes([[maybe_unused]] list<uint32_t> &moving) {}
-
-		void			relinquish_hashes([[maybe_unused]] list<uint32_t> &moving) {}
-
-		bool			add_key_value([[maybe_unused]] uint64_t hash,[[maybe_unused]] uint32_t offset) {
-			return true; // faux success
+		uint32_t 		timeout_table_evictions(list<uint32_t> &offsets_moving,uint32_t req_count) {
+			//
+			const auto now = system_clock::now();
+    		const time_t t_c = system_clock::to_time_t(now);
+			uint32_t min_max_time = (t_c - _configured_tier_cooling);
+			uint32_t as_many_as = min((_max_count*_configured_shrinkage),(req_count*3));
+			//
+			_timeout_table->displace_lowest_value_threshold(offsets_moving,min_max_time,as_many_as);
+			return offsets_moving.size();
 		}
+
+
+		void 			transfer_hashes(LRU_cache *next_tier,uint32_t req_count) {
+			list<uint32_t> offsets_moving;
+			uint32_t count_reclaimed_stamps = this->timeout_table_evictions(offsets_moving,req_count);
+			//
+			next_tier->claim_hashes(offsets_moving,this->start());
+			this->relinquish_hashes(offsets_moving);
+			//
+			uint32_t lb_timestamp = _timeout_table->least_time_key();
+			this->raise_lru_lb_time_bounds(lb_timestamp);
+		}
+				// have to wakeup a secondary process that will move data from reserve to primary
+				// and move relinquished data to the secondary... (free up reserve again... need it later)
+
+
+		void 			claim_hashes(list<uint32_t> &moving,uint8_t *evicting_tier_region) {
+			// launch this proc...
+			//
+			auto additional_locations = moving.size();
+			uint32_t lru_element_offsets[additional_locations+1];
+			// clear the buffer
+			memset((void *)lru_element_offsets,0,sizeof(uint32_t)*(additional_locations+1)); 
+
+			// the next thing off the free stack.
+			//
+			bool mem_claimed = (UINT32_MAX != this->claim_free_mem(additional_locations,lru_element_offsets)); // negotiate getting a list from free memory
+			//
+			// if there are elements, they are already removed from free memory and this basket belongs to this process..
+			if ( mem_claimed ) {
+				uint32_t *current = lru_element_offsets;   // offset to new elemnents in the regions
+				uint8_t *start = this->start();
+				uint32_t offset = 0;
+				//
+				// map hashes to the offsets
+				//
+				for ( auto offset; moving ) {   // offset of where it is goin
+					LRU_element *lel = (LRU_element *)(evicting_tier_region + offset);
+					uint64_t hash64 = lel->_hash;
+					//
+					//
+					auto target_offset = *current++;
+
+					if ( lru->store_in_hash(hash64,target_offset) != UINT64_MAX ) { // add to the hash table...
+						void *src = (void *)(lel + 1);
+						void *target = start() + target_offset + sizeof(LRU_element);
+						memcpy(target,src,_record_size);
+					}
+				}
+			} else {
+				this->transfer_out_of_tier_to_remote(moving);
+			}
+			//
+			this->attach_to_lru_list(lru_element_offsets,additional_locations);  // attach to an LRU as a whole bucket...
+		}
+
+		void			relinquish_hashes(list<uint32_t> &moving) {
+			//
+			uint8_t *start = this->start();
+			for ( auto offset; moving ) {   // offset of where it is going
+				LRU_element *el = (LRU_element *)(start + offset);
+				uint64_t hash64  = el->_hash;
+				this->return_to_free_mem(el);
+				this->_hmap->del(hash64);
+			}
+			//
+		}
+
+
+	public:
+
+		bool 			transfer_out_of_tier_to_remote(void) { return false; }
+
+
+	public:
+
+		// thread methods....
+
+		// local_evictor is notified to run as soon as the reserve line is passed or from time to time.
+		// There is not a huge requirement that it operates at super speed. But, it should start cleaning up space
+		// for small numbers of entries accessing and sorting small tails of the time buffer. 
+		// It may shift a portion of the time buffer by running compression. 
+		// All compressors must make sure to update the upper and lower time limits of a tier.
+		//
+		void			local_evictor(void) {
+			//
+			do {
+				_reserve_evictor->wait(std::memory_order_acquire);
+				if ( _Tier+1 < _max_tiers ) {
+					uint32_t req_count = _Procs;
+					LRU_cache *next_tier = this->_all_tiers[_Tier+1];
+					this->transfer_hashes(next_tier,req_count)
+				} else {
+					// crisis mode...				elements will have to be discarded or sent to another machine
+					return this->transfer_out_of_tier_to_remote();   // also copy data...
+				}
+				_reserve_evictor->clear();
+			} while (true);
+			//
+		}
+
+
+		uint32_t		raise_lru_lb_time_bounds(uint32_t lb_timestamp) {
+			//
+			if ( this->_Tier == 0 ) {
+				this->_ub_time->store(UINT32_MAX);
+				uint32_t lbt = this->_lb_time->load();
+				if ( lbt < lb_timestamp ) {
+					this->_lb_time->store(lb_timestamp);
+					return lbt;
+				}
+				return 0;
+			}
+			if ( this->_Tier < _NTiers ) {
+				uint32_t lbt = this->_lb_time->load();
+				if ( lbt < lb_timestamp ) {
+					uint32_t ubt = this->_ub_time->load();
+					uint32_t delta = (lb_timestamp - lbt);
+					this->_lb_time->store(lb_timestamp);
+					ubt -= delta;
+					this->_ub_time->store(lb_timestamp);					
+					return lbt;
+				}
+				return 0;
+			}
+			//
+		}
+
+
+
+	public:
+
+		uint64_t		store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
+			HMap_interface *T = this->_hmap;
+			uint64_t result = T->store(hash_bucket,full_hash,new_el_offset); //UINT64_MAX
+			return result;
+		}
+
+		uint64_t		store_in_hash(uint64_t hash64, uint32_t new_el_offset) {
+			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
+			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
+			return store_in_hash(full_hash,hash_bucket,new_el_offset);
+		}
+
 
 		uint8_t 		*data_location(uint32_t write_offset) {
 			uint8_t *strt = this->start();
@@ -438,25 +620,27 @@ class LRU_cache : public LRU_Consts {
 		//
 		uint32_t						_step;
 		uint8_t							*_start;
-		uint8_t							*_end;
-		uint8_t							*_reserve_start;
-		uint8_t							*_reserve_end;
-		uint16_t						_reserve_count_free;
-		
+		uint8_t							*_end;		
 
-		uint16_t						_count_free;
 		uint16_t						_count;
 		uint16_t						_max_count;  // max possible number of records
 
 		//
 		uint8_t							_Tier;
-		uint8_t							_reserve_percent;
+		uint8_t							_reserve;
 
- 		HMap_interface 					*_hmap_i[2];
+ 		HMap_interface 					*_hmap;
+ 		KeyValueManager					*_timeout_table;
+		//
+		LRU_cache 						*_all_tiers;		// set by caller
 
 		//
 		atomic<uint32_t>				*_lb_time;
 		atomic<uint32_t>				*_ub_time;
+		atomic<uint32_t>				*_memory_requested;
+		atomic<uint32_t>				*_count_free;
+		atomic_flag						*_reserve_evictor;
+		//
 		Com_element						*_cascaded_com_area;   // if outsourcing tiers ....
 		Com_element						*_end_cascaded_com_area;
 

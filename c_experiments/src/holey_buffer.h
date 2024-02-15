@@ -304,8 +304,7 @@ class KeyValueManager {
 
 
 
-		void
-		displace_lowest_value_threshold(list<uint32_t> &deposit, uint32_t min_max, uint32_t max_count) {
+		void displace_lowest_value_threshold(list<uint32_t> &deposit, uint32_t min_max, uint32_t max_count) {
 			//
 			pair<uint32_t,uint32_t> *p = _key_val;
 			pair<uint32_t,uint32_t> *end = _key_val + max_count;
@@ -333,6 +332,15 @@ class KeyValueManager {
 			rectify_blackout_count(UINT32_MAX);
 		}
 
+
+		uint32_t least_time_key() {
+			pair<uint32_t,uint32_t> *p = _key_val;
+			pair<uint32_t,uint32_t> *eo_everything = p + _N + _M;
+
+			while ( (p->first == UINT32_MAX) && (p < eo_everything) ) { p++; }
+
+			return p->first;
+		}
 
 
 	//protected:

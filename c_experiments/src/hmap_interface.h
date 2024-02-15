@@ -12,6 +12,53 @@
 using namespace std;
 
 
+constexpr int SECS_TO_SLEEP = 3;
+constexpr int NSEC_TO_SLEEP = 3;
+
+
+struct timespec request {
+	SECS_TO_SLEEP, NSEC_TO_SLEEP
+}, remaining{SECS_TO_SLEEP, NSEC_TO_SLEEP};
+
+
+
+
+template<typename T>
+inline string joiner(list<T> &jlist) {
+	if ( jlist.size() == 0 ) {
+		return("");
+	}
+	stringstream ss;
+	for ( auto v : jlist ) {
+		ss << v;
+		ss << ',';
+	}
+	string out = ss.str();
+	return(out.substr(0,out.size()-1));
+}
+
+template<typename K,typename V>
+inline string map_maker_destruct(map<K,V> &jmap) {
+	if ( jmap.size() == 0 ) {
+		return "{}";
+	}
+	stringstream ss;
+	char del = 0;
+	ss << "{";
+	for ( auto p : jmap ) {
+		if ( del ) { ss << del; }
+		del = ',';
+		K h = p.first;
+		V v = p.second;
+		ss << "\""  << h << "\" : \""  << v << "\"";
+		delete p.second;
+	}
+	ss << "}";
+	string out = ss.str();
+	return(out.substr(0,out.size()));
+}
+
+
 #define WORD  (8*sizeof(uint32_t))		// 32 bits
 #define MOD(x, n) ((x) < (n) ? (x) : (x) - (n))
 //
@@ -69,6 +116,8 @@ typedef struct HHASH {
 	void unpin_value() {
 		//
 	}
+
+
 	uint16_t bucket_count(uint32_t h_bucket) {			// at most 255 in a bucket ... will be considerably less
 		uint32_t *controllers = (uint32_t *)(static_cast<char *>((void *)(this)) + sizeof(struct HHASH) + _C_Offset);
 		uint16_t *controller = (uint16_t *)(&controllers[h_bucket]);

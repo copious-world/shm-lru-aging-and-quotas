@@ -36,7 +36,7 @@ using namespace std::chrono;
 
 
 
-template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_PERCENT = 30>
+template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_FACTOR = 3>
 class TierAndProcManager : public LRU_Consts {
 
 	public:
@@ -57,9 +57,11 @@ class TierAndProcManager : public LRU_Consts {
 			_Procs = num_procs;
 			_proc = proc_number;
 			_NTiers = min(num_tiers,MAX_TIERS);
-			_reserve_size = RESERVE_PERCENT;	// set the precent as part of the build
+			_reserve_size = RESERVE_FACTOR;	// set the precent as part of the build
 			_com_buffer = com_buffer;			// the com buffer is another share section.. separate from the shared data regions
+			
 			//
+
 			uint8_t tier = 0;
 			for ( auto p : lru_segs ) {
 				//
@@ -206,7 +208,7 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 
-		Com_element *access_point(uint8_t proc, uint8_t tier = 0) {
+		Com_element	*access_point(uint8_t proc, uint8_t tier = 0) {
 			Com_element *owner_proc_area = ((Com_element *)_com_buffer) + (proc*_NTiers);
 			Com_element *ce = (owner_proc_area + tier);
 			return ce;
@@ -239,34 +241,16 @@ class TierAndProcManager : public LRU_Consts {
 			 	// if things have gone really wrong, then another process is busy copying old data 
 				// out of this tier's data region. Stuff in reserve will end up in the primary (non-reserve) buffer.
 				// The data is shifting out of spots from a previous eviction.  
-			while  ( !(lru->has_reserve()) ) {
-				lru->wait_for_reserves(req_count);
-			}
-			//
-			if ( lru->check_free_mem(ready_msg_count,false) ) return true;
+
+			if ( lru->check_free_mem(ready_msg_count,false) ) return true;  // check if the situation changed on the way here
 
 			//
 			LRU_cache *next_tier = this->access_tier(source_tier+1);
 			if ( next_tier == nullptr ) {
 				// crisis mode...				elements will have to be discarded or sent to another machine
-				return lru->transfer_out_of_tier();   // also copy data...
+				return lru->transfer_out_of_tier_to_remote();   // also copy data...
 			} else {
-				//
-				// use a secondary free list for new req_count elements 
-				// and at the same time, yield the old position to a second tier that shares this tier's primary.
-				list<LRU_element *> free_reserve;
-				lru->from_reserve(free_reserve,req_count);
-				//
-				for ( LRU_element *reserve_el : free_reserve  ) {
-					lru->return_to_free_mem(reserve_el);
-				}
-				//
-				list<uint32_t> moving;
-				uint32_t count_reclaimed_stamps = lru->timeout_table_evictions(moving,req_count);
-				next_tier->claim_hashes(moving);
-				lru->relinquish_hashes(moving);
-				// have to wakeup a secondary process that will move data from reserve to primary
-				// and move relinquished data to the secondary... (free up reserve again... need it later)
+				lru->transfer_hashes(next_tier,req_count);
 			}
 			//
 			return true;
@@ -363,9 +347,13 @@ class TierAndProcManager : public LRU_Consts {
 					com_or_offset **end_dups = accesses + ready_msg_count;  // look at the whole bufffer, see who is set
 					com_or_offset **tmp = messages;
 
-					/// Walk the messages and accesses in sync step.
+					// Walk the messages and accesses in sync step.
+					//	That is, for the write that are updates of things in the table, 
+					//	just make the offset to the object available to the writer.
+					//	Change the state of its location to allow the client sider being served to write
+					//	and later the client sider will clear the position for other writers.
 					//
-					while ( tmp_dups < end_dups ) {
+					while ( tmp_dups < end_dups ) {			/// update ops cleared first (nothing new in the hash table)
 						com_or_offset *dup_access = *tmp_dups++;
 						//
 						// this element has been found and this is actually a data_loc...
@@ -381,21 +369,26 @@ class TierAndProcManager : public LRU_Consts {
 						}
 						tmp++;
 					}
-					//
+					//	additional_locations
+					//		new items go into memory -- hence new allocation (or taking) of positions
 					if ( additional_locations > 0 ) {  // new (additional) locations have been allocated 
 						//
 						// Is there enough memory?							--- CHECK FREE MEMORY
+						// there is enough free memory even if this tier cuts into reserves.
 						bool add = true;
-						while ( !(lru->check_free_mem(ready_msg_count,add)) ) {
-							if ( !run_evictions(lru,assigned_tier,ready_msg_count) ) {
-								return(-1);
+						while ( !(lru->check_free_mem(additional_locations,add)) ) {
+							// stop until there is space... getting to this point means 
+							// that aggressive and immediate action has to be taken before proceeding.
+							// A deterministic outcome is required.
+							if ( !run_evictions(lru,assigned_tier,additional_locations) ) {
+								return(-1);			// failed to move of old entries
 							}
 							add = false;  // this process should not add the same amount to the global free mem request more than once.
 						}
 						// GET LIST FROM FREE MEMORY 
 						//
 						// should be on stack
-						uint32_t lru_element_offsets[ready_msg_count+1];  
+						uint32_t lru_element_offsets[additional_locations+1];
 						// clear the buffer
 						memset((void *)lru_element_offsets,0,sizeof(uint32_t)*(additional_locations+1)); 
 
@@ -427,10 +420,14 @@ class TierAndProcManager : public LRU_Consts {
 									//
 									uint32_t *write_offset_here = (&ce->_offset);
 									uint64_t *hash_parameter =  (&ce->_hash);
-
+									//
 									uint64_t hash64 = hash_parameter[0];
 									//
-									if ( lru->add_key_value(hash64,offset) ) { // add to the hash table...
+									// second phase writer hands the hash and offset to the lru
+									//	this is the first time the lru pairs the hash and offset.
+									// 	the lru calls upon the hash table to store the hash/offset pair...
+									//
+									if ( lru->store_in_hash(hash64,offset) != UINT64_MAX ) { // add to the hash table...
 										write_offset_here[0] = offset;
 										//
 										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
@@ -443,7 +440,7 @@ class TierAndProcManager : public LRU_Consts {
 						} else {
 							com_or_offset **tmp_dups = accesses;
 
-							/// Walk the messages and accesses in sync step.
+							/// Walk the messages let the position go with an error. (Things are really messed up)
 							//
 							while ( tmp_dups < end_dups ) {
 								//
@@ -469,6 +466,7 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 
+
 		/**
 		 * Waking up any thread that waits on input into the tier.
 		 * Any number of processes may place a message into a tier. 
@@ -483,7 +481,7 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * 
 		*/
-		void launch_second_phase_threads() {  // handle reads 
+		void 		launch_second_phase_threads() {  // handle reads 
 			//
 			// uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint8_t assigned_tier = 0
 			// second_phase_write_handler(uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint8_t assigned_tier = 0) 
@@ -579,7 +577,6 @@ class TierAndProcManager : public LRU_Consts {
 
 	protected:
 
-
 		/**
 		 * 
 		// raise the lower bound on the times allowed into an LRU 
@@ -592,7 +589,8 @@ class TierAndProcManager : public LRU_Consts {
 		// older tier.
 		*/
 
-		uint32_t raise_lru_lb_time_bounds(uint32_t lb_timestamp) {
+		uint32_t	raise_lru_lb_time_bounds(uint32_t lb_timestamp) {
+			//
 			uint32_t index = time_interval_b_search(lb_timestamp, _t_times, _NTiers);
 			if ( index == 0 ) {
 				Tier_time_bucket *ttbr = &_t_times[0];
@@ -617,6 +615,7 @@ class TierAndProcManager : public LRU_Consts {
 				}
 				return 0;
 			}
+			//
 		}
 
 	protected:
