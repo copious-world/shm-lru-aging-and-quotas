@@ -24,6 +24,9 @@ using namespace std;
 
 
 #include "hmap_interface.h"
+
+#include "node_shm_HH.h"
+
 #include "holey_buffer.h"
 #include "atomic_proc_rw_state.h"
 
@@ -65,8 +68,8 @@ uint32_t g_interval_counter = 0;
 inline uint32_t current_time_next() {
 	//
 	uint32_t probe_time = epoch_ms();
-	if ( (g_prev_time == probe_time ) {
-		g_interval_counter++
+	if ( g_prev_time == probe_time ) {
+		g_interval_counter++;
 	} else {
 		g_interval_counter = 0;
 		g_prev_time = probe_time;
@@ -179,7 +182,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			_record_size = record_size;
 			_region_size = seg_sz;
 			_max_count = els_per_tier;
-			_reserve = reserve_size*num_procs;  // when the count become this, the reserve is being used and it is time to clean up
+			_reserve = reserve*num_procs;  // when the count become this, the reserve is being used and it is time to clean up
 			//
 			_am_initializer = am_initializer;
 			//
@@ -231,7 +234,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		void set_tier_table(LRU_cache *siblings_and_self,uint8_t max_tiers) {
+		void set_tier_table(LRU_cache **siblings_and_self,uint8_t max_tiers) {
 			_all_tiers = siblings_and_self;
 			_max_tiers = max_tiers;
 		}
@@ -254,8 +257,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		// set_hash_impl - called by initHopScotch -- set two paritions servicing a random selection.
 		//
-		void set_hash_impl(void *hh_region,size_t seg_size) {
-			uint8_t *reg1 = hh_region;
+		void set_hash_impl(void *hh_region,size_t seg_size,uint32_t els_per_tier) {
+			uint8_t *reg1 = (uint8_t *)hh_region;
 			_hmap = new HH_map(reg1,els_per_tier,_am_initializer);
 		}
 
@@ -347,9 +350,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
-		void notify_evictor(uint32_t reclaim_target) {
-			while !( _reserve_evictor->test_and_set() );
-			test_and_set->notify_one();
+		void 			notify_evictor(uint32_t reclaim_target) {
+			while( !( _reserve_evictor->test_and_set() ) );
+			_reserve_evictor->notify_one();
 		}
 
 
@@ -373,7 +376,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
 			//
-			uint32_t status = pop_number(start,ctrl_free,ready_msg_count);
+			uint32_t status = pop_number(start,ctrl_free,ready_msg_count,reserved_offsets);
 			if ( status == UINT32_MAX ) {
 				_status = false;
 				_reason = "out of free memory: free count == 0";
@@ -453,7 +456,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			const auto now = system_clock::now();
     		const time_t t_c = system_clock::to_time_t(now);
 			uint32_t min_max_time = (t_c - _configured_tier_cooling);
-			uint32_t as_many_as = min((_max_count*_configured_shrinkage),(req_count*3));
+			uint32_t as_many_as = min((uint32_t)(_max_count*_configured_shrinkage),(req_count*3));
 			//
 			_timeout_table->displace_lowest_value_threshold(offsets_moving,min_max_time,as_many_as);
 			return offsets_moving.size();
@@ -470,9 +473,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			uint32_t lb_timestamp = _timeout_table->least_time_key();
 			this->raise_lru_lb_time_bounds(lb_timestamp);
 		}
-				// have to wakeup a secondary process that will move data from reserve to primary
-				// and move relinquished data to the secondary... (free up reserve again... need it later)
 
+		// have to wakeup a secondary process that will move data from reserve to primary
+		// and move relinquished data to the secondary... (free up reserve again... need it later)
 
 		void 			claim_hashes(list<uint32_t> &moving,uint8_t *evicting_tier_region) {
 			// launch this proc...
@@ -488,22 +491,23 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			//
 			// if there are elements, they are already removed from free memory and this basket belongs to this process..
 			if ( mem_claimed ) {
+				//
 				uint32_t *current = lru_element_offsets;   // offset to new elemnents in the regions
 				uint8_t *start = this->start();
 				uint32_t offset = 0;
 				//
 				// map hashes to the offsets
 				//
-				for ( auto offset; moving ) {   // offset of where it is goin
+				for ( auto offset : moving ) {   // offset of where it is goin
 					LRU_element *lel = (LRU_element *)(evicting_tier_region + offset);
 					uint64_t hash64 = lel->_hash;
 					//
 					//
 					auto target_offset = *current++;
 
-					if ( lru->store_in_hash(hash64,target_offset) != UINT64_MAX ) { // add to the hash table...
+					if ( this->store_in_hash(hash64,target_offset) != UINT64_MAX ) { // add to the hash table...
 						void *src = (void *)(lel + 1);
-						void *target = start() + target_offset + sizeof(LRU_element);
+						void *target = (void *)(start + (target_offset + sizeof(LRU_element)));
 						memcpy(target,src,_record_size);
 					}
 				}
@@ -514,10 +518,11 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			this->attach_to_lru_list(lru_element_offsets,additional_locations);  // attach to an LRU as a whole bucket...
 		}
 
+
 		void			relinquish_hashes(list<uint32_t> &moving) {
 			//
 			uint8_t *start = this->start();
-			for ( auto offset; moving ) {   // offset of where it is going
+			for ( auto offset : moving ) {   // offset of where it is going
 				LRU_element *el = (LRU_element *)(start + offset);
 				uint64_t hash64  = el->_hash;
 				this->return_to_free_mem(el);
@@ -529,7 +534,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 	public:
 
-		bool 			transfer_out_of_tier_to_remote(void) { return false; }
+		bool 			transfer_out_of_tier_to_remote(list<uint32_t> &moving) { return false; }
 
 
 	public:
@@ -549,10 +554,14 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				if ( _Tier+1 < _max_tiers ) {
 					uint32_t req_count = _Procs;
 					LRU_cache *next_tier = this->_all_tiers[_Tier+1];
-					this->transfer_hashes(next_tier,req_count)
+					this->transfer_hashes(next_tier,req_count);
 				} else {
 					// crisis mode...				elements will have to be discarded or sent to another machine
-					return this->transfer_out_of_tier_to_remote();   // also copy data...
+					list<uint32_t> offsets_moving;
+					uint32_t count_reclaimed_stamps = this->timeout_table_evictions(offsets_moving,_Procs*3);
+					if ( count_reclaimed_stamps > 0 ) {
+						this->transfer_out_of_tier_to_remote(offsets_moving);   // also copy data...
+					}
 				}
 				_reserve_evictor->clear();
 			} while (true);
@@ -613,6 +622,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 
 	public:
+ 		const char 						*_reason;
 
 		void							*_region;
 		size_t		 					_record_size;
@@ -628,11 +638,17 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		//
 		uint8_t							_Tier;
 		uint8_t							_reserve;
+		uint8_t							_max_tiers;
+
+		uint32_t						_configured_tier_cooling;
+		double							_configured_shrinkage;
+
+
 
  		HMap_interface 					*_hmap;
  		KeyValueManager					*_timeout_table;
 		//
-		LRU_cache 						*_all_tiers;		// set by caller
+		LRU_cache 						**_all_tiers;		// set by caller
 
 		//
 		atomic<uint32_t>				*_lb_time;

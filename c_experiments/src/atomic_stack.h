@@ -26,7 +26,7 @@ class AtomicStack {
 
 		virtual ~AtomicStack() {}
 
-		void pop_number(uint8_t *start, StackEl *ctrl_free, uint32_t n, uint32_t *reserved_offsets) {
+		uint32_t pop_number(uint8_t *start, StackEl *ctrl_free, uint32_t n, uint32_t *reserved_offsets) {
 			//
 			auto head = static_cast<atomic<uint32_t>*>(&(ctrl_free->_prev));
 			uint32_t h_offset = head->load(std::memory_order_relaxed);
@@ -56,6 +56,7 @@ class AtomicStack {
 					reserved_offsets[n] = first_offset;  // h_offset should have changed
 				}
 			}
+			return 0;
 		}
 
 		// _atomic_stack_push

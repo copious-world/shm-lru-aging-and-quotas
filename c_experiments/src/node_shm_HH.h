@@ -1,6 +1,7 @@
 #ifndef _H_HOPSCOTCH_HASH_SHM_
 #define _H_HOPSCOTCH_HASH_SHM_
 
+#pragma once
 
 #include "errno.h"
 

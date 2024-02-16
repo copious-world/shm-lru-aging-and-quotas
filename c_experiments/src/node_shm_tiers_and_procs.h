@@ -75,6 +75,7 @@ class TierAndProcManager : public LRU_Consts {
 				// initialize hopscotch
 				tier++;
 				if ( tier > _NTiers ) break;
+				_tiers[tier]->set_tier_table(_tiers);
 			}
 			//
 			tier = 0;
@@ -86,7 +87,7 @@ class TierAndProcManager : public LRU_Consts {
 				//
 				LRU_cache *lru = _tiers[tier];
 				if ( lru !== nullptr ) {
-					lru->set_hash_impl(hh_region,seg_sz);
+					lru->set_hash_impl(hh_region,seg_sz,els_per_tier);
 				}
 				// initialize hopscotch
 				tier++;
