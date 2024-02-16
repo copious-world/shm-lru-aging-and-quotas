@@ -24,16 +24,14 @@ using namespace std;
 
 
 #include "hmap_interface.h"
-
 #include "node_shm_HH.h"
 
 #include "holey_buffer.h"
 #include "atomic_proc_rw_state.h"
-
-
 #include "time_bucket.h"
-
 #include "atomic_stack.h"
+
+
 
 using namespace std::chrono;
 
@@ -606,7 +604,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
-
 	public:
 
 		uint64_t		store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
@@ -630,8 +627,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			return nullptr;
 		}
 
-
 	public:
+
  		const char 						*_reason;
 
 		void							*_region;
@@ -653,13 +650,17 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		uint32_t						_configured_tier_cooling;
 		double							_configured_shrinkage;
 
-
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
  		HMap_interface 					*_hmap;
  		KeyValueManager					*_timeout_table;
 		//
 		LRU_cache 						**_all_tiers;		// set by caller
 
+		Com_element						*_cascaded_com_area;   // if outsourcing tiers ....
+		Com_element						*_end_cascaded_com_area;
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		//
 		atomic<uint32_t>				*_lb_time;
 		atomic<uint32_t>				*_ub_time;
@@ -667,9 +668,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		atomic<uint32_t>				*_count_free;
 		atomic_flag						*_reserve_evictor;
 		//
-		Com_element						*_cascaded_com_area;   // if outsourcing tiers ....
-		Com_element						*_end_cascaded_com_area;
-
 };
 
 
