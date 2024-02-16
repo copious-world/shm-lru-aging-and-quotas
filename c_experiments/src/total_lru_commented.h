@@ -145,19 +145,6 @@
 // 		}
 
 
-// 		// setup_region -- part of initialization if the process is the intiator..
-// 		void setup_region(size_t record_size) {
-// 			uint8_t *start = this->start();
-// 			size_t region_size = _region_size;
-// 			_count_free = setup_region_free_list(record_size,start,_step,region_size);
-// 		}
-
-// 				// setup_region -- part of initialization if the process is the intiator..
-// 		void setup_reserve_section(size_t record_size) {
-// 			uint8_t *start = _reserve;
-// 			size_t region_size = _region_size;
-// 			_count_free = setup_region_free_list(record_size,start,_step);
-// 		}
 
 
 // 		// add_el

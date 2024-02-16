@@ -207,9 +207,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			initialize_com_area(num_procs);
 			_end_cascaded_com_area = _cascaded_com_area + _Procs;
 
-
 			_all_tiers = nullptr;
 
+			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 			_start = start();
 			_end = end();
@@ -227,6 +227,16 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			_timeout_table = new KeyValueManager(holey_buffer, _max_count, shared_queue, num_procs);
 			_configured_tier_cooling = ONE_HOUR;
 			_configured_shrinkage = 0.3333;
+
+			//
+			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+			auto count_free = setup_region_free_list(record_size, _start, _step,(_end - _start));
+
+			if ( count_free != _count_free->load() ) {
+				_count_free->store(count_free);
+			}
+
+			//
 
 		}
 
