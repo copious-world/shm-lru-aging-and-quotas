@@ -24,23 +24,68 @@ using namespace std;
 
 #define  BITS_GEN_COUNT_LAPSE (3)
 
+
+
+
+
+
+template<const uint16_t Nbits = 256,const uint8_t SELECTOR_MAX = 4>
 class Random_bits_generator {
 
     bernoulli_distribution	_distribution;
-	list<uint32_t>			_bits;
-
+	//
 	mt19937 				_engine;
 	uint32_t				_last_bits;
 	uint8_t					_bcount;
 	uint8_t					_gen_count;
 
+	// ---- ---- ---- ---- ---- ---- ---- ----
+
+	uint32_t				*_shared_bits;
+	uint8_t					_shared_bcount;
+
+	uint32_t				*_shared_bits_regions[SELECTOR_MAX];
+	uint8_t					_current_shared_region;
+
+	// ---- ---- ---- ---- ---- ---- ---- ----
+
 public:
 
-	Random_bits_generator() : _bcount(0), _gen_count(0) {
+	list<uint32_t>			_bits;
+
+public:
+
+	Random_bits_generator() : _bcount(0), _gen_count(0), _current_shared_region(0) {
+
+		_shared_bits = nullptr;
+
+		typedef std::chrono::high_resolution_clock hrc;
+		hrc::time_point beginning = hrc::now();
+
+		random_device r;
+
+		hrc::duration d = hrc::now() - beginning;
+  		unsigned timer_seed = d.count();
+		//
+		_engine.seed(timer_seed);
+		//
+		_shared_bits_regions[0] = nullptr;
+		_shared_bits_regions[1] = nullptr;
+		_shared_bits_regions[2] = nullptr;
+		_shared_bits_regions[3] = nullptr;
+		//
 		_create_random_bits();
 	}
 
 public:
+
+
+	void set_region(uint32_t *region,uint8_t index) {
+		if ( (index < SELECTOR_MAX) && (region != nullptr) ) {
+			_shared_bits_regions[index] = region;
+		}
+	}
+
 
 
 	uint32_t generate_word() {
@@ -53,8 +98,7 @@ public:
 	}
 
     template <typename OutputIt>
-    void generate(OutputIt first, OutputIt last)
-    {
+    void generate(OutputIt first, OutputIt last) {
         while ( first != last ) {
 			uint32_t bits = generate_word();
             *first++ = bits;
@@ -63,14 +107,15 @@ public:
 
 
 	void _create_random_bits() {
-		_bits.resize(256);   // fr list ??
+		_bits.resize(Nbits);   // fr list ??
 		generate(_bits.begin(), _bits.end());
 	}
 
 	uint8_t pop_bit() {
 		//
 		if ( _bcount == 0 ) {
-			_last_bits = _bits.pop_front();
+			_last_bits = _bits.front();
+			_bits.pop_front();
 			_gen_count = (_gen_count + 1) % BITS_GEN_COUNT_LAPSE;
 			if ( _gen_count == 0 ) {
 				for ( uint8_t i = 0; i < BITS_GEN_COUNT_LAPSE; i++ ) {
@@ -86,6 +131,71 @@ public:
 		return the_bit;
 	}
 
+
+	void transfer_to_shared_buffer(uint32_t *shared_bit_area, uint32_t size, uint8_t selector = UINT8_MAX) {
+		//
+		if ( selector < SELECTOR_MAX ) {
+			set_region(shared_bit_area,selector);
+			_current_shared_region = selector;
+		}
+		//
+		shared_bit_area[0] = 0; // shared index
+		shared_bit_area[1] = 0; // shared bit count
+		shared_bit_area[2] = 0; // shared last bit (being shifted 32-1 times)
+		//
+		_shared_bits = shared_bit_area;
+		uint32_t *area_w = shared_bit_area + 3;
+		uint32_t *end = area_w + size;
+		for ( auto bword : _bits ) {
+			*area_w++ = bword;
+			if ( area_w >= end ) break;
+		}
+	}
+
+
+	uint8_t pop_shared_bit() {
+		//
+		if ( _shared_bits == nullptr ) return 0;  // get nothing.... not random
+		//
+		uint32_t shared_bcount = _shared_bits[1];
+		if ( _shared_bcount == 0 ) {
+			uint32_t index = _shared_bits[0];
+			_shared_bits[2] = _shared_bits[index];
+			if ( index < _bits.size() ) {
+				_shared_bits[0] = ++index;
+			} else {
+				_shared_bits[0] = 0; // wraps (client might need to keep track...)
+			}
+		}
+		//
+		uint32_t shared_last_bits = _shared_bits[2];
+		uint8_t the_bit = (shared_last_bits & 0x1);
+		//
+		shared_last_bits = (shared_last_bits >> 1);
+		shared_bcount = shared_bcount++ % 32;
+		//
+		_shared_bits[1] = shared_bcount;
+		_shared_bits[2] = shared_last_bits;
+		//
+		return the_bit;
+	}
+
+
+	void swap_prepped_bit_regions() {
+		_current_shared_region = (_current_shared_region + 1) % SELECTOR_MAX;
+		_shared_bits = _shared_bits_regions[_current_shared_region];
+	}
+
+
+	// 
+	void regenerate_shared(uint8_t region_selector) {
+		//
+		if ( (region_selector < SELECTOR_MAX) && (_shared_bits_regions[region_selector] != nullptr) ) {
+			_create_random_bits();
+			transfer_to_shared_buffer(_shared_bits_regions[region_selector],_bits.size());
+		}
+		//
+	}
 
 };
 

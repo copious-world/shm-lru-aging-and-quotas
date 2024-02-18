@@ -184,7 +184,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			//
 			_am_initializer = am_initializer;
 			//
-			//
 			// if the reserve goes down, an attempt to increase _count_free should take place
 			// if _count_free becomes zero, all memory is used up
 			//
@@ -199,9 +198,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			_lb_time = (atomic<uint32_t> *)(region);   // these are governing time boundaries of the particular tier
 			_ub_time = _lb_time + 1;
 			_memory_requested = (_ub_time + 1); // the next pointer in memory
-			_reserve_evictor =  (_memory_requested + 1); // the next pointer in memory
+			_reserve_evictor =  (atomic_flag *)(_memory_requested + 1); // the next pointer in memory
 			//
-			_cascaded_com_area = (Com_element *)(_memory_requested + 1);
+			_cascaded_com_area = (Com_element *)(_reserve_evictor + 1);
 			initialize_com_area(num_procs);
 			_end_cascaded_com_area = _cascaded_com_area + _Procs;
 
@@ -235,10 +234,11 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			}
 
 			//
-
 		}
 
 		virtual ~LRU_cache() {}
+
+	public:
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -291,6 +291,24 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+		//
+
+		uint32_t free_count(void) {
+			auto cnt = _count_free->load();
+			return cnt;
+		}
+
+
+		uint32_t current_count(void) {
+			auto cnt = _count_free->load();
+			return (_max_count - cnt);
+		}
+
+
+		uint32_t max_count(void) {
+			return _max_count;
+		}
 
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -309,7 +327,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			uint32_t new_msgs_count = 0;
 			while ( --ready_msg_count >= 0 ) {
 				//
-				uint64_t hash = (uint64_t *)(messages[ready_msg_count]->_cel->_hash);
+				uint64_t hash = (uint64_t)(messages[ready_msg_count]->_cel->_hash);
 				uint32_t data_loc = _hmap->get(hash);
 				//
 				if ( data_loc != 0 ) {    // check if this message is already stored
@@ -362,7 +380,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			while( !( _reserve_evictor->test_and_set() ) );
 			_reserve_evictor->notify_one();
 		}
-
 
 
 		// claim_free_mem

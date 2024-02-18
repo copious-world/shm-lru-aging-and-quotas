@@ -56,6 +56,8 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 #include "time_bucket.h"
 
 
+#include "random_selector.h"
+
 
 //static TierAndProcManager<4> *g_tiers_procs = nullptr;
 
@@ -170,6 +172,8 @@ void f_hit(bool ab_caller,uint32_t count) {
 
 void a_ping_1() {
   //
+#ifndef __APPLE__
+
   while ( counter < countlimit ) {
       while ( g_ping_lock.test(memory_order_relaxed) ) ;
       //g_ping_lock.wait(true);
@@ -180,6 +184,7 @@ void a_ping_1() {
   }
   g_ping_lock.test_and_set();
   g_ping_lock.notify_one();
+#endif
 
   cout << "P1: " << counter << " is diff: " << (countlimit - counter) << endl;
   //
@@ -187,6 +192,7 @@ void a_ping_1() {
 
 void a_pong_1() {
   //
+#ifndef __APPLE__
   while ( counter <= countlimit ) {
       while ( !(g_ping_lock.test(memory_order_relaxed)) ) g_ping_lock.wait(false);
       uint32_t old_counter = counter;
@@ -203,6 +209,7 @@ void a_pong_1() {
   }
   //
   cout << "P1-b: " << counter << " is diff: " << (countlimit - counter) << endl;
+#endif
   //
 }
 
@@ -321,13 +328,21 @@ void ping_pong_test() {
   //
 
   cout << "starting a test" << endl;
+#ifndef __APPLE__
+
   g_ping_lock.clear();
   
+#endif
+
   thread t1(a_ping_1);
   thread t2(a_pong_1);
   //
   start = chrono::system_clock::now();
+
+#ifndef __APPLE__
   g_ping_lock.notify_all();
+#endif
+
   
   t1.join();
   t2.join();
@@ -360,6 +375,17 @@ void capability_test() {
 }
 
 
+void random_bits_test(Random_bits_generator<> &bs) {
+  for ( uint32_t i = 0; i < 200000; i++ ) {
+    bs.pop_bit();
+//    cout << (bs->pop_bit() ? '1' : '0');
+//    cout.flush();
+  }
+  //cout << endl;
+}
+
+
+
 int main(int argc, char **argv) {
 	//
 
@@ -371,12 +397,37 @@ int main(int argc, char **argv) {
   const auto right_now = std::chrono::system_clock::now();
   nowish = std::chrono::system_clock::to_time_t(right_now);
 
+  auto bs = new Random_bits_generator<65000>();
+  //random_bits_test(*bs);
+
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
+
+  uint32_t *bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
+  bs->set_region(bits_for_test,0);
+  //
+  bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
+  bs->set_region(bits_for_test,1);
+  //
+  bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
+  bs->set_region(bits_for_test,2);
+  //
+  bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
+  bs->set_region(bits_for_test,3);
+
+  bs->regenerate_shared(0);
+  bs->regenerate_shared(1);
+  bs->regenerate_shared(2);
+  bs->regenerate_shared(3);
 
   // test 2
 	auto start = chrono::system_clock::now();
 
-
+  for ( uint8_t j = 0; j < 100; j++ ) {
+    for ( uint32_t i = 0; i < 65000; i++ ) {
+      bs->pop_shared_bit();
+    }
+    bs->swap_prepped_bit_regions();
+  }
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

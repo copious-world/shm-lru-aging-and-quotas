@@ -69,8 +69,6 @@ class AtomicStack {
 
 
 
-
-
 		uint16_t setup_region_free_list(size_t record_size, uint8_t *start, size_t step, size_t region_size) {
 
 			uint16_t free_count = 0;

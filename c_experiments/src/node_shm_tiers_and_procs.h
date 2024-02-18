@@ -7,16 +7,11 @@
 
 using namespace std;
 
-
 #include "node_shm_LRU.h"
-
 
 using namespace std::chrono;
 
-
 #define MAX_BUCKET_FLUSH 12
-
-
 #define ONE_HOUR 	(60*60*1000)
 
 
@@ -29,11 +24,8 @@ using namespace std::chrono;
 */
 
 
-
-
 // messages_reserved is an area to store pointers to the messages that will be read.
 // duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
-
 
 
 template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_FACTOR = 3>
@@ -59,7 +51,7 @@ class TierAndProcManager : public LRU_Consts {
 			_NTiers = min(num_tiers,MAX_TIERS);
 			_reserve_size = RESERVE_FACTOR;	// set the precent as part of the build
 			_com_buffer = com_buffer;			// the com buffer is another share section.. separate from the shared data regions
-			
+
 			//
 
 			uint8_t tier = 0;
@@ -95,16 +87,21 @@ class TierAndProcManager : public LRU_Consts {
 			}
 		}
 
+		virtual ~TierAndProcManager() {}
+
+	public:
+
 		// -- set_owner_proc_area
 		// 		the com buffer is set separately outside the constructor... this may just be stylistic. 
 		//		the com buffer services the acceptance of new data and the output of secondary processes.
 		//
 		bool		set_owner_proc_area(void) {
 			if ( _com_buffer != nullptr ) {
-				_owner_proc_area = ((Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *)) + (_proc*_NTiers);
+				_owner_proc_area = (Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *)) + (_proc*_NTiers);
 			}
 			return true;
 		}
+
 
 		// -- set_reader_atomic_tags
 		void 		set_reader_atomic_tags() {
@@ -120,10 +117,11 @@ class TierAndProcManager : public LRU_Consts {
 
 		// -- get_proc_entry
 		Com_element	*get_proc_entries() {
-			return ((Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *));
+			return (Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *));
 		}
 
 
+	public:
 
 		// -- set_and_init_com_buffer
 		//		the com buffer is retains a set of values or each process 
@@ -231,6 +229,7 @@ class TierAndProcManager : public LRU_Consts {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
+
 		// run_evictions
 
 		bool		run_evictions(LRU_cache *lru,uint32_t source_tier,uint32_t ready_msg_count) {
@@ -263,7 +262,6 @@ class TierAndProcManager : public LRU_Consts {
 		void		wait_for_data_present_notification(uint8_t tier) {
 			_readerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
 		}
-
 
 
 		/**
@@ -574,7 +572,6 @@ class TierAndProcManager : public LRU_Consts {
 			//
 			return 0;
 		}
-
 
 	protected:
 

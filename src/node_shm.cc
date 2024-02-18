@@ -44,6 +44,10 @@ namespace node_shm {
 
 
 
+	// ----
+		// shm_get
+	// ----
+
 	NAN_METHOD(shm_get) {
 		Nan::HandleScope scope;
 		// parameters
@@ -84,6 +88,10 @@ namespace node_shm {
 
 
 
+	// ----
+		// getSegSize
+	// ----
+
 	NAN_METHOD(getSegSize) {
 		Nan::HandleScope scope;
 		//
@@ -105,6 +113,11 @@ namespace node_shm {
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+
+	// ----
+		// detach
+	// ----
+
 	NAN_METHOD(detach) {
 		Nan::HandleScope scope;
 		//
@@ -125,6 +138,9 @@ namespace node_shm {
 		info.GetReturnValue().Set(Nan::New<Number>(stats_or_count));
 	}
 
+	// ----
+		// detachAll
+	// ----
 
 	NAN_METHOD(detachAll) {
 		bool forceDestroy	= false;								 // 1   // 2 parameters
@@ -140,6 +156,10 @@ namespace node_shm {
 		initShmSegmentsInfo();
 		info.GetReturnValue().Set(Nan::New<Number>(cnt));
 	}
+
+	// ----
+		// getTotalSize
+	// ----
 
 	NAN_METHOD(getTotalSize) {
 		if ( g_segments_manager != nullptr ) {
@@ -386,6 +406,7 @@ namespace node_shm {
 		}
 	}
 
+
 	NAN_METHOD(getCurrentCount) {
 		Nan::HandleScope scope;
 		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
@@ -407,6 +428,8 @@ namespace node_shm {
 			info.GetReturnValue().Set(Nan::New<Number>(count));
 		}
 	}
+
+
 
 
 	NAN_METHOD(getFreeCount) {
@@ -432,6 +455,8 @@ namespace node_shm {
 	}
 
 
+
+
 	// time_since_epoch
 	// helper to return the time in milliseconds
 	NAN_METHOD(time_since_epoch) {
@@ -448,120 +473,9 @@ namespace node_shm {
 
 
 
-
-
-	// set el -- add a new entry to the LRU.  IF the LRU is full, return indicative value.
-	//
-	NAN_METHOD(set_el)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();				// key to the shared memory segment
-		uint32_t hash_bucket = Nan::To<uint32_t>(info[1]).FromJust();	// hash modulus the number of buckets (hence a bucket)
-		uint32_t full_hash = Nan::To<uint32_t>(info[2]).FromJust();		// hash of the value
-		Utf8String data_arg(info[3]);
-		//
-		// originally full_hash is the whole 32 bit hash and hash_bucket is the modulus of it by the number of buckets
-		// uint64_t hash64 = (((uint64_t)full_hash << HALF) | (uint64_t)hash_bucket);
-		//
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-
-		// First check to see if a buffer was every allocated
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		if ( lru_cache == nullptr ) {		// buffer was not set yield an error
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			char *data = *data_arg;
-			// is the key already assigned ?  >> check_for_hash 
-			uint32_t offset = lru_cache->check_for_hash(full_hash,hash_bucket);
-			if ( offset == UINT32_MAX ) {  // no -- go ahead and add a new element  >> add_el
-				offset = lru_cache->add_el(data,full_hash,hash_bucket);
-				if ( offset == UINT32_MAX ) {
-					info.GetReturnValue().Set(Nan::New<Boolean>(false));
-				} else {
-					info.GetReturnValue().Set(Nan::New<Number>(offset));
-				}
-			} else {
-				// there is already data -- so attempt ot update the element with new data.
-				if ( lru_cache->update_el(offset,data) ) {
-					info.GetReturnValue().Set(Nan::New<Number>(offset));
-				} else {
-					info.GetReturnValue().Set(Nan::New<Boolean>(false));
-				}
-			}
-		}
-	}
-
-
-	// set_many -- add list of new entries to the LRU.  Return the results of adding.
-	//
-	NAN_METHOD(set_many)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		Local<Array> jsArray = Local<Array>::Cast(info[1]);
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-
-		//
-		// First check to see if a buffer was every allocated
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		if ( lru_cache == nullptr ) {		// buffer was not set yield an error
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			// important -- the code is only really simple to write if v8 is used straightup.
-			// nan will help get the context -- use v8 get and set with the context
-			v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();
-			//
-			uint16_t n = jsArray->Length();
-			Local<Array> jsArrayResults = Nan::New<Array>(n);
-			//
-//cout << "N " << n << endl;
-			//
-			for (uint16_t i = 0; i < n; i++) {
-				Local<v8::Array> jsSubArray = Local<Array>::Cast(jsArray->Get(context, i).ToLocalChecked());
-        		uint32_t hash = jsSubArray->Get(context, 0).ToLocalChecked()->Uint32Value(context).FromJust();
-        		uint32_t index = jsSubArray->Get(context, 1).ToLocalChecked()->Uint32Value(context).FromJust();
-				Utf8String data_arg(jsSubArray->Get(context, 2).ToLocalChecked());
-				uint64_t hash64 = (((uint64_t)index << HALF) | (uint64_t)hash);
-				char *data = *data_arg;
-	//cout << data << endl;
-				// is the key already assigned ?  >> check_for_hash 
-				uint32_t offset = lru_cache->check_for_hash(hash64);
-				if ( offset == UINT32_MAX ) {  // no -- go ahead and add a new element  >> add_el
-					offset = lru_cache->add_el(data,hash64);
-					if ( offset == UINT32_MAX ) {
-						Nan::Set(jsArrayResults, i, Nan::New<Boolean>(false));
-					} else {
-						Nan::Set(jsArrayResults, i, Nan::New<Number>(offset));
-					}
-				} else {
-					// there is already data -- so attempt ot update the element with new data.
-					if ( lru_cache->update_el(offset,data) ) {
-						Nan::Set(jsArrayResults, i, Nan::New<Number>(offset));
-					} else {
-						Nan::Set(jsArrayResults, i, Nan::New<Boolean>(false));
-					}
-				}
-				//
-			}
-			info.GetReturnValue().Set(jsArrayResults);
-		}
-	}
-
+	// ----
+		// get el
+	// ----
 
 	NAN_METHOD(get_el)  {
 		Nan::HandleScope scope;
@@ -602,6 +516,10 @@ namespace node_shm {
 		}
 	}
 
+
+	// ----
+		// get el hash
+	// ----
 
 	NAN_METHOD(get_el_hash)  {
 		Nan::HandleScope scope;
@@ -645,33 +563,9 @@ namespace node_shm {
 	}
 
 
-
-	NAN_METHOD(del_el)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		key_t index = Nan::To<uint32_t>(info[1]).FromJust();
-		//
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		if ( lru_cache == nullptr ) {
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			if ( lru_cache->del_el(index) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(true));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-2));
-			}
-		}
-	}
-
+	// ----
+		// del el
+	// ----
 
 	NAN_METHOD(del_key)  {
 		Nan::HandleScope scope;
@@ -708,6 +602,11 @@ namespace node_shm {
 		}
 	}
 
+
+	// ----
+		// remove key
+	// ----
+
 	NAN_METHOD(remove_key)  {
 		Nan::HandleScope scope;
 		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
@@ -736,29 +635,6 @@ namespace node_shm {
 	}
 
 
-
-
-	NAN_METHOD(set_share_key)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		key_t index = Nan::To<uint32_t>(info[1]).FromJust();
-		uint32_t share_key = Nan::To<uint32_t>(info[2]).FromJust();
-		//
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		if ( lru_cache == nullptr ) {
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			if ( lru_cache->set_share_key(index,share_key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(true));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-2));
-			}
-		}
-	}
 
 
 
@@ -810,29 +686,6 @@ namespace node_shm {
 	}
 
 
-
-	NAN_METHOD(reload_hash_map_update)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		uint32_t share_key = Nan::To<uint32_t>(info[0]).FromJust();
-		//
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-		//
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		if ( lru_cache == nullptr ) {
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			lru_cache->reload_hash_map_update(share_key);
-			info.GetReturnValue().Set(Nan::New<Boolean>(true));
-		}
-	}
 
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -937,6 +790,7 @@ namespace node_shm {
 		Nan::SetMethod(target, "detachAll", detachAll);
 		Nan::SetMethod(target, "getTotalSize", getTotalSize);
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
 		Nan::SetMethod(target, "initialize_com_and_all_tiers", initialize_com_and_all_tiers);
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -950,19 +804,12 @@ namespace node_shm {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		Nan::SetMethod(target, "set_el", set_el);
-		Nan::SetMethod(target, "set_many", set_many);
-		//
-		Nan::SetMethod(target, "get_el", get_el);
-		Nan::SetMethod(target, "del_el", del_el);
-		Nan::SetMethod(target, "del_key", del_key);
+		Nan::SetMethod(target, "get_el_hash", get_el_hash);
 		Nan::SetMethod(target, "remove_key", remove_key);
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-		Nan::SetMethod(target, "get_el_hash", get_el_hash);
 		Nan::SetMethod(target, "get_last_reason", get_last_reason);
 		Nan::SetMethod(target, "reload_hash_map", reload_hash_map);
-		Nan::SetMethod(target, "reload_hash_map_update", reload_hash_map_update);
-		Nan::SetMethod(target, "set_share_key", set_share_key);
 		//
 		Nan::SetMethod(target, "debug_dump_list", debug_dump_list);
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----	

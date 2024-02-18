@@ -157,10 +157,6 @@ namespace node_shm {
 	 */
 	NAN_METHOD(set_el);
 
-	/**
-	 * add a list of hash key and value
-	 */
-	NAN_METHOD(set_many);
 
 	/**
 	 * get element at index
@@ -171,16 +167,6 @@ namespace node_shm {
 	 * get element at index
 	 */
 	NAN_METHOD(get_el_hash);
-
-	/**
-	 * delete element at index
-	 */
-	NAN_METHOD(del_el);
-
-	/**
-	 * delete element having a key...
-	 */
-	NAN_METHOD(del_key);
 
 	/**
 	 * remove a key from the local hash table, don't examine the record deleted elsewhere
@@ -197,17 +183,6 @@ namespace node_shm {
 	 *  reload_hash_map  -- clear and rebuild...
 	 */
 	NAN_METHOD(reload_hash_map);
-	NAN_METHOD(reload_hash_map_update);
-	NAN_METHOD(set_share_key);
-
-	/**
-	 *  run_lru_eviction  -- clear and rebuild...
-	 */
-	NAN_METHOD(run_lru_eviction);
-	NAN_METHOD(run_lru_eviction_get_values);
-	NAN_METHOD(run_lru_targeted_eviction_get_values);
-	NAN_METHOD(run_lru_eviction_move_values);
-
 	NAN_METHOD(debug_dump_list);
 
 
@@ -370,8 +345,7 @@ namespace node_shm {
 				if ( status == 0 ) {
 					this->remove_if_lru(key);
 					this->remove_if_hh_map(key);
-					this->remove_if_com_buffer(key);
-					return _ids_to_seg_addrs.size();
+					return _ids_to_seg_addrs.size();   // how many segs now?
 				}
 				//
 				return status;
@@ -397,9 +371,18 @@ namespace node_shm {
 			}
 
 
-			void remove_if_lru(key_t key) {}
-			void remove_if_hh_map(key_t key) {}
-			void remove_if_com_buffer(key_t key) {}
+			void remove_if_lru(key_t key) {
+				if ( _seg_to_lrus.find(key) != _seg_to_lrus.end() ) {
+					delete _seg_to_lrus[key];
+				}
+			}
+
+			void remove_if_hh_map(key_t key) {
+				if ( _seg_to_hh_tables.find(key) != _seg_to_hh_tables.end() ) {
+					delete _seg_to_hh_tables[key];
+				}
+			}
+
 
 			/**
 			 * key_to_id
