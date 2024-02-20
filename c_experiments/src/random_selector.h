@@ -29,7 +29,7 @@ using namespace std;
 
 
 
-template<const uint16_t Nbits = 256,const uint8_t SELECTOR_MAX = 4>
+template<const uint16_t NbitWords = 256,const uint8_t SELECTOR_MAX = 4>
 class Random_bits_generator {
 
     bernoulli_distribution	_distribution;
@@ -107,7 +107,7 @@ public:
 
 
 	void _create_random_bits() {
-		_bits.resize(Nbits);   // fr list ??
+		_bits.resize(NbitWords);   // fr list ??
 		generate(_bits.begin(), _bits.end());
 	}
 
@@ -153,6 +153,11 @@ public:
 	}
 
 
+	void wakeup_random_genator([[maybe_unused]] uint8_t which_region) {
+		// regenerate_shared(which_region);
+	}
+
+
 	uint8_t pop_shared_bit() {
 		//
 		if ( _shared_bits == nullptr ) return 0;  // get nothing.... not random
@@ -161,10 +166,12 @@ public:
 		if ( _shared_bcount == 0 ) {
 			uint32_t index = _shared_bits[0];
 			_shared_bits[2] = _shared_bits[index];
+			//
 			if ( index < _bits.size() ) {
 				_shared_bits[0] = ++index;
 			} else {
 				_shared_bits[0] = 0; // wraps (client might need to keep track...)
+				swap_prepped_bit_regions(true);
 			}
 		}
 		//
@@ -181,7 +188,10 @@ public:
 	}
 
 
-	void swap_prepped_bit_regions() {
+	void swap_prepped_bit_regions(bool gen_wakes_up = false) {
+		if ( gen_wakes_up ) {
+			wakeup_random_genator(_current_shared_region);
+		}
 		_current_shared_region = (_current_shared_region + 1) % SELECTOR_MAX;
 		_shared_bits = _shared_bits_regions[_current_shared_region];
 	}

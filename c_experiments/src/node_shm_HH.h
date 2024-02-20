@@ -43,28 +43,6 @@ using namespace std;
 // Bringing in code from libhhash  // until further changes...
 
 
-#define WORD  (8*sizeof(uint32_t))		// 32 bits
-#define MOD(x, n) ((x) < (n) ? (x) : (x) - (n))
-//
-template<typename T>
-inline T CLZ(T x) {		// count leading zeros -- make sure it is not bigger than the type size
-	static uint8_t W = sizeof(T)*8;
-	return(__builtin_clzl(x) % W);
-}
-
-#define FFS(x) (__builtin_ctzl(x))				// count trailing zeros (First Free Space in neighborhood)
-#define FLS(x) WORD // (WORD - CLZ(x))			// number bits possible less leading zeros (limits the space of the neigborhood)
-#define GET(hh, i) ((hh) & (1L << (i)))			// ith bit returned   (hh for hash home)
-#define SET(hh, i) (hh = (hh) | (1L << (i)))	// or in ith bit (ith bit set - rest 0)
-#define UNSET(hh, i) (hh = (hh) & ~(1L << (i)))	// and with ith bit 0 - rest 1 (think of as mask)
-//
-const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
-//
-#define BitsPerByte 8
-#define HALF (sizeof(uint32_t)*BitsPerByte)  // should be 32
-#define QUARTER (sizeof(uint16_t)*BitsPerByte) // should be 16
-//
-
 
 // ---- ---- ---- ---- ---- ----  HHash
 // HHash <- HHASH
@@ -73,72 +51,11 @@ const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 
 class HH_map;
 
-/**
- * Two threads will be given access to separate hopscotch tables... 
-*/
-class ThreadWrapper {
-
-	public:
-
-		ThreadWrapper() : _stopped(false), _ready(false), _w_thread(&ThreadWrapper::runner,this) {
-			_hh_container = nullptr;
-		}
-		virtual ~ThreadWrapper() {
-			_stopped = true;
-			_cv.notify_one();
-			_w_thread.join();
-		}
-
-		/**
-		 * Prepare the thread (should not be busy) with the value that it will store once it can place the value with
-		 * the future hash
-		*/
-		void prep_value(uint32_t value) {
-			_last_value = value;
-		}
-
-		/**
-		 * 
-		*/
-		void signal(uint64_t hash) {  // awaken local threads and aprise them of the requested hash
-			_hash = hash;
-			_ready = true;
-			_cv.notify_one();
-		}
-
-		/**
-		 * 
-		*/
-		void runner() {		}
-
-
-		/**
-		 * 
-		*/
-		void set_hh(HHash *hc) {
-			_hh_container = hc;		// may be nullptr
-		}
-
-
-	public:
-
-		thread				_w_thread;
-		mutex				_mtx;
-		condition_variable	_cv;
-
-		bool				_ready;
-		bool				_stopped;
-
-		uint64_t			_hash;
-		uint32_t			_last_value;
-		HHash				*_hh_container;
-
-};
 
 
 
 
-class HH_map : public HMap_interface, public Random_bits_generator {
+class HH_map : public HMap_interface, public Random_bits_generator<> {
 	//
 	public:
 
@@ -211,10 +128,10 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 			// # 2
 			//
 			_region_V_2 = (uint64_t *)(start + header_size);  // start on word boundary
-			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
+			v_regions_size = (sizeof(uint64_t)*max_count);
 			//
 			_region_H_2 = (uint32_t *)(start + header_size + v_regions_size);
-			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
+			h_regions_size = (sizeof(uint32_t)*max_count);
 			//
 			if ( am_initializer ) {
 				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
@@ -235,22 +152,22 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		}
 
 
+		// 4*(this->_bits.size() + 4*sizeof(uint32_t))
+		void set_random_bits(void *shared_bit_region) {
+			uint32_t *bits_for_test = (uint32_t *)(shared_bit_region);
+			for ( int i = 0; i < 4; i++ ) {
+				this->set_region(bits_for_test,i);
+				this->regenerate_shared(i);
+				bits_for_test += this->_bits.size() + 4*sizeof(uint32_t);
+			}
+		}
+
 
 		// THREAD CONTROL
 
 		void tick() {
 			nanosleep(&request, &remaining);
 		}
-
-		uint8_t sleepy_atomic_load_winner_thread_id() {
-			return 0;
-		}
-
-
-		int _pop_random_bits() {
-			return pop_bit();
-		}
-
 
 		
 
@@ -265,9 +182,7 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 			pair<uint16_t,uint16_t> counts;
 			uint8_t *start = _region;
 
-			HHash *T_1 = _T1;
-			HHash *T_2 = _T2;
-
+			HHash *T_1 = _T1;  // same for all offsets from start
 			uint32_t c_offset = T_1->_C_Offset;
 			uint32_t *controllers = (uint32_t *)(start + sizeof(struct HHASH) + c_offset);
 			//
@@ -286,16 +201,14 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 			return (counts);
 		}
 
+
 		/**
 		 * 
 		*/
 		void bucket_count_incr(uint32_t h_bucket,uint8_t which_thread) {
+			//
 			uint8_t *start = _region;
-
-
 			HHash *T_1 = _T1;
-			HHash *T_2 = _T2;
-
 			//
 			uint32_t c_offset = T_1->_C_Offset;
 			uint32_t *controllers = (uint32_t *)(start + sizeof(struct HHASH) + c_offset);
@@ -329,11 +242,34 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 			return(this->_status);
 		}
 
+		// 
+		uint64_t stamp_key(uint64_t loaded_key,uint8_t info) {
+			uint64_t info64 = info & 0x00FF;
+			info64 <<= 24;
+			return loaded_key | info64;
+		}
+
+
+		// clear_selector_bit
+		uint32_t clear_selector_bit(uint32_t h) {
+			h = h & HH_SELECT_BIT_MASK;
+			return h;
+		}
+
+
+		// clear_selector_bit64
+		uint64_t clear_selector_bit64(uint64_t h) {
+			h = (h & HH_SELECT_BIT_MASK64);
+			return h;
+		}
+
+
 		//  store    //  hash_bucket, full_hash,   el_key = full_hash
 		uint64_t store(uint32_t hash_bucket, uint32_t el_key, uint32_t v_value) {
 			if ( v_value == 0 ) return false;
 			//
 			uint8_t selector = ((el_key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			el_key = clear_selector_bit(el_key);
 			HHash *T = (selector ? _T1 : _T2);
 			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
 			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
@@ -342,6 +278,7 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 			bool put_ok = put_hh_hash(T, hash_bucket, loaded_value, buffer, v_buffer);
 			if ( put_ok ) {
 				uint64_t loaded_key = (((uint64_t)el_key) << HALF) | hash_bucket; // LOADED
+				loaded_key = stamp_key(loaded_key,selector);
 				return(loaded_key);
 			} else {
 				return(UINT64_MAX);
@@ -351,6 +288,7 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		// get
 		uint32_t get(uint64_t key) {
 			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			key = clear_selector_bit64(key);
 			HHash *T = (selector ? _T1 : _T2);
 			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
 			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
@@ -361,6 +299,7 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		// get
 		uint32_t get(uint32_t key,uint32_t bucket) {  // full_hash,hash_bucket
 			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
+			key = clear_selector_bit(key);
 			HHash *T = (selector ? _T1 : _T2);
 			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
 			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
@@ -372,13 +311,16 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		// 
 		uint8_t get_bucket(uint32_t h, uint32_t xs[32]) {
 			uint8_t selector = ((h & HH_SELECT_BIT) == 0) ? 0 : 1;
+			h = clear_selector_bit(h);
 			HHash *T = (selector ? _T1 : _T2);
+			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
+			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
 			uint8_t count = 0;
-			uint32_t i = _succ_hh_hash(T, h, 0);
+			uint32_t i = _succ_hh_hash(T, h, 0, buffer);
 			while ( i != UINT32_MAX ) {
-				uint64_t x = get_val_at_hh_hash(T, h, i);  // get ith value matching this hash (collision)
+				uint64_t x = get_val_at_hh_hash(T, h, i, v_buffer);  // get ith value matching this hash (collision)
 				xs[count++] = (uint32_t)((x >> HALF) & HASH_MASK);
-				i = _succ_hh_hash(T, h, i + 1);  // increment i in some sense (skip unallocated holes)
+				i = _succ_hh_hash(T, h, i + 1, buffer);  // increment i in some sense (skip unallocated holes)
 			}
 			return count;	// no value  (values will always be positive, perhaps a hash or'ed onto a 0 value)
 		}
@@ -388,9 +330,12 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		uint32_t del(uint64_t key) {
 			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
 			HHash *T = (selector ? _T1 : _T2);
-			return del_hh_map(T, key);
+			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
+			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
+			return del_hh_map(T, key, buffer, v_buffer);
 		}
 
+		// clear
 		void clear(void) {
 			if ( _initializer ) {
 				uint8_t sz = sizeof(HHash);
@@ -400,7 +345,7 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		}
 
 
-	// HH_map method - calls partition_get -- 
+	// HH_map method -- 
 	//
 	/**
 	 * the offset_value is taken from the memory allocation ... it is the index into the LRU array of objects
@@ -409,18 +354,37 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 	 * However, other processes may content for the same buckets that these threads attempt to manipulate.
 	 * 
 	*/
-	bool add_key_value(uint64_t hash64,uint32_t offset_value) {
+
+
+	void wakeup_random_genator(uint8_t which_region) {   // 
+		// regenerate_shared(which_region);
+		_random_gen_value->store(which_region);
+	}
+
+	void thread_sleep([[maybe_unused] ]uint8_t ticks) {
+
+	}
+
+	void random_generator_thread_runner() {
+		while ( true ) {
+			uint8_t which_region = _random_gen_value->load();
+			if ( which_region != UINT8_MAX ) {
+				this->regenerate_shared(which_region);
+				_random_gen_value->store(UINT8_MAX);
+			}
+			thread_sleep(10);
+		}
+	}
+
+
+
+	uint64_t add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value) {
 		//
-		HHash *T_1 = _T1;
-		HHash *T_2 = _T2;
-		//
-		uint32_t h_bucket = (uint32_t)(hash64 & HASH_MASK);
-		
+
 		// Threads from this process will not contend with each other.
 		// They will work on two different memory sections.
 		// The favored should set the value first. 
 		//			Check thread IDs in undecided state (can be atomic)
-
 
 		// About waiting on threads from the current process. Two threads are assigned to the current table.
 		// The process will lock a mutex for just those two threads for the tier that has been called upon. 
@@ -431,37 +395,39 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		uint16_t count_1 = counts.first;		// favor the least full bucket ... but in case something doesn't move try both
 		uint16_t count_2 = counts.second;
 		//
-		uint8_t tfirst = 0;
-		uint8_t tsecond = 1;
+		HHash *T = _T1;
+		uint32_t *buffer = _region_H_1;
+		uint64_t *v_buffer = _region_V_1;
+		uint8_t which_table = 0;
+		//
 		if ( count_2 < count_1 ) {
-			tfirst = 1;
-			tsecond = 0;
+			T = _T2;
+			which_table = 1;
+			buffer = _region_H_2;
+			v_buffer = _region_V_2;
 		} else if ( count_2 == count_1 ) {
-			tfirst = _pop_random_bits();
-			tsecond = (tfirst + 1) % 2;
-		}
-		// ....
-		_threads[tfirst].prep_value(offset_value);
-		_threads[tfirst].signal(hash64);
-		this->tick();						// The favored should set the value first. (gets a head start)
-		_threads[tsecond].prep_value(offset_value);
-		_threads[tsecond].signal(hash64);
-		// ....
-		uint8_t which_thread = 2;
-		while ( which_thread == 2 ) {
-			uint8_t which_thread = this->sleepy_atomic_load_winner_thread_id();
-			if ( which_thread == 1 ) {
-				T_1->unpin_value();  // pin the last value
-				T_2->pin_value();  // pin the last value ... increment buckt count
-			} else if ( which_thread == 0 ) {
-				T_2->unpin_value();  // pin the last value
-				T_1->pin_value();  // pin the last value ... increment buckt count
+			uint8_t bit = pop_shared_bit();
+			if ( bit ) {
+				T = _T2;
+				which_table = 1;
+				buffer = _region_H_2;
+				v_buffer = _region_V_2;
 			}
 		}
 		//
-		this->bucket_count_incr(h_bucket,which_thread);
+		uint64_t loaded_key = UINT64_MAX;
+		uint64_t loaded_value = (((uint64_t)offset_value) << HALF) | el_key;
+		bool put_ok = put_hh_hash(T, h_bucket, loaded_value, buffer, v_buffer);
+		if ( put_ok ) {
+			loaded_key = (((uint64_t)el_key) << HALF) | h_bucket; // LOADED
+		} else {
+			return(UINT64_MAX);
+		}
 
-		return which_thread;
+		this->bucket_count_incr(h_bucket,which_table);
+		loaded_key = stamp_key(loaded_key,which_table);
+
+		return loaded_key;
 	}
 
 
@@ -536,7 +502,7 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 				// found a position that can be moved... (offset from h <= d closer to the neighborhood)
 				uint32_t j = z;
 				z = MOD((N + hd - z), N);		// hd - z is an (offset from h) < h + d or (h + z) < (h + d)  ... see hopscotch 
-				uint32_t i = _succ(z, 0);		// either this is moveable or there's another one. (checking the bitmap ...)
+				uint32_t i = _succ(z, 0, buffer);		// either this is moveable or there's another one. (checking the bitmap ...)
 				_swap(z, i, j, T, buffer, v_buffer);				// swap bits and values between i and j offsets within the bucket h
 				d = MOD( (N + z + i - h), N );  // N + z - (h - i) ... a new distance, should be less than before
 			}
@@ -740,9 +706,10 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		// ---- ---- ---- ---- ---- ---- ----
 		//
 		bool							_status;
+		const char 						*_reason;
+		//
 		bool							_initializer;
 		uint32_t						_max_count;
-		const char 						*_reason;
 		uint8_t		 					*_region;
 		//
 		HHash							*_T1;
@@ -753,7 +720,7 @@ class HH_map : public HMap_interface, public Random_bits_generator {
 		uint64_t		 				*_region_V_2;
 		// threads ...
 
-		ThreadWrapper					_threads[2];
+		atomic<uint32_t> 				*_random_gen_value;
 
 };
 

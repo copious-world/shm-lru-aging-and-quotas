@@ -40,7 +40,7 @@ typedef enum {
 // entries summed across the pool entries. 
 
 
-static void useless_wait() {}
+static inline void useless_wait() {}
 
 // only one process/thread should own this position. 
 // The only contention will be that some process/thread will inspect the buffer to see if there is a job there.
@@ -95,7 +95,7 @@ static inline void claim_for_alloc(atomic<COM_BUFFER_STATE> *read_marker) {
 static inline bool await_write_offset(atomic<COM_BUFFER_STATE> *read_marker,uint16_t loops,void (delay_func)()) {
     loops = min(MAX_WAIT_LOOPS,loops);
     auto p = read_marker;
-    auto current_marker = p->load();
+    //    auto current_marker = p->load();
     uint32_t count = 0;
     while ( true ) {
         count++;

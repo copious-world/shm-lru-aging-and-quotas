@@ -27,12 +27,12 @@
 
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <sys/ipc.h>
 
 
 using namespace std;
 using namespace chrono;
 using namespace literals;
-
 
 
 // Experiment with atomics for completing hash table operations.
@@ -54,13 +54,12 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 //#include "node_shm_LRU.h"
 
 #include "time_bucket.h"
-
-
 #include "random_selector.h"
-
+#include "shm_seg_manager.h"
 
 //static TierAndProcManager<4> *g_tiers_procs = nullptr;
 
+using namespace node_shm;
 
 
 
@@ -385,6 +384,37 @@ void random_bits_test(Random_bits_generator<> &bs) {
 }
 
 
+chrono::system_clock::time_point shared_random_bits_test() {
+
+  auto bs = new Random_bits_generator<65000,8>();
+  //random_bits_test(*bs);
+
+  for ( int i = 0; i < 8; i++ ) {
+    uint32_t *bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
+    bs->set_region(bits_for_test,i);
+    bs->regenerate_shared(i);
+  }
+  //
+
+	auto start = chrono::system_clock::now();
+
+  for ( uint32_t j = 0; j < 1000; j++ ) {
+    for ( uint32_t i = 0; i < 65000; i++ ) {
+      bs->pop_shared_bit();
+    }
+    bs->swap_prepped_bit_regions();
+  }
+
+  return start;
+}
+
+const char *paths[4] = {
+  "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/bits_buffer.txt",
+  "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/hh_buffer.txt",
+  "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/lru_buffer.txt",
+  "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/com_buffer.txt"
+};
+
 
 int main(int argc, char **argv) {
 	//
@@ -397,38 +427,32 @@ int main(int argc, char **argv) {
   const auto right_now = std::chrono::system_clock::now();
   nowish = std::chrono::system_clock::to_time_t(right_now);
 
-  auto bs = new Random_bits_generator<65000>();
-  //random_bits_test(*bs);
+
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+
+  key_t key = ftok(paths[0],0);
+
+
+  ssm->initialize_randoms_shm(key,true);
+  //
+
+  bool yes = false;
+  cin >> yes;
+  cout << yes << endl;
+
+
+  //
+  ssm->detach(key,true);
+
+
 
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
 
-  uint32_t *bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
-  bs->set_region(bits_for_test,0);
-  //
-  bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
-  bs->set_region(bits_for_test,1);
-  //
-  bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
-  bs->set_region(bits_for_test,2);
-  //
-  bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
-  bs->set_region(bits_for_test,3);
-
-  bs->regenerate_shared(0);
-  bs->regenerate_shared(1);
-  bs->regenerate_shared(2);
-  bs->regenerate_shared(3);
-
   // test 2
-	auto start = chrono::system_clock::now();
-
-  for ( uint8_t j = 0; j < 100; j++ ) {
-    for ( uint32_t i = 0; i < 65000; i++ ) {
-      bs->pop_shared_bit();
-    }
-    bs->swap_prepped_bit_regions();
-  }
-
+  auto start = chrono::system_clock::now();
+  // auto start = shared_random_bits_test();
+  
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 
   cout << "Duration test 1: " << dur_t1.count() << " seconds" << endl;

@@ -38,7 +38,6 @@ using namespace std::chrono;
 
 #define MAX_BUCKET_FLUSH 12
 
-
 #define ONE_HOUR 	(60*60*1000)
 
 
@@ -135,7 +134,6 @@ class LRU_Consts {
 	public: 
 
 		LRU_Consts() {
-			_status = true;
 			_NTiers = 0;
 		}
 
@@ -145,7 +143,6 @@ class LRU_Consts {
 
 		uint32_t			_NTiers;
 		uint32_t			_Procs;
-		bool				_status;
 		bool				_am_initializer;
 
 		uint32_t 			_beyond_entries_for_tiers_and_mutex;
@@ -218,7 +215,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			_memory_requested->store(0);
 			_reserve_evictor->clear();
 
-			pair<uint32_t,uint32_t> *holey_buffer = (pair<uint32_t,uint32_t> *)(_region + _region_size);
+			pair<uint32_t,uint32_t> *holey_buffer = (pair<uint32_t,uint32_t> *)(_start + _region_size);
 			pair<uint32_t,uint32_t> *shared_queue = holey_buffer + _max_count;  // late arrivals
 			//
 			_timeout_table = new KeyValueManager(holey_buffer, _max_count, shared_queue, num_procs);
@@ -227,7 +224,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 			//
 			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-			auto count_free = setup_region_free_list(record_size, _start, _step,(_end - _start));
+			auto count_free = setup_region_free_list(_start, _step,(_end - _start));
 
 			if ( count_free != _count_free->load() ) {
 				_count_free->store(count_free);
@@ -265,7 +262,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		// set_hash_impl - called by initHopScotch -- set two paritions servicing a random selection.
 		//
-		void set_hash_impl(void *hh_region,size_t seg_size,uint32_t els_per_tier) {
+		void set_hash_impl(void *hh_region,uint32_t els_per_tier) {
 			uint8_t *reg1 = (uint8_t *)hh_region;
 			_hmap = new HH_map(reg1,els_per_tier,_am_initializer);
 		}
@@ -376,9 +373,11 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
-		void 			notify_evictor(uint32_t reclaim_target) {
+		void 			notify_evictor([[maybe_unused]] uint32_t reclaim_target) {
 			while( !( _reserve_evictor->test_and_set() ) );
-			_reserve_evictor->notify_one();
+			#ifndef __APPLE__
+			_reserve_evictor->notify_one();					// NOTIFY FOR LINUX  (can ony test on an apple)
+			#endif
 		}
 
 
@@ -393,7 +392,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		//
 
 		uint32_t		claim_free_mem(uint32_t ready_msg_count,uint32_t *reserved_offsets) {
-			LRU_element *first = NULL;
 			//
 			uint8_t *start = this->start();
 			size_t step = _step;
@@ -425,7 +423,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		void			return_to_free_mem(LRU_element *el) {			// a versions of push
 			uint8_t *start = this->start();
-			_atomic_stack_push(start,(start + 2*_step),el);
+			_atomic_stack_push(start,(LRU_element *)(start + 2*_step),el);
 			_count_free->fetch_add(1, std::memory_order_relaxed);
 		}
 
@@ -440,13 +438,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * This is going away... we are using the sorted time stamp buffer...
 		*/
 		void 			attach_to_lru_list(uint32_t *lru_element_offsets, uint32_t ready_msg_count) {
-			//
-			uint32_t last = lru_element_offsets[(ready_msg_count - 1)];  // freed and assigned to hashes...
-			uint32_t first = lru_element_offsets[0];  // freed and assigned to hashes...
-			//
-			// thread the list
+			// 
 			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
-				uint32_t value = lru_element_offsets[0];
+				uint32_t value = lru_element_offsets[i];
 				uint32_t key = current_time_next();
 				_timeout_table->add_entry(key, value);
 			}
@@ -458,10 +452,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		
 		bool 			check_free_mem(uint32_t msg_count,bool add) {
 			//
-			uint8_t *start = this->start();
-			size_t step = _step;
-			//
-			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
 			// using _prev to count the free elements... it is not updated in this check (just inspected)
 			auto count_free = _count_free->load();
 			//
@@ -490,7 +480,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		void 			transfer_hashes(LRU_cache *next_tier,uint32_t req_count) {
 			list<uint32_t> offsets_moving;
-			uint32_t count_reclaimed_stamps = this->timeout_table_evictions(offsets_moving,req_count);
+			//uint32_t count_reclaimed_stamps = 
+			this->timeout_table_evictions(offsets_moving,req_count);
 			//
 			next_tier->claim_hashes(offsets_moving,this->start());
 			this->relinquish_hashes(offsets_moving);
@@ -519,7 +510,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				//
 				uint32_t *current = lru_element_offsets;   // offset to new elemnents in the regions
 				uint8_t *start = this->start();
-				uint32_t offset = 0;
 				//
 				// map hashes to the offsets
 				//
@@ -559,7 +549,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 	public:
 
-		bool 			transfer_out_of_tier_to_remote(list<uint32_t> &moving) { return false; }
+		bool 			transfer_out_of_tier_to_remote([[maybe_unused]]list<uint32_t> &moving) { return false; }
 
 
 	public:
@@ -575,7 +565,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		void			local_evictor(void) {
 			//
 			do {
+#ifndef __APPLE__
 				_reserve_evictor->wait(std::memory_order_acquire);
+#endif
 				if ( _Tier+1 < _max_tiers ) {
 					uint32_t req_count = _Procs;
 					LRU_cache *next_tier = this->_all_tiers[_Tier+1];
@@ -618,14 +610,16 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				return 0;
 			}
 			//
+			return 0;
 		}
 
 
 	public:
 
+
 		uint64_t		store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
 			HMap_interface *T = this->_hmap;
-			uint64_t result = T->store(hash_bucket,full_hash,new_el_offset); //UINT64_MAX
+			uint64_t result = T->add_key_value(full_hash,hash_bucket,new_el_offset); //UINT64_MAX
 			return result;
 		}
 
@@ -635,7 +629,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			return store_in_hash(full_hash,hash_bucket,new_el_offset);
 		}
 
-
 		uint8_t 		*data_location(uint32_t write_offset) {
 			uint8_t *strt = this->start();
 			if ( strt != nullptr ) {
@@ -644,9 +637,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			return nullptr;
 		}
 
-	public:
 
- 		const char 						*_reason;
+	public:
 
 		void							*_region;
 		size_t		 					_record_size;

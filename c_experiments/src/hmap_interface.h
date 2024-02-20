@@ -1,6 +1,8 @@
 #ifndef _H_HAMP_INTERFACE_
 #define _H_HAMP_INTERFACE_
 
+#pragma once
+
 #include <sys/ipc.h>
 #include <sys/types.h>
 #include <sys/shm.h>
@@ -90,7 +92,12 @@ const uint32_t FREE_BIT_MASK = ~HOLD_BIT_MASK;
 const uint32_t LOW_WORD = 0xFFFF;
 
 
-const uint32_t HH_SELECT_BIT = 1;
+const uint32_t HH_SELECT_BIT = (1 << 24);
+const uint32_t HH_SELECT_BIT_MASK = (~HH_SELECT_BIT);
+const uint64_t HH_SELECT_BIT64 = (1 << 24);
+const uint64_t HH_SELECT_BIT_MASK64 = (~HH_SELECT_BIT64);
+
+
 
 typedef struct HHASH {
 	//
@@ -102,20 +109,6 @@ typedef struct HHASH {
 	uint32_t _H_Offset;
 	uint32_t _V_Offset;
 	uint32_t _C_Offset;
-
-	/**
-	 * Accept the value in the hopscotch table
-	*/
-	void pin_value() {
-
-	}
-
-	/**
-	 * 
-	*/
-	void unpin_value() {
-		//
-	}
 
 
 	uint16_t bucket_count(uint32_t h_bucket) {			// at most 255 in a bucket ... will be considerably less
@@ -136,12 +129,14 @@ typedef struct HHASH {
 
 class HMap_interface {
 	public:
-		virtual uint64_t store(uint32_t hash_bucket, uint32_t el_key, uint32_t v_value) = 0;
-		virtual uint32_t get(uint64_t key) = 0;
-		virtual uint32_t get(uint32_t key,uint32_t bucket) = 0;
-		virtual uint8_t get_bucket(uint32_t h, uint32_t xs[32]) = 0;
-		virtual uint32_t del(uint64_t key) = 0;
-		virtual void	 clear(void) = 0;
+		virtual uint64_t	store(uint32_t hash_bucket, uint32_t el_key, uint32_t v_value) = 0;
+		virtual uint32_t	get(uint64_t key) = 0;
+		virtual uint32_t	get(uint32_t key,uint32_t bucket) = 0;
+		virtual uint8_t		get_bucket(uint32_t h, uint32_t xs[32]) = 0;
+		virtual uint32_t	del(uint64_t key) = 0;
+		virtual void		clear(void) = 0;
+		virtual uint64_t	add_key_value(uint32_t hash64,uint32_t hash_bucket,uint32_t offset_value) = 0;
+		virtual void		set_random_bits(void *shared_bit_region) = 0;
 };
 
 

@@ -287,7 +287,6 @@ namespace node_shm {
 
 	static TierAndProcManager<3> *g_tiers_procs = nullptr;
 
-
 	// fixed size data elements 
 	NAN_METHOD(initialize_com_and_all_tiers) {
 		Nan::HandleScope scope;
@@ -310,27 +309,20 @@ namespace node_shm {
 		uint32_t els_per_tier 		= Nan::To<uint32_t>(info[4]).FromJust(); // 4  // els per tier includes expecter # legal sessions + reserve...
 		uint32_t max_obj_size 		= Nan::To<uint32_t>(info[5]).FromJust(); // 5
 		key_t com_key 				= Nan::To<uint32_t>(info[6]).FromJust(); // 6
+		key_t randoms_key 			= Nan::To<uint32_t>(info[6]).FromJust(); // 6
 		//
 		if ( com_key < keyMin || com_key >= keyMax ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
 			return;
 		}
 		//
-		Local<Array> jsArray		= Local<Array>::Cast(info[6]);			 // 7
+		Local<Array> jsArray		= Local<Array>::Cast(info[6]);			 // 8
 		uint16_t n = jsArray->Length();
 		//
-		// initialize com buffer....
-		int status = g_segments_manager->initialize_com_shm(com_key,am_initializer,num_procs,num_tiers);
-		if ( status != 0 ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
 		v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();
 		//
 		list<uint32_t> lru_keys;
 		list<uint32_t> hh_keys;
-
 		//
 		for ( uint16_t i = 0; i < n; i++ ) {
 			uint16_t j = 2*i;
@@ -341,9 +333,9 @@ namespace node_shm {
 			uint32_t hh_key  = Local<Array>::Cast(jsArray->Get(context, k)->Uint32Value(context).FromJust();
 			hh_keys.push_back(lru_key);
 		}
-
-		status = g_segments_manager->tier_segments_initializers(am_initializer,lru_keys,hh_keys,max_obj_size,num_procs,num_tiers,els_per_tier);
 		//
+		status = g_segments_manager->region_intialization_ops(lru_keys, hh_keys, am_initializer,
+																num_procs, num_tiers, els_per_tier, max_obj_size, com_key, randoms_key);
 		if ( status != 0 ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
 			return;

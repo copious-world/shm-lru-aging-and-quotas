@@ -293,7 +293,7 @@ class KeyValueManager {
 
 		void rectify_blackout_count(uint32_t tolerance) {
 			if ( tolerance >= _blackout_count ) {
-				_N = merge_sort_with_blackouts_increasing(_key_val,_N,_M,_nouveau_min,_nouveau_max,_proc_queue);
+				_N = merge_sort_with_blackouts_increasing(_key_val,_N,_M,_nouveau_min,_proc_queue);
 			}
 		}
 
@@ -402,7 +402,7 @@ class KeyValueManager {
 			_nouveau_min = min(key_update,_nouveau_min);
 			//
 			if ( _proc_count <= _M ) {
-				_N = merge_sort_with_blackouts_increasing(_key_val,_N,_M,_nouveau_min,_nouveau_max,_proc_queue);
+				_N = merge_sort_with_blackouts_increasing(_key_val,_N,_M,_nouveau_min,_proc_queue);
 			}
 			if ( new_hole_offset.first != UINT32_MAX ) {
 				manage_new_hole(new_hole_offset);
@@ -457,7 +457,7 @@ class KeyValueManager {
 		}
 
 
-		inline uint32_t _merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t new_min,uint32_t new_max,UpdateSource &us)  {
+		inline uint32_t _merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t new_min,UpdateSource &us)  {
 			//
 			if ( N == 0 ) return UINT32_MAX;
 			pair<uint32_t,uint32_t> *output = key_val;
@@ -549,9 +549,9 @@ class KeyValueManager {
 		}
 
 
-		uint32_t merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t new_min,uint32_t new_max,UpdateSource &us)  {
+		uint32_t merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t new_min,UpdateSource &us)  {
 			//
-			uint32_t result = _merge_sort_with_blackouts_increasing(key_val, N, M, new_min, new_max, us);
+			uint32_t result = _merge_sort_with_blackouts_increasing(key_val, N, M, new_min, us);
 			_M = 0;
 			_nouveau_max = 0;
 			_nouveau_min = UINT32_MAX;
