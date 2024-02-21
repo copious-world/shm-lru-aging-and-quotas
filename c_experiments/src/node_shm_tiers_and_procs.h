@@ -48,7 +48,7 @@ class TierAndProcManager : public LRU_Consts {
 			//
 			_Procs = num_procs;
 			_proc = proc_number;
-			_NTiers = min(num_tiers,MAX_TIERS);
+			_NTiers = min(num_tiers,(uint32_t)MAX_TIERS);
 			_reserve_size = RESERVE_FACTOR;	// set the precent as part of the build
 			_com_buffer = com_buffer;			// the com buffer is another share section.. separate from the shared data regions
 
@@ -73,12 +73,12 @@ class TierAndProcManager : public LRU_Consts {
 			tier = 0;
 			for ( auto p : hh_table_segs ) {
 				//
-				key_t key = p.first;
+				// key_t key = p.first;
 				void *hh_region = p.second;
-				size_t seg_sz = seg_sizes[key];
+				// size_t seg_sz = seg_sizes[key];
 				//
 				LRU_cache *lru = _tiers[tier];
-				if ( lru !== nullptr ) {
+				if ( lru != nullptr ) {
 					lru->set_hash_impl(hh_region,els_per_tier);
 				}
 				// initialize hopscotch
@@ -90,6 +90,11 @@ class TierAndProcManager : public LRU_Consts {
 		virtual ~TierAndProcManager() {}
 
 	public:
+
+		static uint32_t check_expected_com_region_size(uint32_t num_procs, uint32_t num_tiers) {
+			uint32_t predict = num_tiers*(sizeof(atomic_flag *) + sizeof(Com_element)*num_procs);
+			return predict;
+		} 
 
 		// -- set_owner_proc_area
 		// 		the com buffer is set separately outside the constructor... this may just be stylistic. 
@@ -189,7 +194,7 @@ class TierAndProcManager : public LRU_Consts {
 			return ce;
 		}
 
-		uint32_t	*get_hash_parameter(uint8_t tier = 0) {
+		uint64_t	*get_hash_parameter(uint8_t tier = 0) {
 			Com_element *ce = (_owner_proc_area + tier);
 			return &(ce->_hash);
 		}
@@ -213,7 +218,7 @@ class TierAndProcManager : public LRU_Consts {
 			return ce;
 		}
 
-		uint32_t	*get_hash_parameter(uint8_t proc, uint8_t tier = 0) {
+		uint64_t	*get_hash_parameter(uint8_t proc, uint8_t tier = 0) {
 			Com_element *owner_proc_area = ((Com_element *)_com_buffer) + (proc*_NTiers);
 			Com_element *ce = (owner_proc_area + tier);
 			return &(ce->_hash);
@@ -248,7 +253,7 @@ class TierAndProcManager : public LRU_Consts {
 			LRU_cache *next_tier = this->access_tier(source_tier+1);
 			if ( next_tier == nullptr ) {
 				// crisis mode...				elements will have to be discarded or sent to another machine
-				return lru->transfer_out_of_tier_to_remote();   // also copy data...
+				lru->notify_evictor(UINT32_MAX);   // also copy data...
 			} else {
 				lru->transfer_hashes(next_tier,req_count);
 			}
@@ -357,8 +362,9 @@ class TierAndProcManager : public LRU_Consts {
 						//
 						// this element has been found and this is actually a data_loc...
 						if ( dup_access->_offset != 0 ) {			// duplicated, an occupied location for the hash
-							uint32_t data_loc = tmp->_offset;		// offset is in the messages buffer
-							tmp->_offset = 0; 						// clear position
+							com_or_offset *to = *tmp;
+							uint32_t data_loc = to->_offset;		// offset is in the messages buffer
+							to->_offset = 0; 						// clear position
 							Com_element *cel = dup_access->_cel;	// duplicate was not clear... ref to com element
 							cel->_offset = data_loc;				// to the com element ... output the known offset
 							// now get the control word location
@@ -399,23 +405,22 @@ class TierAndProcManager : public LRU_Consts {
 						if ( mem_claimed ) {
 							//
 							uint32_t *current = lru_element_offsets;   // offset to new elemnents in the regions
-							uint8_t *start = lru->start();
 							uint32_t offset = 0;
 							//
 							uint32_t N = ready_msg_count;
-							char **tmp = messages;
-							char **end_m = messages + N;
+							com_or_offset **tmp = messages;
+							com_or_offset **end_m = messages + N;
 							//
 							// map hashes to the offsets
 							//
 							while ( tmp < end_m ) {   // only as many elements as proc placing data into the tier (parameter)
 								// read from com buf
-								char *access_point = *tmp++;
+								com_or_offset *access_point = *tmp++;
 								if ( access_point != nullptr ) {
 									//
 									offset = *current++;
 									//
-									Com_element *ce = (Com_element *)(access_point);
+									Com_element *ce = access_point->_cel;
 									//
 									uint32_t *write_offset_here = (&ce->_offset);
 									uint64_t *hash_parameter =  (&ce->_hash);
@@ -437,24 +442,8 @@ class TierAndProcManager : public LRU_Consts {
 							//
 							lru->attach_to_lru_list(lru_element_offsets,ready_msg_count);  // attach to an LRU as a whole bucket...
 						} else {
-							com_or_offset **tmp_dups = accesses;
-
-							/// Walk the messages let the position go with an error. (Things are really messed up)
-							//
-							while ( tmp_dups < end_dups ) {
-								//
-								com_or_offset *dup_access = *tmp_dups++;
-								// this element has been found and this is actually a data_loc...
-								if ( dup_access->_offset == 0 ) {			// no assignment to an offset
-									Com_element *cel = tmp->_cel;			// message location for proc and tier (waiting message)
-									cel->_offset = UINT32_MAX; 				// error position
-									// now get the control word location
-									atomic<COM_BUFFER_STATE> *read_marker = &(cel->_marker);			// use the data location
-									//  write data without creating a new hash entry.. (an update)
-									indicate_error(read_marker);  // tells the requesting process to go ahead and write data.
-								}
-								tmp++;
-							}
+							// release messages that are waiting... no memory available so the procs 
+							// have to be notified... 
 							return -1;
 						}
 					}
@@ -501,7 +490,7 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		*/
 
-		int 		put_method(uint32_t process,uint32_t hash_bucket,uint32_t full_hash,bool updating,char* buffer,unsigned int size,uint32_t timestamp,uint32_t tier,void (delay_func)()) {
+		int 		put_method([[maybe_unused]] uint32_t process, uint32_t hash_bucket, uint32_t full_hash, bool updating, char* buffer, unsigned int size, uint32_t timestamp, uint32_t tier, void (delay_func)()) {
 			//
 			if ( _com_buffer == nullptr ) return -1;  // has not been initialized
 			if ( (buffer == nullptr) || (size <= 0) ) return -1;  // might put a limit on size lower and uppper
@@ -516,7 +505,7 @@ class TierAndProcManager : public LRU_Consts {
 			//
 			// particular atomics
 			atomic<COM_BUFFER_STATE> *read_marker =	this->get_read_marker();
-			uint32_t *hash_parameter = this->get_hash_parameter();
+			uint64_t *hash_parameter = this->get_hash_parameter();
 			uint32_t *offset_offset = this->get_offset_parameter();
 
 			//
@@ -524,7 +513,8 @@ class TierAndProcManager : public LRU_Consts {
 			// 
 			// WAIT - a reader may be still taking data out of our slot.
 			// let it finish before puting in the new stuff.
-			if ( wait_to_write(read_marker,delay_func) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
+
+			if ( wait_to_write(read_marker,MAX_WAIT_LOOPS,delay_func) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
 				// 
 				// tell a reader to get some free memory
 				hash_parameter[0] = hash_bucket; // put in the hash so that the read can see if this is a duplicate

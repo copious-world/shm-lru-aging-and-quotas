@@ -57,6 +57,8 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 #include "random_selector.h"
 #include "shm_seg_manager.h"
 
+#include "node_shm_tiers_and_procs.h"
+
 //static TierAndProcManager<4> *g_tiers_procs = nullptr;
 
 using namespace node_shm;
@@ -520,8 +522,15 @@ void shared_mem_test_initialization_one_call() {
     cout << "ID TO SEG SIZE: " << p.first << ", " << p.second << endl;
   }
 
-  cout << "Com Buf size: " << ssm->get_seg_size(com_key) << endl;
-  cout << "Randoms size: " << ssm->get_seg_size(randoms_key) << endl;
+  auto check_com_sz = TierAndProcManager<>::check_expected_com_region_size(num_procs,num_tiers);
+  cout << "Com Buf size: " << ssm->get_seg_size(com_key) << " check_com_sz: " << check_com_sz << endl;
+  //
+  auto rsize =  ssm->get_seg_size(randoms_key);
+  size_t predicted_rsize = Random_bits_generator<>::check_expected_region_size;   //sizeof(uint32_t)*256*4;  // default sizes
+  //
+  cout << "Randoms size: " << rsize << " same size: " << (rsize == predicted_rsize) << " should be: " << predicted_rsize << endl;
+  cout << "Possible random bits size <1024,16>: " << Random_bits_generator<1024,16>::check_expected_region_size << endl;
+
   cout << "Total size: " << ssm->total_mem_allocated() << endl;
 
   //

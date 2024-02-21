@@ -383,7 +383,7 @@ class SharedSegmentsManager : public SharedSegments {
 			int status = 0;
 			//
 			size_t tier_atomics_sz = 4*sizeof(uint32_t);  // ref to the atomic flag
-			size_t bit_word_store_sz = 256;
+			size_t bit_word_store_sz = 256*sizeof(uint32_t);
 			//
 			size_t seg_size = 4*(tier_atomics_sz + bit_word_store_sz);
 			_random_bits_buffer_size = seg_size;

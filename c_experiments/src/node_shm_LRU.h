@@ -145,8 +145,6 @@ class LRU_Consts {
 		uint32_t			_Procs;
 		bool				_am_initializer;
 
-		uint32_t 			_beyond_entries_for_tiers_and_mutex;
-
 };
 
 
@@ -198,6 +196,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			_reserve_evictor =  (atomic_flag *)(_memory_requested + 1); // the next pointer in memory
 			//
 			_cascaded_com_area = (Com_element *)(_reserve_evictor + 1);
+			//
 			initialize_com_area(num_procs);
 			_end_cascaded_com_area = _cascaded_com_area + _Procs;
 

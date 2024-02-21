@@ -49,7 +49,10 @@ class Random_bits_generator {
 
 	// ---- ---- ---- ---- ---- ---- ---- ----
 
+
 public:
+
+	static constexpr uint32_t check_expected_region_size = SELECTOR_MAX*(NbitWords + 4)*sizeof(uint32_t);
 
 	list<uint32_t>			_bits;
 
