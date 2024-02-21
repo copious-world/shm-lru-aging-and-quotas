@@ -318,6 +318,7 @@ namespace node_shm {
 		//
 		Local<Array> jsArray		= Local<Array>::Cast(info[6]);			 // 8
 		uint16_t n = jsArray->Length();
+		n = min(n,num_tiers);   // should be the same, but in case not, use the smaller number.
 		//
 		v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();
 		//

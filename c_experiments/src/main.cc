@@ -410,14 +410,133 @@ chrono::system_clock::time_point shared_random_bits_test() {
 
 const char *paths[4] = {
   "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/bits_buffer.txt",
-  "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/hh_buffer.txt",
+  "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/com_buffer.txt",
   "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/lru_buffer.txt",
-  "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/com_buffer.txt"
+  "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/hh_buffer.txt"
 };
+
+
+
+void shared_mem_test_initialization_components() {
+
+  int status = 0;
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+
+  uint32_t max_obj_size = 128;
+  uint32_t num_procs = 4;
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+
+
+  key_t com_key = ftok(paths[0],0);
+  status = ssm->initialize_com_shm(com_key, true, num_procs, num_tiers);
+  cout << status << endl;
+
+  cout << "Com Buf size: " << ssm->get_seg_size(com_key) << endl;
+
+
+  key_t key = ftok(paths[1],0);
+  status = ssm->initialize_randoms_shm(key,true);
+  cout << status << endl;
+
+  //
+  bool yes = false;
+  cin >> yes;
+  cout << yes << endl;
+
+
+  cout << "Randoms size: " << ssm->get_seg_size(key) << endl;
+  cout << "Total size: " << ssm->total_mem_allocated() << endl;
+
+  // 
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  cout << lru_keys.size() << ":: " << hh_keys.size() << endl;
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  status = ssm->tier_segments_initializers(true,lru_keys,hh_keys,max_obj_size,num_procs,els_per_tier);
+
+  for ( auto p : ssm->_ids_to_seg_sizes ) {
+    cout << "ID TO SEG SIZE: " << p.first << ", " << p.second << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
+
+
+void shared_mem_test_initialization_one_call() {
+
+  int status = 0;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  uint32_t max_obj_size = 128;
+  uint32_t num_procs = 4;
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+  //
+  //
+  cout << "All buffers initialized: ... continue: "; cout.flush();
+  bool yes = false;
+  cin >> yes;
+  cout << yes << endl;
+
+  for ( auto p : ssm->_ids_to_seg_sizes ) {
+    cout << "ID TO SEG SIZE: " << p.first << ", " << p.second << endl;
+  }
+
+  cout << "Com Buf size: " << ssm->get_seg_size(com_key) << endl;
+  cout << "Randoms size: " << ssm->get_seg_size(randoms_key) << endl;
+  cout << "Total size: " << ssm->total_mem_allocated() << endl;
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
 
 
 int main(int argc, char **argv) {
 	//
+
+  // int status = 0;
 
 	if ( argc == 2 ) {
 		cout << argv[1] << endl;
@@ -427,26 +546,9 @@ int main(int argc, char **argv) {
   const auto right_now = std::chrono::system_clock::now();
   nowish = std::chrono::system_clock::to_time_t(right_now);
 
+  shared_mem_test_initialization_one_call();
 
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-
-  key_t key = ftok(paths[0],0);
-
-
-  ssm->initialize_randoms_shm(key,true);
-  //
-
-  bool yes = false;
-  cin >> yes;
-  cout << yes << endl;
-
-
-  //
-  ssm->detach(key,true);
-
-
-
+  // ----
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
 
   // test 2

@@ -112,6 +112,8 @@ class SharedSegments {
 					} else {
 						return -2;							
 					}
+				} else {
+					_ids_to_seg_sizes[key] = size;
 				}
 				//
 				void* res = shmat(res_id, NULL, at_shmflg);
@@ -217,9 +219,10 @@ class SharedSegments {
 		pair<uint16_t,size_t> detach_all(bool forceDestroy = false) {
 			unsigned int deleted = 0;
 			size_t total_freed = 0;
-			for ( auto p : _ids_to_seg_sizes ) {
+			while ( _ids_to_seg_sizes.size() > 0 ) {
+				auto p = *(_ids_to_seg_sizes.begin());
 				key_t key = p.first;
-				if ( this->detach(key,forceDestroy) == 0 ) {
+				if ( this->detach(key,forceDestroy) >= 0 ) {
 					deleted++;
 					total_freed += p.second;
 				}
@@ -269,13 +272,29 @@ class SharedSegments {
 			return true;
 		}
 
-
 		/**
 		 * get_addr
 		*/
 		void *get_addr(key_t key) {
 			auto seg = _ids_to_seg_addrs[key];
 			return seg;
+		}
+
+		/**
+		 * _shm_creator
+		*/
+
+		int _shm_creator(key_t key,size_t seg_size) {
+			auto perm = 0660;
+			int at_shmflg = 0;
+			int shmflg = IPC_CREAT | IPC_EXCL | perm;
+			int status = this->shm_getter(key, at_shmflg, shmflg, true, seg_size);
+			return status;
+		}
+		
+		int _shm_attacher(key_t key,int at_shmflg) {
+			int status = this->shm_getter(key, at_shmflg);
+			return status;
 		}
 
 
@@ -326,23 +345,6 @@ class SharedSegmentsManager : public SharedSegments {
 		void _application_removals(key_t key) {
 			this->remove_if_lru(key);
 			this->remove_if_hh_map(key);
-		}
-
-		/**
-		 * _shm_creator
-		*/
-
-		int _shm_creator(key_t key,size_t seg_size) {
-			auto perm = 0660;
-			int at_shmflg = 0;
-			int shmflg = IPC_CREAT | IPC_EXCL | perm;
-			int status = this->shm_getter(key, at_shmflg, shmflg, true, seg_size);
-			return status;
-		}
-		
-		int _shm_attacher(key_t key,int at_shmflg) {
-			int status = this->shm_getter(key, at_shmflg);
-			return status;
 		}
 
 		/**
@@ -471,6 +473,7 @@ class SharedSegmentsManager : public SharedSegments {
 					return -1;
 				}
 				status = this->initialize_lru_shm(lru_key,am_initializer,max_obj_size,num_procs,els_per_tier);
+
 				if ( status != 0 ) { return status; }
 			}
 			for ( auto hh_key : hh_keys ) {
@@ -478,6 +481,7 @@ class SharedSegmentsManager : public SharedSegments {
 					return -1;
 				}
 				status = this->initialize_hmm_shm(hh_key,am_initializer,els_per_tier);
+
 				if ( status != 0 ) { return status; }
 			}
 			//
@@ -512,6 +516,7 @@ class SharedSegmentsManager : public SharedSegments {
 		void								*_random_bits_buffer;
 		size_t								_com_buffer_size;
 		size_t								_random_bits_buffer_size;
+		//
 		map<key_t,void *>					_seg_to_lrus;
 		map<key_t,void *>					_seg_to_hh_tables;
 		//
