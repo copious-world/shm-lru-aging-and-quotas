@@ -82,11 +82,20 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint8_t *start = _region;
 			HHash *T = (HHash *)start;
 			//
+			_T1 = T;   // keep the reference handy
+			//
 			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);  // should be one half of the total elements configured
 			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
 			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
 
-			_T1 = T;   // keep the reference handy
+			auto v_offset_1 = header_size;
+			auto h_offset_1 = (v_offset_1 + v_regions_size);
+			auto c_offset_1 = (h_offset_1 + h_regions_size);
+			auto next_hh_offset = c_offset_1 + c_regions_size;
+
+			T->_V_Offset = v_offset_1;
+			T->_H_Offset = h_offset_1;
+			T->_C_Offset = c_offset_1;
 
 			// # 1
 			// ----
@@ -101,17 +110,19 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			// # 1
 			//
-			_region_V_1 = (uint64_t *)(start + header_size);  // start on word boundary
-			_region_H_1 = (uint32_t *)(start + header_size + v_regions_size);
+			_region_V_1 = (uint64_t *)(start + v_offset_1);  // start on word boundary
+			_region_H_1 = (uint32_t *)(start + h_offset_1);
+			_region_C_1 = (uint32_t *)(start + c_offset_1);
+
 			//
 			if ( am_initializer ) {
-				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
-				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size ));
+				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
+				memset((void *)(start + c_offset_1), 0, c_regions_size);
 			}
 
 			// # 2
 			// ----
-			T = (HHash *)(start + h_regions_size + v_regions_size + c_regions_size);
+			T = (HHash *)(_region_C_1 + c_regions_size);
 			_T2 = T;   // keep the reference handy
 			
 			start = (uint8_t *)(T);
@@ -127,27 +138,25 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			// # 2
 			//
-			_region_V_2 = (uint64_t *)(start + header_size);  // start on word boundary
-			v_regions_size = (sizeof(uint64_t)*max_count);
-			//
-			_region_H_2 = (uint32_t *)(start + header_size + v_regions_size);
-			h_regions_size = (sizeof(uint32_t)*max_count);
+			_region_V_2 = (uint64_t *)(start + v_offset_1);  // start on word boundary
+			_region_H_2 = (uint32_t *)(start + h_offset_1);
+			_region_C_2 = (uint32_t *)(start + c_offset_1);
+
+			auto v_offset_2 = next_hh_offset + header_size;
+			auto h_offset_2 = (v_offset_2 + v_regions_size);
+			auto c_offset_2 = (h_offset_2 + h_regions_size);
+
+			T->_V_Offset = v_offset_2;
+			T->_H_Offset = h_offset_2;
+			T->_C_Offset = c_offset_2;
+
 			//
 			if ( am_initializer ) {
 				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
 				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
+				memset((void *)(start + c_offset_1),0,((sizeof(uint32_t)*max_count)));
 			}
 			//
-			_T1->_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
-			_T2->_C_Offset = (header_size + v_regions_size + h_regions_size)*2;
-			//
-			auto c_offset = (header_size + v_regions_size + h_regions_size)*2;
-
-			if ( am_initializer ) {
-				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
-				memset((void *)(_region + c_offset),0,((sizeof(uint32_t)*max_count)));
-				memset((void *)(  start + c_offset),0,((sizeof(uint32_t)*max_count)));
-			}
 
 		}
 
@@ -161,6 +170,28 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				bits_for_test += this->_bits.size() + 4*sizeof(uint32_t);
 			}
 		}
+
+
+		static uint32_t check_expected_hh_region_size(uint32_t els_per_tier) {
+			//
+			uint8_t sz = sizeof(HHash);
+			uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
+			auto max_count = els_per_tier/2;
+
+			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);  // should be one half of the total elements configured
+			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
+			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
+
+			auto v_offset_1 = header_size;
+			auto h_offset_1 = (v_offset_1 + v_regions_size);
+			auto c_offset_1 = (h_offset_1 + h_regions_size);
+			auto next_hh_offset = c_offset_1 + c_regions_size;
+			//
+			uint32_t predict = next_hh_offset*2;
+			//
+			return predict;
+		} 
+
 
 
 		// THREAD CONTROL
@@ -716,8 +747,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		HHash							*_T2;
 		uint32_t		 				*_region_H_1;
 		uint64_t		 				*_region_V_1;
+		uint32_t		 				*_region_C_1;
+		//
 		uint32_t		 				*_region_H_2;
 		uint64_t		 				*_region_V_2;
+		uint32_t		 				*_region_C_2;
 		// threads ...
 
 		atomic<uint32_t> 				*_random_gen_value;

@@ -40,6 +40,11 @@ using namespace std::chrono;
 
 #define ONE_HOUR 	(60*60*1000)
 
+// ---- ---- ---- ---- ---- ---- ---- ---- ----
+//
+#define NUM_ATOMIC_FLAG_OPS_PER_TIER		(4)
+#define LRU_ATOMIC_HEADER_WORDS				(8)
+
 
 /**
  * The 64 bit key stores a 32bit hash (xxhash or other) in the lower word.
@@ -167,7 +172,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 	public:
 
 		// LRU_cache -- constructor
-		LRU_cache(void *region,size_t record_size, size_t seg_sz, size_t els_per_tier, size_t reserve, uint16_t num_procs, bool am_initializer, uint8_t tier) {
+		LRU_cache(void *region, size_t record_size, size_t seg_sz, size_t els_per_tier, size_t reserve, uint16_t num_procs, bool am_initializer, uint8_t tier) {
 			//
 			init_diff_timer();
 			//
@@ -215,7 +220,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			_reserve_evictor->clear();
 
 			pair<uint32_t,uint32_t> *holey_buffer = (pair<uint32_t,uint32_t> *)(_start + _region_size);
-			pair<uint32_t,uint32_t> *shared_queue = holey_buffer + _max_count;  // late arrivals
+			pair<uint32_t,uint32_t> *shared_queue = holey_buffer + _max_count*2 + num_procs;  // late arrivals
 			//
 			_timeout_table = new KeyValueManager(holey_buffer, _max_count, shared_queue, num_procs);
 			_configured_tier_cooling = ONE_HOUR;
@@ -235,6 +240,18 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		virtual ~LRU_cache() {}
 
 	public:
+
+		static uint32_t check_expected_lru_region_size(size_t record_size, size_t els_per_tier, uint32_t num_procs) {
+			//
+			size_t this_tier_atomics_sz = LRU_ATOMIC_HEADER_WORDS*sizeof(atomic<uint32_t>);  // currently 5 accessed
+			size_t max_count_lru_regions_sz = (sizeof(LRU_element) + record_size)*(els_per_tier + 2);
+			size_t com_reader_per_proc_sz = sizeof(Com_element)*num_procs;
+			size_t holey_buffer_sz = sizeof(pair<uint32_t,uint32_t>)*els_per_tier*2 + sizeof(pair<uint32_t,uint32_t>)*num_procs; // storage for timeout management
+
+			uint32_t predict = (this_tier_atomics_sz + com_reader_per_proc_sz + max_count_lru_regions_sz + holey_buffer_sz);
+			//
+			return predict;
+		} 
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 

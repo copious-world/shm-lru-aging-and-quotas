@@ -14,7 +14,6 @@ using namespace std::chrono;
 #define MAX_BUCKET_FLUSH 12
 #define ONE_HOUR 	(60*60*1000)
 
-
 /**
  * The 64 bit key stores a 32bit hash (xxhash or other) in the lower word.
  * The top 32 bits stores a structured bit array. The top 1 bit will be
@@ -92,7 +91,11 @@ class TierAndProcManager : public LRU_Consts {
 	public:
 
 		static uint32_t check_expected_com_region_size(uint32_t num_procs, uint32_t num_tiers) {
-			uint32_t predict = num_tiers*(sizeof(atomic_flag *) + sizeof(Com_element)*num_procs);
+			//
+			size_t tier_atomics_sz = NUM_ATOMIC_FLAG_OPS_PER_TIER*sizeof(atomic_flag *);  // ref to the atomic flag
+			size_t proc_tier_com_sz = sizeof(Com_element)*num_procs;
+			uint32_t predict = num_tiers*(tier_atomics_sz + proc_tier_com_sz);
+			//
 			return predict;
 		} 
 

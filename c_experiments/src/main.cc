@@ -518,12 +518,29 @@ void shared_mem_test_initialization_one_call() {
   cin >> yes;
   cout << yes << endl;
 
+
   for ( auto p : ssm->_ids_to_seg_sizes ) {
     cout << "ID TO SEG SIZE: " << p.first << ", " << p.second << endl;
   }
+  cout << endl;
+
+  auto check_lru_sz = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier,num_procs);
+  auto check_hh_sz = HH_map::check_expected_hh_region_size(els_per_tier);
+  cout << "LRU Expected Buf size: "  << check_lru_sz << endl;
+  cout << " HH Expected Buf size: "  << check_hh_sz << endl;
+
+  for ( auto p : ssm->_seg_to_lrus ) {
+    cout << "LRU SEG SIZE: " <<  ssm->_ids_to_seg_sizes[p.first] << ", " << check_lru_sz << endl;
+  }
+
+  for ( auto p : ssm->_seg_to_hh_tables ) {
+    cout << " HH SEG SIZE: " <<  ssm->_ids_to_seg_sizes[p.first] << ", " << check_hh_sz << endl;
+  }
+
 
   auto check_com_sz = TierAndProcManager<>::check_expected_com_region_size(num_procs,num_tiers);
   cout << "Com Buf size: " << ssm->get_seg_size(com_key) << " check_com_sz: " << check_com_sz << endl;
+  //
   //
   auto rsize =  ssm->get_seg_size(randoms_key);
   size_t predicted_rsize = Random_bits_generator<>::check_expected_region_size;   //sizeof(uint32_t)*256*4;  // default sizes

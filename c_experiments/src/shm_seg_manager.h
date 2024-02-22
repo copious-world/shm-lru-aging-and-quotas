@@ -48,12 +48,6 @@ using namespace std;
 #include "node_shm_LRU.h"
 
 
-
-
-#define NUM_ATOMIC_FLAG_OPS_PER_TIER		(4)
-#define LRU_ATOMIC_HEADER_WORDS				(8)
-
-
 // lsof | egrep "98306|COMMAND"
 // ipcs -mp
 
@@ -417,8 +411,8 @@ class SharedSegmentsManager : public SharedSegments {
 			//
 			size_t boundaries_atomics_sz = LRU_ATOMIC_HEADER_WORDS*sizeof(atomic<uint32_t>);		// atomics used to gain control of specific ops
 			size_t com_read_per_proc_sz = sizeof(Com_element)*num_procs;	// for requesting and returning values 
-			size_t max_count_lru_regions_sz = (sizeof(LRU_element) + max_obj_size)*(els_per_tier  + 4); // storage
-			size_t holey_buffer_sz = sizeof(pair<uint32_t,uint32_t>)*els_per_tier + sizeof(pair<uint32_t,uint32_t>)*num_procs; // storage for timeout management
+			size_t max_count_lru_regions_sz = (sizeof(LRU_element) + max_obj_size)*(els_per_tier  + 2); // storage
+			size_t holey_buffer_sz = sizeof(pair<uint32_t,uint32_t>)*els_per_tier*2 + sizeof(pair<uint32_t,uint32_t>)*num_procs; // storage for timeout management
 			//
 			size_t seg_size = (boundaries_atomics_sz + com_read_per_proc_sz + max_count_lru_regions_sz + holey_buffer_sz);
 			//
