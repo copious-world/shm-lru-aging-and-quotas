@@ -72,13 +72,13 @@ class TierAndProcManager : public LRU_Consts {
 			tier = 0;
 			for ( auto p : hh_table_segs ) {
 				//
-				// key_t key = p.first;
+				key_t key = p.first;
 				void *hh_region = p.second;
-				// size_t seg_sz = seg_sizes[key];
+				size_t hh_seg_sz = seg_sizes[key];
 				//
 				LRU_cache *lru = _tiers[tier];
 				if ( lru != nullptr ) {
-					lru->set_hash_impl(hh_region,els_per_tier);
+					lru->set_hash_impl(hh_region,hh_seg_sz,els_per_tier);
 				}
 				// initialize hopscotch
 				tier++;

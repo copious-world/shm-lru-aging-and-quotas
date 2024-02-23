@@ -518,7 +518,6 @@ void shared_mem_test_initialization_one_call() {
   cin >> yes;
   cout << yes << endl;
 
-
   for ( auto p : ssm->_ids_to_seg_sizes ) {
     cout << "ID TO SEG SIZE: " << p.first << ", " << p.second << endl;
   }
@@ -536,7 +535,6 @@ void shared_mem_test_initialization_one_call() {
   for ( auto p : ssm->_seg_to_hh_tables ) {
     cout << " HH SEG SIZE: " <<  ssm->_ids_to_seg_sizes[p.first] << ", " << check_hh_sz << endl;
   }
-
 
   auto check_com_sz = TierAndProcManager<>::check_expected_com_region_size(num_procs,num_tiers);
   cout << "Com Buf size: " << ssm->get_seg_size(com_key) << " check_com_sz: " << check_com_sz << endl;
@@ -558,6 +556,59 @@ void shared_mem_test_initialization_one_call() {
 
 
 
+void test_hh_map_creation_and_initialization() {
+
+  int status = 0;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  uint32_t max_obj_size = 128;
+  uint32_t num_procs = 4;
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+
+
+  key_t hh_key = hh_keys.front();
+  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
+  uint16_t seg_sz = ssm->get_size(hh_key);
+  
+  cout << "seg_sz: " << seg_sz << endl;
+
+  //
+  try {
+    HH_map *test_hh = new HH_map(region, seg_sz, els_per_tier, true);
+    cout << test_hh->ok() << endl;
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
 
 int main(int argc, char **argv) {
 	//
@@ -572,7 +623,7 @@ int main(int argc, char **argv) {
   const auto right_now = std::chrono::system_clock::now();
   nowish = std::chrono::system_clock::to_time_t(right_now);
 
-  shared_mem_test_initialization_one_call();
+  //shared_mem_test_initialization_one_call();
 
   // ----
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
@@ -580,6 +631,8 @@ int main(int argc, char **argv) {
   // test 2
   auto start = chrono::system_clock::now();
   // auto start = shared_random_bits_test();
+
+  test_hh_map_creation_and_initialization();
   
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

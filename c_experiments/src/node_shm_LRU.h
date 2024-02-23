@@ -278,9 +278,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		// set_hash_impl - called by initHopScotch -- set two paritions servicing a random selection.
 		//
-		void set_hash_impl(void *hh_region,uint32_t els_per_tier) {
+		void set_hash_impl(void *hh_region,size_t hh_seg_sz,uint32_t els_per_tier) {
 			uint8_t *reg1 = (uint8_t *)hh_region;
-			_hmap = new HH_map(reg1,els_per_tier,_am_initializer);
+			_hmap = new HH_map(reg1,hh_seg_sz,els_per_tier,_am_initializer);
 		}
 
 

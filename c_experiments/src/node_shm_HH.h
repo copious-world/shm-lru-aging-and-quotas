@@ -48,26 +48,24 @@ using namespace std;
 // HHash <- HHASH
 
 
-
-class HH_map;
-
-
-
-
-
 class HH_map : public HMap_interface, public Random_bits_generator<> {
 	//
 	public:
 
 		// LRU_cache -- constructor
-		HH_map(uint8_t *region,uint32_t max_element_count,bool am_initializer = false) {
+		HH_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count,bool am_initializer = false) {
 			_reason = "OK";
+			//
 			_region = region;
+			_endof_region = _region + seg_sz;
+			//
 			_status = true;
 			_initializer = am_initializer;
 			_max_count = max_element_count;
+			//
 			uint8_t sz = sizeof(HHash);
 			uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
+			//
 			// initialize from constructor
 			this->setup_region(am_initializer,header_size,(max_element_count/2));
 		}
@@ -91,7 +89,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			auto v_offset_1 = header_size;
 			auto h_offset_1 = (v_offset_1 + v_regions_size);
 			auto c_offset_1 = (h_offset_1 + h_regions_size);
-			auto next_hh_offset = c_offset_1 + c_regions_size;
+			auto next_hh_offset = (c_offset_1 + c_regions_size);
+
+			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 			T->_V_Offset = v_offset_1;
 			T->_H_Offset = h_offset_1;
@@ -116,13 +116,21 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			//
 			if ( am_initializer ) {
-				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
-				memset((void *)(start + c_offset_1), 0, c_regions_size);
+				if ( check_end(start + header_size) && check_end(start + header_size + (h_regions_size + v_regions_size)) ) {
+					memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
+				} else {
+					throw "hh_map (1) sizes overrun allocated region determined by region_sz";
+				}
+				if ( check_end(start + c_offset_1) && check_end(start + c_offset_1 + c_regions_size ) ) {
+					memset((void *)(start + c_offset_1), 0, c_regions_size);
+				} else {
+					throw "hh_map (2) sizes overrun allocated region determined by region_sz";
+				}
 			}
 
 			// # 2
 			// ----
-			T = (HHash *)(_region_C_1 + c_regions_size);
+			T = (HHash *)(start + next_hh_offset);
 			_T2 = T;   // keep the reference handy
 			
 			start = (uint8_t *)(T);
@@ -152,14 +160,28 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			//
 			if ( am_initializer ) {
-				// storing at most 4GB hashes as 32 bit with 4GB values as 64 bit
-				memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
-				memset((void *)(start + c_offset_1),0,((sizeof(uint32_t)*max_count)));
+				if ( check_end(start + header_size) && check_end(start + header_size + (h_regions_size + v_regions_size)) ) {
+					memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
+				} else {
+					throw "hh_map (3) sizes overrun allocated region determined by region_sz";
+				}
+				if ( check_end(start + c_offset_1) && check_end(start + c_offset_1 + c_regions_size,true) ) {
+					memset((void *)(start + c_offset_1), 0, c_regions_size);
+				} else {
+					throw "hh_map (4) sizes overrun allocated region determined by region_sz";
+				}
 			}
 			//
-
 		}
 
+
+		bool check_end(uint8_t *ref,bool expect_end = false) {
+			if ( ref == _endof_region ) {
+				if ( expect_end ) return true;
+			}
+			if ( (ref < _endof_region)  && (ref > _region) ) return true;
+			return false;
+		}
 
 		// 4*(this->_bits.size() + 4*sizeof(uint32_t))
 		void set_random_bits(void *shared_bit_region) {
@@ -742,6 +764,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		bool							_initializer;
 		uint32_t						_max_count;
 		uint8_t		 					*_region;
+		uint8_t		 					*_endof_region;
 		//
 		HHash							*_T1;
 		HHash							*_T2;
