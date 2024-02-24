@@ -174,7 +174,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 		}
 
-
 		bool check_end(uint8_t *ref,bool expect_end = false) {
 			if ( ref == _endof_region ) {
 				if ( expect_end ) return true;

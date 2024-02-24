@@ -175,52 +175,66 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		LRU_cache(void *region, size_t record_size, size_t seg_sz, size_t els_per_tier, size_t reserve, uint16_t num_procs, bool am_initializer, uint8_t tier) {
 			//
 			init_diff_timer();
+			_all_tiers = nullptr;
+
 			//
 			_region = region;
+			_endof_region = ((uint8_t *)region + seg_sz);
+			//
 			_record_size = record_size;
-			_region_size = seg_sz;
 			_max_count = els_per_tier;
 			_reserve = reserve*num_procs;  // when the count become this, the reserve is being used and it is time to clean up
 			//
 			_am_initializer = am_initializer;
 			//
-			// if the reserve goes down, an attempt to increase _count_free should take place
-			// if _count_free becomes zero, all memory is used up
-			//
-			_count_free->store(_max_count);				
-			_count = 0;
 
 			_Procs = num_procs;
 			_Tier = tier;
-
 			_step = (sizeof(LRU_element) + _record_size);
+			_region_size = _max_count*_step;
+			//
+			//
+			// if the reserve goes down, an attempt to increase _count_free should take place
+			// if _count_free becomes zero, all memory is used up
 			//
 			_lb_time = (atomic<uint32_t> *)(region);   // these are governing time boundaries of the particular tier
-			_ub_time = _lb_time + 1;
-			_memory_requested = (_ub_time + 1); // the next pointer in memory
-			_reserve_evictor =  (atomic_flag *)(_memory_requested + 1); // the next pointer in memory
+			_ub_time = 			(_lb_time + 1);
+			_memory_requested =	(_ub_time + 1); // the next pointer in memory
+			_count_free = 		(_memory_requested + 1);	
+			_reserve_evictor =	(atomic_flag *)(_count_free + 1); // the next pointer in memory
 			//
-			_cascaded_com_area = (Com_element *)(_reserve_evictor + 1);
-			//
-			initialize_com_area(num_procs);
+			_cascaded_com_area = (Com_element *)(_lb_time + LRU_ATOMIC_HEADER_WORDS);  // past atomic evictors and reserved ones as well
 			_end_cascaded_com_area = _cascaded_com_area + _Procs;
-
-			_all_tiers = nullptr;
+			if ( !check_end((uint8_t *)_cascaded_com_area) || !check_end((uint8_t *)_end_cascaded_com_area) ) {
+				throw "lru_cache (1) sizes overrun allocated region determined by region_sz";
+			}
+			//
+			_start = start();
+			_end = end();
+			if ( !check_end((uint8_t *)_start) ) {
+				throw "lru_cache (2) sizes overrun allocated region determined by region_sz";
+			}
+			if ( !check_end((uint8_t *)_end) ) {
+				throw "lru_cache (3) sizes overrun allocated region determined by region_sz";
+			}
+			//
+			pair<uint32_t,uint32_t> *holey_buffer = (pair<uint32_t,uint32_t> *)(_end);
+			pair<uint32_t,uint32_t> *shared_queue = (holey_buffer + _max_count*2 + num_procs);  // late arrivals
+			if ( !check_end((uint8_t *)shared_queue) ) {
+				throw "lru_cache (4) sizes overrun allocated region determined by region_sz";
+			}
 
 			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-			_start = start();
-			_end = end();
-			//
-
 			// time lower bound and upper bound for a tier...
+			_count_free->store(_max_count);	
 			_lb_time->store(UINT32_MAX);
 			_ub_time->store(UINT32_MAX);
 			_memory_requested->store(0);
 			_reserve_evictor->clear();
 
-			pair<uint32_t,uint32_t> *holey_buffer = (pair<uint32_t,uint32_t> *)(_start + _region_size);
-			pair<uint32_t,uint32_t> *shared_queue = holey_buffer + _max_count*2 + num_procs;  // late arrivals
+			initialize_com_area(num_procs);
+
 			//
 			_timeout_table = new KeyValueManager(holey_buffer, _max_count, shared_queue, num_procs);
 			_configured_tier_cooling = ONE_HOUR;
@@ -233,7 +247,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			if ( count_free != _count_free->load() ) {
 				_count_free->store(count_free);
 			}
-
 			//
 		}
 
@@ -244,14 +257,25 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		static uint32_t check_expected_lru_region_size(size_t record_size, size_t els_per_tier, uint32_t num_procs) {
 			//
 			size_t this_tier_atomics_sz = LRU_ATOMIC_HEADER_WORDS*sizeof(atomic<uint32_t>);  // currently 5 accessed
-			size_t max_count_lru_regions_sz = (sizeof(LRU_element) + record_size)*(els_per_tier + 2);
 			size_t com_reader_per_proc_sz = sizeof(Com_element)*num_procs;
+			size_t max_count_lru_regions_sz = (sizeof(LRU_element) + record_size)*(els_per_tier + 2);
+			// _max_count*2 + num_procs
 			size_t holey_buffer_sz = sizeof(pair<uint32_t,uint32_t>)*els_per_tier*2 + sizeof(pair<uint32_t,uint32_t>)*num_procs; // storage for timeout management
 
 			uint32_t predict = (this_tier_atomics_sz + com_reader_per_proc_sz + max_count_lru_regions_sz + holey_buffer_sz);
 			//
 			return predict;
-		} 
+		}
+
+
+		bool check_end(uint8_t *ref,bool expect_end = false) {
+			if ( ref == _endof_region ) {
+				if ( expect_end ) return true;
+			}
+			if ( (ref < _endof_region)  && (ref > _region) ) return true;
+			return false;
+		}
+
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -268,8 +292,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 
 		uint8_t *end(void) {
-			uint8_t *rr = (uint8_t *)(_end_cascaded_com_area);
-			rr += _max_count*_step;
+			uint8_t *rr = (uint8_t *)(_end_cascaded_com_area) + _region_size;
 			return rr;
 		}
 
@@ -288,18 +311,23 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		void initialize_com_area(uint16_t num_procs) {
-			Com_element *proc_entry = _cascaded_com_area;
-			uint32_t P = num_procs;
-			for ( uint32_t p = 0; p < P; p++ ) {
-				proc_entry->_marker.store(CLEAR_FOR_WRITE);
-				proc_entry->_hash = 0L;
-				proc_entry->_offset = UINT32_MAX;
-				proc_entry->_timestamp = 0;
-				proc_entry->_tier = _Tier;
-				proc_entry->_proc = p;
-				proc_entry->_ops = 0;
-				memset(proc_entry->_message,0,MAX_MESSAGE_SIZE);
-				proc_entry++;
+			if ( check_end((uint8_t *)(_cascaded_com_area)) ) {
+				Com_element *proc_entry = _cascaded_com_area;
+				uint32_t P = num_procs;
+				for ( uint32_t p = 0; p < P; p++ ) {
+					proc_entry->_marker.store(CLEAR_FOR_WRITE);
+					proc_entry->_hash = 0L;
+					proc_entry->_offset = UINT32_MAX;
+					proc_entry->_timestamp = 0;
+					proc_entry->_tier = _Tier;
+					proc_entry->_proc = p;
+					proc_entry->_ops = 0;
+					memset(proc_entry->_message,0,MAX_MESSAGE_SIZE);
+					proc_entry++;
+					if ( !check_end((uint8_t *)_cascaded_com_area) ) {
+						throw "initialize_com_area : beyond end of buffer";
+					}
+				}
 			}
 		}
 
@@ -657,16 +685,18 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 	public:
 
 		void							*_region;
+		void 							*_endof_region;
+
 		size_t		 					_record_size;
 		size_t							_region_size;
 		//
 		uint32_t						_step;
 		uint8_t							*_start;
-		uint8_t							*_end;		
+		uint8_t							*_end;
 
-		uint16_t						_count;
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
 		uint16_t						_max_count;  // max possible number of records
-
 		//
 		uint8_t							_Tier;
 		uint8_t							_reserve;

@@ -590,7 +590,7 @@ void test_hh_map_creation_and_initialization() {
 
   key_t hh_key = hh_keys.front();
   uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint16_t seg_sz = ssm->get_size(hh_key);
+  uint32_t seg_sz = ssm->get_size(hh_key);
   
   cout << "seg_sz: " << seg_sz << endl;
 
@@ -598,6 +598,72 @@ void test_hh_map_creation_and_initialization() {
   try {
     HH_map *test_hh = new HH_map(region, seg_sz, els_per_tier, true);
     cout << test_hh->ok() << endl;
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
+void test_lru_creation_and_initialization() {
+
+  int status = 0;
+
+  uint32_t max_obj_size = 128;
+  uint32_t num_procs = 4;
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                            num_procs, num_tiers, els_per_tier, max_obj_size, com_key, randoms_key);
+
+
+  size_t reserve = 0;
+
+  auto check_lru_sz = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier,num_procs);
+  auto check_hh_sz = HH_map::check_expected_hh_region_size(els_per_tier);
+  for ( auto p : ssm->_seg_to_lrus ) {
+    cout << "LRU SEG SIZE: " << p.first << " .. " <<  ssm->_ids_to_seg_sizes[p.first] << ", " << check_lru_sz << endl;
+  }
+  for ( auto p : ssm->_seg_to_hh_tables ) {
+    cout << " HH SEG SIZE: " << p.first << " .. "  <<  ssm->_ids_to_seg_sizes[p.first] << ", " << check_hh_sz << endl;
+  }
+
+  key_t lru_key = lru_keys.front();
+  cout << "lru_key: " << lru_key << endl;
+
+  uint8_t *region = (uint8_t *)(ssm->get_addr(lru_key));
+  uint32_t seg_sz = ssm->get_size(lru_key);
+  
+  cout << "seg_sz: " << seg_sz << endl;
+
+  //
+  try {
+    LRU_cache *lru_c = new LRU_cache(region, max_obj_size, seg_sz, els_per_tier, reserve, num_procs, true, 0);
+    cout << lru_c->ok() << endl;
   } catch ( const char *err ) {
     cout << err << endl;
   }
@@ -632,7 +698,7 @@ int main(int argc, char **argv) {
   auto start = chrono::system_clock::now();
   // auto start = shared_random_bits_test();
 
-  test_hh_map_creation_and_initialization();
+  test_lru_creation_and_initialization();
   
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

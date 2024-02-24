@@ -21,7 +21,7 @@ template<class StackEl>
 class AtomicStack {
 	public:
 
-		AtomicStack() {
+		AtomicStack() : _status(true) {
 		}
 
 		virtual ~AtomicStack() {}
@@ -59,6 +59,7 @@ class AtomicStack {
 			return 0;
 		}
 
+
 		// _atomic_stack_push
 		void _atomic_stack_push(uint8_t *start, StackEl *ctrl_free, StackEl *el) {
 			auto head = (atomic<uint32_t>*)(&(ctrl_free->_next));
@@ -66,7 +67,6 @@ class AtomicStack {
 			uint32_t h_offset = head->load(std::memory_order_relaxed);
 			while(!head->compare_exchange_weak(h_offset, el_offset));
 		}
-
 
 
 		uint16_t setup_region_free_list(uint8_t *start, size_t step, size_t region_size) {
@@ -98,6 +98,9 @@ class AtomicStack {
 			while ( curr < region_size ) {   // all the ends are in the first three elements ... the rest is either free or part of the LRU
 				free_count++;
 				StackEl *next_free = (StackEl *)(start + curr);
+				if ( !check_end((uint8_t *)next_free) ) {
+					throw "test_lru_creation_and_initialization: run past end of reion";
+				}
 				next_free->_prev = UINT32_MAX;  // singly linked free list
 				next_free->_next = next;
 				if ( next >= region_size ) {
@@ -115,6 +118,16 @@ class AtomicStack {
 
 			return free_count;
 		}
+
+		// ok ----
+
+		bool ok(void) {
+			return(this->_status);
+		}
+
+	protected: 
+
+		virtual bool check_end([[maybe_unused]] uint8_t *ref,[[maybe_unused]] bool expect_end = false) { return true; }
 
 	public:
 
