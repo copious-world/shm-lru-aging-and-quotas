@@ -62,6 +62,7 @@ inline string map_maker_destruct(map<K,V> &jmap) {
 
 
 #define WORD  (8*sizeof(uint32_t))		// 32 bits
+#define BIGWORD (8*sizeof(uint64_t))
 #define MOD(x, n) ((x) < (n) ? (x) : (x) - (n))
 //
 template<typename T>

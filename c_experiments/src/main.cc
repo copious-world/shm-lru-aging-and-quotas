@@ -46,6 +46,8 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 
 // 
 
+#include <type_traits>
+
 
 // -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
 
@@ -524,7 +526,7 @@ void shared_mem_test_initialization_one_call() {
   cout << endl;
 
   auto check_lru_sz = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier,num_procs);
-  auto check_hh_sz = HH_map::check_expected_hh_region_size(els_per_tier);
+  auto check_hh_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
   cout << "LRU Expected Buf size: "  << check_lru_sz << endl;
   cout << " HH Expected Buf size: "  << check_hh_sz << endl;
 
@@ -553,6 +555,21 @@ void shared_mem_test_initialization_one_call() {
   cout << p.first << ", " << p.second << endl;
 
 }
+
+
+
+
+
+template<uint32_t arg_N>
+struct val {
+    static constexpr auto N = arg_N;
+};
+
+template<template <uint32_t> typename T, uint32_t N>
+constexpr auto extract(const T<N>&) -> val<N>;
+
+template<typename T>
+constexpr auto extract_N = decltype(extract(std::declval<T>()))::N;
 
 
 
@@ -596,8 +613,13 @@ void test_hh_map_creation_and_initialization() {
 
   //
   try {
-    HH_map *test_hh = new HH_map(region, seg_sz, els_per_tier, true);
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
     cout << test_hh->ok() << endl;
+
+
+    cout << "template value: " << extract_N<HH_map<24>> << endl;    /// extract parameter ????
+
+
   } catch ( const char *err ) {
     cout << err << endl;
   }
@@ -609,6 +631,8 @@ void test_hh_map_creation_and_initialization() {
 }
 
 
+// test_lru_creation_and_initialization
+//
 void test_lru_creation_and_initialization() {
 
   int status = 0;
@@ -644,7 +668,7 @@ void test_lru_creation_and_initialization() {
   size_t reserve = 0;
 
   auto check_lru_sz = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier,num_procs);
-  auto check_hh_sz = HH_map::check_expected_hh_region_size(els_per_tier);
+  auto check_hh_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
   for ( auto p : ssm->_seg_to_lrus ) {
     cout << "LRU SEG SIZE: " << p.first << " .. " <<  ssm->_ids_to_seg_sizes[p.first] << ", " << check_lru_sz << endl;
   }
@@ -698,8 +722,24 @@ int main(int argc, char **argv) {
   auto start = chrono::system_clock::now();
   // auto start = shared_random_bits_test();
 
-  test_lru_creation_and_initialization();
-  
+    test_hh_map_creation_and_initialization();
+    //test_lru_creation_and_initialization();
+
+    cout << (UINT32_MAX - 1) << endl;
+    cout << (UINT64_MAX - 1) << endl;
+    //
+    uint32_t x = UINT32_MAX;
+    cout << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
+    uint64_t y = UINT32_MAX;
+    cout << (BIGWORD - CLZ(y)) << " :: " <<  CLZ(y)  << endl;
+    cout << " --- " << endl;
+    x = 10000000;
+    cout << x << " ... " << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
+    x = 4000000;
+    cout << x << " ... "  << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
+    x = 800000000;
+    cout << x << " ... "  << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
+
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 
   cout << "Duration test 1: " << dur_t1.count() << " seconds" << endl;

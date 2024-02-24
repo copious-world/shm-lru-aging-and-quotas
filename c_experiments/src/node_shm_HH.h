@@ -47,13 +47,13 @@ using namespace std;
 // ---- ---- ---- ---- ---- ----  HHash
 // HHash <- HHASH
 
-
+template<const uint32_t NEIGHBORHOOD = 32>
 class HH_map : public HMap_interface, public Random_bits_generator<> {
 	//
 	public:
 
 		// LRU_cache -- constructor
-		HH_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count,bool am_initializer = false) {
+		HH_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, bool am_initializer = false) {
 			_reason = "OK";
 			//
 			_region = region;
@@ -102,7 +102,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			if ( am_initializer ) {
 				T->_count = 0;
 				T->_max_n = max_count;
-				T->_neighbor = FLS(max_count - 1);
+				T->_neighbor = NEIGHBORHOOD;
 				T->_control_bits = 0;
 			} else {
 				max_count = T->_max_n;	// just in case
@@ -138,7 +138,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			if ( am_initializer ) {
 				T->_count = 0;
 				T->_max_n = max_count;
-				T->_neighbor = FLS(max_count - 1);
+				T->_neighbor = NEIGHBORHOOD;
 				T->_control_bits = 1;
 			} else {
 				max_count = T->_max_n;	// just in case
@@ -322,6 +322,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			uint8_t selector = ((el_key & HH_SELECT_BIT) == 0) ? 0 : 1;
 			el_key = clear_selector_bit(el_key);
+			//
 			HHash *T = (selector ? _T1 : _T2);
 			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
 			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
@@ -344,6 +345,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			HHash *T = (selector ? _T1 : _T2);
 			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
 			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
+			//
 			return get_hh_map(T, key, buffer, v_buffer);
 		}
 
@@ -355,6 +357,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			HHash *T = (selector ? _T1 : _T2);
 			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
 			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
+			//
 			return (uint32_t)(get_hh_set(T, key, bucket, buffer, v_buffer) >> HALF);  // the value is in the top half of the 64 bits.
 		}
 
@@ -368,11 +371,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
 			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
 			uint8_t count = 0;
-			uint32_t i = _succ_hh_hash(T, h, 0, buffer);
+			uint32_t N = T->_max_n;
+			// first bit offset count from zero
+			uint32_t i = _succ_hh_hash(h, 0, buffer, N);
 			while ( i != UINT32_MAX ) {
-				uint64_t x = get_val_at_hh_hash(T, h, i, v_buffer);  // get ith value matching this hash (collision)
+				uint64_t x = get_val_at_hh_hash(h, i, v_buffer, N);  // get ith value matching this hash (collision)
 				xs[count++] = (uint32_t)((x >> HALF) & HASH_MASK);
-				i = _succ_hh_hash(T, h, i + 1, buffer);  // increment i in some sense (skip unallocated holes)
+				// next bit offset ... count from last attempt
+				i = _succ_hh_hash(h, (i + 1), buffer, N);  // increment i in some sense (skip unallocated holes)
 			}
 			return count;	// no value  (values will always be positive, perhaps a hash or'ed onto a 0 value)
 		}
@@ -384,6 +390,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			HHash *T = (selector ? _T1 : _T2);
 			uint32_t *buffer = (selector ? _region_H_1 : _region_H_2);
 			uint64_t *v_buffer = (selector ? _region_V_1 : _region_V_2);
+			//
 			return del_hh_map(T, key, buffer, v_buffer);
 		}
 
@@ -413,7 +420,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		_random_gen_value->store(which_region);
 	}
 
-	void thread_sleep([[maybe_unused] ]uint8_t ticks) {
+	void thread_sleep([[maybe_unused]] uint8_t ticks) {
 
 	}
 
@@ -501,19 +508,18 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 		// operate on the hash bucket bits .. take into consideration that the bucket range is limited
-		uint32_t _succ_hh_hash(HHash *T, uint32_t h_bucket, uint32_t i, uint32_t *buffer) {
+		uint32_t _succ_hh_hash(uint32_t h_bucket, uint32_t i, uint32_t *buffer, uint32_t N) {
 			//
 			if ( i == 32 ) return(UINT32_MAX);  // all the bits in the bucket have been checked
-			uint32_t N = T->_max_n;
 			uint32_t h = (h_bucket % N);
 			return _succ(h, i, buffer);
 			//
 		}
 
-
-		void del_hh_hash(HHash *T, uint32_t h, uint32_t i, uint32_t *buffer, uint64_t *v_buffer) {
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+		//
+		void del_hh_hash(HHash *T, uint32_t h, uint32_t i, uint32_t *buffer, uint64_t *v_buffer, uint32_t N) {
 			//
-			uint32_t N = T->_max_n;
 			h = (h % N);
 			uint32_t j = MOD(h + i, N);  // the offset relative to the original hash bucket + bucket position = absolute address
 			//
@@ -541,21 +547,21 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			if ( (T->_count == N) || (v == 0) ) return(false);  // FULL
 			//
 			h = h % N;  // scale the hash .. make sure it indexes the array...
-			uint32_t d = _probe(T, h, v_buffer);  // a distance starting from h (if wrapped, then past N)
+			uint32_t d = _probe(h, v_buffer, N);  // a distance starting from h (if wrapped, then past N)
 			if ( d == UINT32_MAX ) return(false); // the positions in the entire buffer are full.
 	//cout << "put_hh_hash: d> " << d;
 			//
-			uint32_t K =  T->_neighbor;
+			uint32_t K = NEIGHBORHOOD;
 			while ( d >= K ) {						// the number may be bigger than K. if wrapping, then bigger than N. 2N < UINT32_MAX.
 				uint32_t hd = MOD( (h + d), N );	// d is allowed to wrap around.
-				uint32_t z = _hop_scotch(T, hd, buffer);	// hop scotch back to a moveable positions
+				uint32_t z = _hop_scotch(hd, buffer, N);	// hop scotch back to a moveable positions
 	//cout << " put_hh_hash: z> " << z;
 				if ( z == 0 ) return(false);			// could not find anything that could move. (Frozen at this point..)
 				// found a position that can be moved... (offset from h <= d closer to the neighborhood)
 				uint32_t j = z;
 				z = MOD((N + hd - z), N);		// hd - z is an (offset from h) < h + d or (h + z) < (h + d)  ... see hopscotch 
 				uint32_t i = _succ(z, 0, buffer);		// either this is moveable or there's another one. (checking the bitmap ...)
-				_swap(z, i, j, T, buffer, v_buffer);				// swap bits and values between i and j offsets within the bucket h
+				_swap(z, i, j, buffer, v_buffer, N);				// swap bits and values between i and j offsets within the bucket h
 				d = MOD( (N + z + i - h), N );  // N + z - (h - i) ... a new distance, should be less than before
 			}
 			//
@@ -581,14 +587,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * 
 		 * i and j are used later as offsets from h when doing the value swap. 
 		*/
-		void _swap(uint32_t h, uint32_t i, uint32_t j, HHash *T, uint32_t *buffer, uint64_t *v_buffer) {
+		void _swap(uint32_t h, uint32_t i, uint32_t j, uint32_t *buffer, uint64_t *v_buffer, uint32_t N) {
 			//
 			uint32_t H = buffer[h];
 			UNSET(H, i);
 			SET(H, j);
 			buffer[h] = H;
 			//
-			uint32_t N = T->_max_n;
 			i = MOD((h + i), N);		// offsets from the moveable position (i will often be 0)
 			j = MOD((h + j), N);
 			//
@@ -609,10 +614,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * 
 		 * @returns {uint32_t} distance of the bucket from h
 		*/
-		uint32_t _probe(HHash *T, uint32_t h, uint64_t *v_buffer) {   // value probe ... looking for zero
+		uint32_t _probe(uint32_t h, uint64_t *v_buffer, uint32_t N) {   // value probe ... looking for zero
 			// // 
-			uint32_t N = T->_max_n;		// upper bound (count of elements in buffer)
-			//
 			// search in the bucket
 			uint64_t *vb_probe = v_buffer;
 			vb_probe += h;
@@ -636,9 +639,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * Loosen the restriction on the distance of the new buffer until K (the max) away from h is reached.
 		 * If something within K (for swapping) can be found return it, otherwise 0 (indicates frozen)
 		*/
-		uint32_t _hop_scotch(HHash *T, uint32_t hd, uint32_t *buffer) {  // return an index
-			uint32_t N = T->_max_n;
-			uint32_t K =  T->_neighbor;
+		uint32_t _hop_scotch(uint32_t hd, uint32_t *buffer, uint32_t N) {  // return an index
+			uint32_t K =  NEIGHBORHOOD;
 			for ( uint32_t i = (K - 1); i > 0; --i ) {
 				uint32_t hi = MOD(N + hd - i, N);			// hop backwards towards the original hash position (h)...
 				uint32_t H = buffer[hi];
@@ -650,10 +652,15 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		/**
 		 * Returns the value (for this use an offset into the data storage area.)
+		 * 
+		 * parameters:
+		 * h_bucket - the primary collision bucket (where the first bucket occupant exists)
+		 * i -- the offset from the bucket (0 for the first value in the bucket with no hash collision)
+		 * v_buffer -- the value buffer (array in memory)
+		 * N - number of bucket elements (used for allowing indecies to wrap arount -- circular style)
 		*/
-		uint64_t get_val_at_hh_hash(HHash *T, uint32_t h_bucket, uint32_t i, uint64_t *v_buffer) {
+		uint64_t get_val_at_hh_hash(uint32_t h_bucket, uint32_t i, uint64_t *v_buffer, uint32_t N) {
 			uint32_t offset = (h_bucket + i);		// offset from the hash position...
-			uint32_t N = T->_max_n;
 			uint32_t j = (offset % N);		// if wrapping around
 			return(v_buffer[j]);			// return value
 		}
@@ -674,15 +681,18 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// walk through the list of position occupied by bucket members. (Those are the ones with the positional bit set.)
 		//
 		uint64_t hunt_hash_set(HHash *T, uint32_t h_bucket, uint64_t key_null, bool kill, uint32_t *buffer, uint64_t *v_buffer) {
-			uint32_t i = _succ_hh_hash(T, h_bucket, 0, buffer);   // i is the offset into the hash bucket.
+			uint32_t N = T->_max_n;
+			// first bit offset
+			uint32_t i = _succ_hh_hash(h_bucket, 0, buffer, N);   // i is the offset into the hash bucket.
 			while ( i != UINT32_MAX ) {
 				// x is from the value region..
-				uint64_t x = get_val_at_hh_hash(T, h_bucket, i, v_buffer);  // get ith value matching this hash (collision)
+				uint64_t x = get_val_at_hh_hash(h_bucket, i, v_buffer, N);  // get ith value matching this hash (collision)
 				if ( _cmp(key_null, x) ) {		// compare the discerning hash part of the values (in the case of map, hash of the stored value)
-					if (kill) del_hh_hash(T, h_bucket, i, buffer, v_buffer);
+					if (kill) del_hh_hash(T, h_bucket, i, buffer, v_buffer, N);
 					return x;   // the value is a pair of 32 bit words. The top 32 bits word is the actual value.
 				}
-				i = _succ_hh_hash(T, h_bucket, (i + 1), buffer);  // increment i in some sense (skip unallocated holes)
+				// next bit offset ... count from last attempt
+				i = _succ_hh_hash(h_bucket, (i + 1), buffer, N);  // increment i in some sense (skip unallocated holes)
 			}
 			return 0;		// no value  (values will always be positive, perhaps a hash or'ed onto a 0 value)
 		}
@@ -704,7 +714,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		bool put_hh_set(HHash *T, uint32_t h, uint64_t key_val, uint32_t *buffer, uint64_t *v_buffer) {
 			if ( key_val == 0 ) return 0;		// cannot store zero values
 			if ( get_hh_set(T, h, (uint32_t)key_val, buffer, v_buffer) != 0 ) return (true);  // found, do not duplicate ... _cmp has been called
-			if ( put_hh_hash(T, h, key_val,buffer,v_buffer) ) return (true); // success
+			if ( put_hh_hash(T, h, key_val, buffer, v_buffer) ) return (true); // success
 			// not implementing resize
 			return (false);
 		}
