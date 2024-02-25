@@ -573,6 +573,16 @@ constexpr auto extract_N = decltype(extract(std::declval<T>()))::N;
 
 
 
+template<template <uint32_t,uint8_t> typename T, uint32_t N>
+constexpr auto extract2(const T<N,4>&) -> val<N>;
+
+template<typename T>
+constexpr auto extract_N2 = decltype(extract2(std::declval<T>()))::N;
+
+
+
+
+
 void test_hh_map_creation_and_initialization() {
 
   int status = 0;
@@ -618,6 +628,7 @@ void test_hh_map_creation_and_initialization() {
 
 
     cout << "template value: " << extract_N<HH_map<24>> << endl;    /// extract parameter ????
+    cout << "template randoms: " << extract_N2<Random_bits_generator<>> << endl;    /// extract parameter ????
 
 
   } catch ( const char *err ) {
@@ -699,6 +710,40 @@ void test_lru_creation_and_initialization() {
 }
 
 
+bool stop_printing_dots = false;
+void try_sleep_for() {
+   using namespace std::chrono_literals;
+ 
+    cout << "Hello waiter\n" << std::flush;
+ 
+    const auto start = std::chrono::high_resolution_clock::now();
+    std::this_thread::sleep_for(std::chrono::microseconds(20));
+    const auto end = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::micro> elapsed = end - start;
+ 
+    stop_printing_dots = true;
+    cout << "Waited " << elapsed.count() << endl;
+}
+
+
+void try_spin_for() {
+   using namespace std::chrono_literals;
+ 
+    cout << "Hello waiter\n" << std::flush;
+ 
+    const auto start = std::chrono::high_resolution_clock::now();
+
+    int j = 0;
+    while ( j++ < 64 );
+    auto k = j + 1;
+   
+    const auto end = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double, std::nano> elapsed = end - start;
+ 
+    stop_printing_dots = true;
+    cout << "Waited " << k << " " << elapsed.count() << endl;
+}
+
 
 int main(int argc, char **argv) {
 	//
@@ -724,6 +769,31 @@ int main(int argc, char **argv) {
 
     test_hh_map_creation_and_initialization();
     //test_lru_creation_and_initialization();
+
+    thread t1(try_sleep_for);
+    int i = 0;
+    while ( !(stop_printing_dots) )  {
+      i++;
+      if ( i > 10000000 ) i = 0;
+      if ( !(i%1000000) ) {
+        cout << '.'; cout.flush();
+      }
+    }
+    t1.join();
+
+
+    thread t2(try_spin_for);
+    i = 0;
+    stop_printing_dots = false;
+    while ( !(stop_printing_dots) )  {
+      i++;
+      if ( i > 10000000 ) i = 0;
+      if ( !(i%1000000) ) {
+        cout << '.'; cout.flush();
+      }
+    }
+    t2.join();
+
 
     cout << (UINT32_MAX - 1) << endl;
     cout << (UINT64_MAX - 1) << endl;

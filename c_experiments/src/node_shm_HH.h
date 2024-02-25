@@ -75,6 +75,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		// setup_region -- part of initialization if the process is the intiator..
 		// -- header_size --> HHash
+		// the regions are setup as, [values 1][buckets 1][values 2][buckets 2][controls 1 and 2]
 		void setup_region(bool am_initializer,uint8_t header_size,uint32_t max_count) {
 			// ----
 			uint8_t *start = _region;
@@ -84,18 +85,19 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);  // should be one half of the total elements configured
 			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
-			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
+			uint32_t c_regions_size = (sizeof(uint16_t)*max_count);
 
 			auto v_offset_1 = header_size;
 			auto h_offset_1 = (v_offset_1 + v_regions_size);
-			auto c_offset_1 = (h_offset_1 + h_regions_size);
-			auto next_hh_offset = (c_offset_1 + c_regions_size);
+			auto c_offset_1 = (v_offset_1 + h_regions_size);
+			//
+			auto next_hh_offset = (h_offset_1 + h_regions_size);  // now, the next array of buckets and values (controls are the very end for both)
+			//
 
 			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 			T->_V_Offset = v_offset_1;
 			T->_H_Offset = h_offset_1;
-			T->_C_Offset = c_offset_1;
 
 			// # 1
 			// ----
@@ -112,7 +114,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			_region_V_1 = (uint64_t *)(start + v_offset_1);  // start on word boundary
 			_region_H_1 = (uint32_t *)(start + h_offset_1);
-			_region_C_1 = (uint32_t *)(start + c_offset_1);
 
 			//
 			if ( am_initializer ) {
@@ -120,11 +121,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 					memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
 				} else {
 					throw "hh_map (1) sizes overrun allocated region determined by region_sz";
-				}
-				if ( check_end(start + c_offset_1) && check_end(start + c_offset_1 + c_regions_size ) ) {
-					memset((void *)(start + c_offset_1), 0, c_regions_size);
-				} else {
-					throw "hh_map (2) sizes overrun allocated region determined by region_sz";
 				}
 			}
 
@@ -148,7 +144,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			_region_V_2 = (uint64_t *)(start + v_offset_1);  // start on word boundary
 			_region_H_2 = (uint32_t *)(start + h_offset_1);
-			_region_C_2 = (uint32_t *)(start + c_offset_1);
 
 			auto v_offset_2 = next_hh_offset + header_size;
 			auto h_offset_2 = (v_offset_2 + v_regions_size);
@@ -156,19 +151,31 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			T->_V_Offset = v_offset_2;
 			T->_H_Offset = h_offset_2;
-			T->_C_Offset = c_offset_2;
+			//
+
+			//
+			//
+			_T1->_C_Offset = c_offset_2;			// Both regions use the same control regions (interleaved)
+			_T2->_C_Offset = c_offset_2;			// the caller will access the counts of the two buckets at the same offset often
+
+			//
+			//
+			_region_C = (uint16_t *)(start + c_offset_1);  // these start at the same place offset from start of second table
+
 
 			//
 			if ( am_initializer ) {
 				if ( check_end(start + header_size) && check_end(start + header_size + (h_regions_size + v_regions_size)) ) {
 					memset((void *)(start + header_size),0,(h_regions_size + v_regions_size));
 				} else {
-					throw "hh_map (3) sizes overrun allocated region determined by region_sz";
+					throw "hh_map (2) sizes overrun allocated region determined by region_sz";
 				}
+
+				// one 16 bit word for two counters
 				if ( check_end(start + c_offset_1) && check_end(start + c_offset_1 + c_regions_size,true) ) {
 					memset((void *)(start + c_offset_1), 0, c_regions_size);
 				} else {
-					throw "hh_map (4) sizes overrun allocated region determined by region_sz";
+					throw "hh_map (3) sizes overrun allocated region determined by region_sz";
 				}
 			}
 			//
@@ -201,14 +208,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);  // should be one half of the total elements configured
 			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
-			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
+			uint32_t c_regions_size = (sizeof(uint16_t)*max_count);  // 8bits per counter 16 makes the region size double
 
 			auto v_offset_1 = header_size;
 			auto h_offset_1 = (v_offset_1 + v_regions_size);
-			auto c_offset_1 = (h_offset_1 + h_regions_size);
-			auto next_hh_offset = c_offset_1 + c_regions_size;
+			auto next_hh_offset = (h_offset_1 + h_regions_size);  // now, the next array of buckets and values (controls are the very end for both)
 			//
-			uint32_t predict = next_hh_offset*2;
+			uint32_t predict = next_hh_offset*2 + c_regions_size;
 			//
 			return predict;
 		} 
@@ -229,14 +235,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		/**
 		 * 
 		*/
-		pair<uint16_t,uint16_t> bucket_counts(uint32_t h_bucket) {   // where are the bucket counts??
+		pair<uint8_t,uint8_t> bucket_counts(uint32_t h_bucket) {   // where are the bucket counts??
 			//
-			pair<uint16_t,uint16_t> counts;
-			uint8_t *start = _region;
-
-			HHash *T_1 = _T1;  // same for all offsets from start
-			uint32_t c_offset = T_1->_C_Offset;
-			uint32_t *controllers = (uint32_t *)(start + sizeof(struct HHASH) + c_offset);
+			pair<uint8_t,uint8_t> counts;
+			uint16_t *controllers = _region_C;
 			//
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
 			//
@@ -779,11 +781,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		HHash							*_T2;
 		uint32_t		 				*_region_H_1;
 		uint64_t		 				*_region_V_1;
-		uint32_t		 				*_region_C_1;
 		//
 		uint32_t		 				*_region_H_2;
 		uint64_t		 				*_region_V_2;
-		uint32_t		 				*_region_C_2;
+		//
+		// ---- These two regions are interleaved in reality
+		uint16_t		 				*_region_C;
 		// threads ...
 
 		atomic<uint32_t> 				*_random_gen_value;

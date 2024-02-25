@@ -29,7 +29,7 @@ using namespace std;
 
 
 
-template<const uint16_t NbitWords = 256,const uint8_t SELECTOR_MAX = 4>
+template<const uint32_t NbitWords = 256,const uint8_t SELECTOR_MAX = 4>
 class Random_bits_generator {
 
     bernoulli_distribution	_distribution;
