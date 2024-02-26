@@ -745,30 +745,9 @@ void try_spin_for() {
 }
 
 
-int main(int argc, char **argv) {
-	//
 
-  // int status = 0;
 
-	if ( argc == 2 ) {
-		cout << argv[1] << endl;
-	}
-
-  uint32_t nowish = 0; 
-  const auto right_now = std::chrono::system_clock::now();
-  nowish = std::chrono::system_clock::to_time_t(right_now);
-
-  //shared_mem_test_initialization_one_call();
-
-  // ----
-  chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
-
-  // test 2
-  auto start = chrono::system_clock::now();
-  // auto start = shared_random_bits_test();
-
-    test_hh_map_creation_and_initialization();
-    //test_lru_creation_and_initialization();
+void test_sleep_methods() {
 
     thread t1(try_sleep_for);
     int i = 0;
@@ -809,6 +788,135 @@ int main(int argc, char **argv) {
     cout << x << " ... "  << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
     x = 800000000;
     cout << x << " ... "  << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
+
+
+}
+
+
+
+
+static HH_map<> *sg_share_test_hh = nullptr;
+
+
+void hash_counter_bucket_access(void) {
+  	HHash *T = nullptr;
+		uint32_t *buffer = nullptr;
+		uint64_t *v_buffer = nullptr;
+		uint8_t which_table = 0;
+    //
+    if ( sg_share_test_hh ) {
+		  sg_share_test_hh->wait_if_unlock_bucket_counts(20,&T,&buffer,&v_buffer,which_table);
+      //
+      int i = 0; while ( i < 100 ) i++;
+      //
+      sg_share_test_hh->bucket_count_incr(20,which_table);
+    }
+}
+
+
+void test_hh_map_operation_initialization_linearization() {
+
+  int status = 0;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  uint32_t max_obj_size = 128;
+  uint32_t num_procs = 4;
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+
+
+  key_t hh_key = hh_keys.front();
+  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
+  uint32_t seg_sz = ssm->get_size(hh_key);
+  
+  cout << "seg_sz: " << seg_sz << endl;
+
+  //
+  try {
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
+    cout << test_hh->ok() << endl;
+
+    sg_share_test_hh = test_hh;
+
+    thread *testers[10];
+    for ( int i = 0; i < 10; i++ ) {
+      testers[i] = new thread(hash_counter_bucket_access);
+    }
+
+    for ( int i = 0; i < 10; i++ ) {
+      testers[i]->join();
+    }
+
+    pair<uint8_t,uint8_t> counts = sg_share_test_hh->bucket_counts(20);
+
+    cout << "counts: " << (int)counts.first << " :: " << (int)counts.second << endl;
+
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
+
+
+
+
+
+int main(int argc, char **argv) {
+	//
+
+  // int status = 0;
+
+	if ( argc == 2 ) {
+		cout << argv[1] << endl;
+	}
+
+  uint32_t nowish = 0; 
+  const auto right_now = std::chrono::system_clock::now();
+  nowish = std::chrono::system_clock::to_time_t(right_now);
+
+  //shared_mem_test_initialization_one_call();
+
+  // ----
+  chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
+
+  // test 2
+  auto start = chrono::system_clock::now();
+  // auto start = shared_random_bits_test();
+
+    //test_hh_map_creation_and_initialization();
+    //test_lru_creation_and_initialization();
+
+    test_hh_map_operation_initialization_linearization();
+
+    //test_sleep_methods();
+
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

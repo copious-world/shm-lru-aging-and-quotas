@@ -229,68 +229,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		
 
-	// uint32_t *buffer = _region_H;
-	// uint64_t *v_buffer = _region_V;
-
-		/**
-		 * 
-		*/
-		pair<uint8_t,uint8_t> bucket_counts(uint32_t h_bucket) {   // where are the bucket counts??
-			//
-			pair<uint8_t,uint8_t> counts;
-			uint16_t *controllers = _region_C;
-			//
-			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			//
-			uint32_t controls = controller->load(std::memory_order_consume);
-			while ( controls & HOLD_BIT_MASK ) {  // while some other process is using this count bucket
-				controls = controller->load(std::memory_order_consume);
-			}
-			//
-			while ( !controller->compare_exchange_weak(controls,(controls | HOLD_BIT_MASK)) && !(controls & HOLD_BIT_MASK) );
-			//
-			counts.first = controls & COUNT_MASK;
-			counts.second = (controls>>QUARTER) & COUNT_MASK;
-			//
-			return (counts);
-		}
-
-
-		/**
-		 * 
-		*/
-		void bucket_count_incr(uint32_t h_bucket,uint8_t which_thread) {
-			//
-			uint8_t *start = _region;
-			HHash *T_1 = _T1;
-			//
-			uint32_t c_offset = T_1->_C_Offset;
-			uint32_t *controllers = (uint32_t *)(start + sizeof(struct HHASH) + c_offset);
-			//
-			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			//
-			uint32_t controls = controller->load(std::memory_order_consume);
-			if ( !(controls & HOLD_BIT_MASK) ) {	// should be the only one able to get here on this bucket.
-				this->_status = -1;
-				return;
-			}
-			//
-			uint16_t counter = 0;
-			if ( which_thread == 0 ) {
-				counter = controls & COUNT_MASK;
-				counter++;
-				controls = (controls & ~COUNT_MASK) | (COUNT_MASK & counter);
-			} else {
-				counter = (controls>>QUARTER) & COUNT_MASK;
-				counter++;
-				uint32_t update = (counter << QUARTER) & HI_COUNT_MASK;
-				controls = (controls & ~HI_COUNT_MASK) | update;
-			}
-			//
-			controller->store(controls & FREE_BIT_MASK,std::memory_order_release);
-		}
-
-
+		// ---- ---- ---- 
 
 		bool ok(void) {
 			return(this->_status);
@@ -406,90 +345,166 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-	// HH_map method -- 
-	//
-	/**
-	 * the offset_value is taken from the memory allocation ... it is the index into the LRU array of objects
-	 * 
-	 * The contention here is not between the two threads that each examine different memory regions.
-	 * However, other processes may content for the same buckets that these threads attempt to manipulate.
-	 * 
-	*/
+		// HH_map method -- 
+		//
+		/**
+		 * the offset_value is taken from the memory allocation ... it is the index into the LRU array of objects
+		 * 
+		 * The contention here is not between the two threads that each examine different memory regions.
+		 * However, other processes may content for the same buckets that these threads attempt to manipulate.
+		 * 
+		*/
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-	void wakeup_random_genator(uint8_t which_region) {   // 
-		// regenerate_shared(which_region);
-		_random_gen_value->store(which_region);
-	}
-
-	void thread_sleep([[maybe_unused]] uint8_t ticks) {
-
-	}
-
-	void random_generator_thread_runner() {
-		while ( true ) {
-			uint8_t which_region = _random_gen_value->load();
-			if ( which_region != UINT8_MAX ) {
-				this->regenerate_shared(which_region);
-				_random_gen_value->store(UINT8_MAX);
-			}
-			thread_sleep(10);
+		void wakeup_random_genator(uint8_t which_region) {   // 
+			// regenerate_shared(which_region);
+			_random_gen_value->store(which_region);
 		}
-	}
+
+		void thread_sleep([[maybe_unused]] uint8_t ticks) {
+
+		}
+
+		void random_generator_thread_runner() {
+			while ( true ) {
+				uint8_t which_region = _random_gen_value->load();
+				if ( which_region != UINT8_MAX ) {
+					this->regenerate_shared(which_region);
+					_random_gen_value->store(UINT8_MAX);
+				}
+				thread_sleep(10);
+			}
+		}
+
+
+		/**
+		 * 
+		*/
+		pair<uint8_t,uint8_t> bucket_counts(uint32_t h_bucket) {   // where are the bucket counts??
+			//
+			pair<uint8_t,uint8_t> counts;
+			uint16_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			//
+			uint32_t controls = controller->load(std::memory_order_consume);
+			while ( controls & HOLD_BIT_MASK ) {  // while some other process is using this count bucket
+				controls = controller->load(std::memory_order_consume);
+			}
+			//
+			while ( !controller->compare_exchange_weak(controls,(controls | HOLD_BIT_MASK)) && !(controls & HOLD_BIT_MASK) );
+			//
+			counts.first = controls & COUNT_MASK;
+			counts.second = (controls>>QUARTER) & COUNT_MASK;
+			//
+			return (counts);
+		}
+
+
+		/**
+		 * 
+		*/
+		void bucket_count_incr(uint32_t h_bucket,uint8_t which_table) {
+			//
+			uint16_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			//
+			uint32_t controls = controller->load(std::memory_order_consume);
+			if ( !(controls & HOLD_BIT_MASK) ) {	// should be the only one able to get here on this bucket.
+				this->_status = -1;
+				return;
+			}
+			//
+			uint16_t counter = 0;
+			if ( which_table == 0 ) {
+				counter = controls & COUNT_MASK;
+				counter++;
+				controls = (controls & ~COUNT_MASK) | (COUNT_MASK & counter);
+			} else {
+				counter = (controls>>QUARTER) & COUNT_MASK;
+				counter++;
+				uint32_t update = (counter << QUARTER) & HI_COUNT_MASK;
+				controls = (controls & ~HI_COUNT_MASK) | update;
+			}
+			//
+			controller->store(controls & FREE_BIT_MASK,std::memory_order_release);
+		}
 
 
 
-	uint64_t add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value) {
-		//
 
-		// Threads from this process will not contend with each other.
-		// They will work on two different memory sections.
-		// The favored should set the value first. 
-		//			Check thread IDs in undecided state (can be atomic)
+		void wait_if_unlock_bucket_counts(uint32_t h_bucket,HHash **T_ref,uint32_t **buffer_ref,uint64_t **v_buffer_ref,uint8_t &which_table) {
+			// ----
+			HHash *T = _T1;
+			uint32_t *buffer = _region_H_1;
+			uint64_t *v_buffer = _region_V_1;
+			which_table = 0;
 
-		// About waiting on threads from the current process. Two threads are assigned to the current table.
-		// The process will lock a mutex for just those two threads for the tier that has been called upon. 
-		// The mutex will lock more globally. It will not interfere with other processes requesting a conversation 
-		// with the threads, just current process threads at the curren tier.
+			// ----
+			pair<uint8_t,uint8_t> counts = this->bucket_counts(h_bucket);
+			uint8_t count_1 = counts.first;		// favor the least full bucket ... but in case something doesn't move try both
+			uint8_t count_2 = counts.second;
 
-		pair<uint16_t,uint16_t> counts = this->bucket_counts(h_bucket);
-		uint16_t count_1 = counts.first;		// favor the least full bucket ... but in case something doesn't move try both
-		uint16_t count_2 = counts.second;
-		//
-		HHash *T = _T1;
-		uint32_t *buffer = _region_H_1;
-		uint64_t *v_buffer = _region_V_1;
-		uint8_t which_table = 0;
-		//
-		if ( count_2 < count_1 ) {
-			T = _T2;
-			which_table = 1;
-			buffer = _region_H_2;
-			v_buffer = _region_V_2;
-		} else if ( count_2 == count_1 ) {
-			uint8_t bit = pop_shared_bit();
-			if ( bit ) {
+			//
+			if ( count_2 < count_1 ) {
 				T = _T2;
 				which_table = 1;
 				buffer = _region_H_2;
 				v_buffer = _region_V_2;
+			} else if ( count_2 == count_1 ) {
+				uint8_t bit = pop_shared_bit();
+				if ( bit ) {
+					T = _T2;
+					which_table = 1;
+					buffer = _region_H_2;
+					v_buffer = _region_V_2;
+				}
 			}
-		}
-		//
-		uint64_t loaded_key = UINT64_MAX;
-		uint64_t loaded_value = (((uint64_t)offset_value) << HALF) | el_key;
-		bool put_ok = put_hh_hash(T, h_bucket, loaded_value, buffer, v_buffer);
-		if ( put_ok ) {
-			loaded_key = (((uint64_t)el_key) << HALF) | h_bucket; // LOADED
-		} else {
-			return(UINT64_MAX);
+
+			*T_ref = T;
+			*buffer_ref = buffer;
+			*v_buffer_ref = v_buffer;
+			//
 		}
 
-		this->bucket_count_incr(h_bucket,which_table);
-		loaded_key = stamp_key(loaded_key,which_table);
 
-		return loaded_key;
-	}
+
+		uint64_t add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value) {
+			//
+
+			// Threads from this process will not contend with each other.
+			// They will work on two different memory sections.
+			// The favored should set the value first. 
+			//			Check thread IDs in undecided state (can be atomic)
+
+			// About waiting on threads from the current process. Two threads are assigned to the current table.
+			// The process will lock a mutex for just those two threads for the tier that has been called upon. 
+			// The mutex will lock more globally. It will not interfere with other processes requesting a conversation 
+			// with the threads, just current process threads at the curren tier.
+
+			//
+			HHash *T = _T1;
+			uint32_t *buffer = _region_H_1;
+			uint64_t *v_buffer = _region_V_1;
+			uint8_t which_table = 0;
+
+			wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&v_buffer,which_table);
+			//
+			uint64_t loaded_key = UINT64_MAX;
+			uint64_t loaded_value = (((uint64_t)offset_value) << HALF) | el_key;
+			bool put_ok = put_hh_hash(T, h_bucket, loaded_value, buffer, v_buffer);
+			if ( put_ok ) {
+				loaded_key = (((uint64_t)el_key) << HALF) | h_bucket; // LOADED
+			} else {
+				return(UINT64_MAX);
+			}
+
+			this->bucket_count_incr(h_bucket,which_table);
+			loaded_key = stamp_key(loaded_key,which_table);
+
+			return loaded_key;
+		}
 
 
 	private:
