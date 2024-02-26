@@ -67,6 +67,15 @@ using namespace node_shm;
 
 
 
+// ---- ---- ---- ---- ---- ---- ---- ----
+//
+
+static constexpr bool noisy_test = true;
+
+
+// ---- ---- ---- ---- ---- ---- ---- ---
+
+
 
 template<uint32_t N>
 unsigned int hamming(bitset<N> &a,bitset<N> &b) {
@@ -797,6 +806,7 @@ void test_sleep_methods() {
 
 static HH_map<> *sg_share_test_hh = nullptr;
 
+int done_cntr = 0;
 
 void hash_counter_bucket_access(void) {
   	HHash *T = nullptr;
@@ -804,14 +814,21 @@ void hash_counter_bucket_access(void) {
 		uint64_t *v_buffer = nullptr;
 		uint8_t which_table = 0;
     //
-    if ( sg_share_test_hh ) {
-		  sg_share_test_hh->wait_if_unlock_bucket_counts(20,&T,&buffer,&v_buffer,which_table);
-      //
-      int i = 0; while ( i < 100 ) i++;
-      //
-      sg_share_test_hh->bucket_count_incr(20,which_table);
+    for ( uint16_t j =  0; j < 1000; j++ ) {
+      if ( sg_share_test_hh ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(20,&T,&buffer,&v_buffer,which_table) ) {
+          //
+          int i = 0; while ( i < 100 ) i++;
+          //
+          sg_share_test_hh->bucket_count_incr(20,which_table);
+        }
+      }
     }
+    //cout << "finished thread: " << done_cntr++ << endl;
 }
+
+
+
 
 
 void test_hh_map_operation_initialization_linearization() {
@@ -850,14 +867,28 @@ void test_hh_map_operation_initialization_linearization() {
   uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
   uint32_t seg_sz = ssm->get_size(hh_key);
   
-  cout << "seg_sz: " << seg_sz << endl;
+  if ( noisy_test ) cout << "seg_sz: " << seg_sz << endl;
 
   //
   try {
+    //
     HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
     cout << test_hh->ok() << endl;
+    //
+    uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
+    // uint32_t r_seg_sz = ssm->get_size(randoms_key);
+    //
+    test_hh->set_random_bits(r_region);
 
     sg_share_test_hh = test_hh;
+
+    if ( noisy_test ) {
+      for ( int i = 0; i < 100; i++ ) {
+        auto bit = sg_share_test_hh->pop_shared_bit();
+        cout << (bit ? "1" : "0"); cout.flush();
+      } 
+      cout << endl;
+    }
 
     thread *testers[10];
     for ( int i = 0; i < 10; i++ ) {
@@ -868,9 +899,200 @@ void test_hh_map_operation_initialization_linearization() {
       testers[i]->join();
     }
 
-    pair<uint8_t,uint8_t> counts = sg_share_test_hh->bucket_counts(20);
+    if ( noisy_test ) {
+      pair<uint8_t,uint8_t> counts = sg_share_test_hh->bucket_counts(20);
+      cout << "counts: " << (int)counts.first << " :: " << (int)counts.second << endl;
+    }
 
-    cout << "counts: " << (int)counts.first << " :: " << (int)counts.second << endl;
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
+
+
+
+
+
+uint32_t my_zero_count[256][2048];
+uint32_t my_false_count[256][2048];
+
+void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,int thread_num) {
+  	HHash *T = nullptr;
+		uint32_t *buffer = nullptr;
+		uint64_t *v_buffer = nullptr;
+		uint8_t which_table = 0;
+    //
+    std::random_device rd;  // a seed source for the random number engine
+    std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
+    std::uniform_int_distribution<uint32_t> ud(0, num_elements-1);
+    //
+    for ( uint32_t j =  0; j < 15000; j++ ) {
+      if ( sg_share_test_hh ) {
+        uint32_t h_bucket = ud(gen_v);
+        my_zero_count[thread_num][h_bucket]++;
+        //
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&v_buffer,which_table,thread_num) ) {
+          //
+          int i = 0; while ( i < 100 ) i++;
+          //
+          sg_share_test_hh->bucket_count_incr(h_bucket,which_table);
+        } else {
+          my_false_count[thread_num][h_bucket]++;
+        }
+      }
+    }
+    //cout << "finished thread: " << done_cntr++ << endl;
+}
+
+
+
+void hash_counter_bucket_access_many_buckets(uint32_t num_elements,int thread_num) {
+  	HHash *T = nullptr;
+		uint32_t *buffer = nullptr;
+		uint64_t *v_buffer = nullptr;
+		uint8_t which_table = 0;
+    //
+    std::random_device rd;  // a seed source for the random number engine
+    std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
+    std::uniform_int_distribution<uint32_t> ud(0, num_elements-1);
+    //
+    uint32_t  bucket_counter = 0;
+    for ( uint32_t j =  0; j < 15000; j++ ) {
+      if ( sg_share_test_hh ) {
+        //
+        uint32_t h_bucket = bucket_counter++;
+        bucket_counter = (bucket_counter >= num_elements) ? 0 : bucket_counter;
+        // 
+
+        my_zero_count[thread_num][h_bucket]++;
+        //
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&v_buffer,which_table,thread_num) ) {
+          //
+          int i = 0; while ( i < 100 ) i++;
+          //
+          sg_share_test_hh->bucket_count_incr(h_bucket,which_table);
+        } else {
+          my_false_count[thread_num][h_bucket]++;
+        }
+      }
+    }
+    //cout << "finished thread: " << done_cntr++ << endl;
+}
+
+
+
+
+
+
+
+
+void test_hh_map_operation_initialization_linearization_many_buckets() {
+
+  int status = 0;
+
+  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  uint32_t max_obj_size = 128;
+  uint32_t num_procs = 4;
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+
+
+  key_t hh_key = hh_keys.front();
+  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
+  uint32_t seg_sz = ssm->get_size(hh_key);
+  
+  if ( noisy_test ) cout << "seg_sz: " << seg_sz << endl;
+
+  uint8_t num_threads = 16;
+  //
+  try {
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
+    cout << test_hh->ok() << endl;
+
+    //
+    uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
+    // uint32_t r_seg_sz = ssm->get_size(randoms_key);
+    //
+    test_hh->set_random_bits(r_region);
+
+    sg_share_test_hh = test_hh;
+
+
+    thread *testers[256];
+    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    for ( int i = 0; i < num_threads; i++ ) {
+      testers[i] = new thread(hash_counter_bucket_access_many_buckets,els_per_tier/2,i);
+    }
+    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    for ( int i = 0; i < num_threads; i++ ) {
+      testers[i]->join();
+    }
+    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    if ( noisy_test ) {
+      uint32_t nn = els_per_tier/2;
+      for ( uint32_t i = 0; i < nn; i++ ) {
+        pair<uint8_t,uint8_t> counts = sg_share_test_hh->bucket_counts(i);
+        cout << "counts: " << (int)counts.first << " :: " << (int)counts.second << endl;
+      }
+
+      cout << "-------" << endl;
+      for ( uint32_t i = 0; i < num_threads; i++ ) {
+        for ( uint32_t j = 0; j < els_per_tier/2; j++ ) {
+          cout << sg_share_test_hh->my_per_thread_count[i][j] << ", ";
+        }
+        cout << endl;
+      }
+
+     cout << "---EVEN ODD----" << endl;
+      for ( uint32_t i = 0; i < num_threads; i++ ) {
+        for ( uint32_t j = 0; j < 2; j++ ) {
+          cout << sg_share_test_hh->my_per_thread_even_odd[i][j] << ", ";
+        }
+        cout << endl;
+      }
+
+
+      cout << "--- FALSE COUNT----" << endl;
+      for ( uint32_t i = 0; i < num_threads; i++ ) {
+        for ( uint32_t j = 0; j < els_per_tier/2; j++ ) {
+          cout << my_false_count[i][j] << ", ";
+        }
+        cout << endl;
+      }
+
+
+      
+    }
 
   } catch ( const char *err ) {
     cout << err << endl;
@@ -913,7 +1135,7 @@ int main(int argc, char **argv) {
     //test_hh_map_creation_and_initialization();
     //test_lru_creation_and_initialization();
 
-    test_hh_map_operation_initialization_linearization();
+    test_hh_map_operation_initialization_linearization_many_buckets();
 
     //test_sleep_methods();
 

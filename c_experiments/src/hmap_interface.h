@@ -82,12 +82,13 @@ const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 #define BitsPerByte 8
 #define HALF (sizeof(uint32_t)*BitsPerByte)  // should be 32
 #define QUARTER (sizeof(uint16_t)*BitsPerByte) // should be 16
+#define EIGHTH (sizeof(uint8_t)*BitsPerByte) // should be 16
 //
 
 
 
 const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
-const uint32_t HI_COUNT_MASK = (COUNT_MASK<<16);
+const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
 const uint32_t HOLD_BIT_MASK = (0x1 << 7);
 const uint32_t FREE_BIT_MASK = ~HOLD_BIT_MASK;
 const uint32_t LOW_WORD = 0xFFFF;
