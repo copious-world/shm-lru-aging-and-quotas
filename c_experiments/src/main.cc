@@ -70,7 +70,7 @@ using namespace node_shm;
 // ---- ---- ---- ---- ---- ---- ---- ----
 //
 
-static constexpr bool noisy_test = true;
+static constexpr bool noisy_test = false;
 
 
 // ---- ---- ---- ---- ---- ---- ---- ---
@@ -938,7 +938,7 @@ void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,int th
         uint32_t h_bucket = ud(gen_v);
         my_zero_count[thread_num][h_bucket]++;
         //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&v_buffer,which_table,thread_num) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&v_buffer,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
@@ -959,21 +959,15 @@ void hash_counter_bucket_access_many_buckets(uint32_t num_elements,int thread_nu
 		uint64_t *v_buffer = nullptr;
 		uint8_t which_table = 0;
     //
-    std::random_device rd;  // a seed source for the random number engine
-    std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
-    std::uniform_int_distribution<uint32_t> ud(0, num_elements-1);
-    //
     uint32_t  bucket_counter = 0;
+    uint8_t skip = 1;
     for ( uint32_t j =  0; j < 15000; j++ ) {
       if ( sg_share_test_hh ) {
         //
-        uint32_t h_bucket = bucket_counter++;
-        bucket_counter = (bucket_counter >= num_elements) ? 0 : bucket_counter;
-        // 
-
-        my_zero_count[thread_num][h_bucket]++;
+        bucket_counter = ((bucket_counter + skip) >= num_elements) ? 0 : bucket_counter;
+        uint32_t h_bucket = bucket_counter += skip;
         //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&v_buffer,which_table,thread_num) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&v_buffer,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
@@ -1051,7 +1045,7 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
     thread *testers[256];
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
     for ( int i = 0; i < num_threads; i++ ) {
-      testers[i] = new thread(hash_counter_bucket_access_many_buckets,els_per_tier/2,i);
+      testers[i] = new thread(hash_counter_bucket_access_many_buckets_random,els_per_tier/2,i);
     }
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
     for ( int i = 0; i < num_threads; i++ ) {
@@ -1064,34 +1058,6 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
         pair<uint8_t,uint8_t> counts = sg_share_test_hh->bucket_counts(i);
         cout << "counts: " << (int)counts.first << " :: " << (int)counts.second << endl;
       }
-
-      cout << "-------" << endl;
-      for ( uint32_t i = 0; i < num_threads; i++ ) {
-        for ( uint32_t j = 0; j < els_per_tier/2; j++ ) {
-          cout << sg_share_test_hh->my_per_thread_count[i][j] << ", ";
-        }
-        cout << endl;
-      }
-
-     cout << "---EVEN ODD----" << endl;
-      for ( uint32_t i = 0; i < num_threads; i++ ) {
-        for ( uint32_t j = 0; j < 2; j++ ) {
-          cout << sg_share_test_hh->my_per_thread_even_odd[i][j] << ", ";
-        }
-        cout << endl;
-      }
-
-
-      cout << "--- FALSE COUNT----" << endl;
-      for ( uint32_t i = 0; i < num_threads; i++ ) {
-        for ( uint32_t j = 0; j < els_per_tier/2; j++ ) {
-          cout << my_false_count[i][j] << ", ";
-        }
-        cout << endl;
-      }
-
-
-      
     }
 
   } catch ( const char *err ) {
@@ -1136,6 +1102,9 @@ int main(int argc, char **argv) {
     //test_lru_creation_and_initialization();
 
     test_hh_map_operation_initialization_linearization_many_buckets();
+
+    const uint16_t my_uint = 1 << 7;
+    cout << my_uint << " " << (HOLD_BIT_SET & my_uint) << "   "  << bitset<16>(HOLD_BIT_SET) << "   "  << bitset<16>(my_uint) << endl;
 
     //test_sleep_methods();
 

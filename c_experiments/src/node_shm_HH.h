@@ -85,7 +85,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			uint32_t v_regions_size = (sizeof(uint64_t)*max_count);  // should be one half of the total elements configured
 			uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
-			uint32_t c_regions_size = (sizeof(uint16_t)*max_count);
+			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
 
 			auto v_offset_1 = header_size;
 			auto h_offset_1 = (v_offset_1 + v_regions_size);
@@ -160,7 +160,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			//
 			//
-			_region_C = (uint16_t *)(start + c_offset_1);  // these start at the same place offset from start of second table
+			_region_C = (uint32_t *)(start + c_offset_1);  // these start at the same place offset from start of second table
 
 
 			//
@@ -385,15 +385,18 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		pair<uint8_t,uint8_t> bucket_counts(uint32_t h_bucket) {   // where are the bucket counts??
 			//
 			pair<uint8_t,uint8_t> counts;
-			uint16_t *controllers = _region_C;
-			auto controller = (atomic<uint16_t>*)(&controllers[h_bucket]);
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			uint32_t controls = controller->load(std::memory_order_consume);
 			//
-			uint16_t controls = controller->load(std::memory_order_consume);
-			while ( controls & HOLD_BIT_MASK ) {  // while some other process is using this count bucket
-				controls = controller->load(std::memory_order_consume);
-			}
-			//
-			while ( !controller->compare_exchange_weak(controls,(controls | HOLD_BIT_MASK)) && !(controls & HOLD_BIT_MASK) );
+			do {
+				while ( controls & HOLD_BIT_SET ) {  // while some other process is using this count bucket
+					controls = controller->load(std::memory_order_consume);
+				}
+				//
+				while ( !controller->compare_exchange_weak(controls,(controls | HOLD_BIT_SET)) && !(controls & HOLD_BIT_SET) );
+
+			 } while ( controls & HOLD_BIT_SET );
 			//
 			counts.first = controls & COUNT_MASK;
 			counts.second = (controls>>EIGHTH) & COUNT_MASK;
@@ -407,11 +410,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		*/
 		void bucket_count_incr(uint32_t h_bucket,uint8_t which_table) {
 			//
-			uint16_t *controllers = _region_C;
-			auto controller = (atomic<uint16_t>*)(&controllers[h_bucket]);
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
 			//
-			uint16_t controls = controller->load(std::memory_order_consume);
-			if ( !(controls & HOLD_BIT_MASK) ) {	// should be the only one able to get here on this bucket.
+			uint32_t controls = controller->load(std::memory_order_consume);
+			if ( !(controls & HOLD_BIT_SET) ) {	// should be the only one able to get here on this bucket.
 				this->_status = -1;
 				return;
 			}
@@ -440,10 +443,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		void unlock_counter(uint32_t h_bucket) {
 			//
-			uint16_t *controllers = _region_C;
+			uint32_t *controllers = _region_C;
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
 			//
-			uint16_t controls = controller->load(std::memory_order_consume);
+			uint32_t controls = controller->load(std::memory_order_consume);
 			//
 			controller->store((controls & FREE_BIT_MASK),std::memory_order_release);
 		}
@@ -452,12 +455,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		/**
 		 * wait_if_unlock_bucket_counts
 		*/
-	uint32_t my_per_thread_count[256][2048];
 
-	uint32_t my_per_thread_even_odd[256][2];
-
-
-		bool wait_if_unlock_bucket_counts(uint32_t h_bucket,HHash **T_ref,uint32_t **buffer_ref,uint64_t **v_buffer_ref,uint8_t &which_table, int which_thread = -1) {
+		bool wait_if_unlock_bucket_counts(uint32_t h_bucket,HHash **T_ref,uint32_t **buffer_ref,uint64_t **v_buffer_ref,uint8_t &which_table) {
 			// ----
 			HHash *T = _T1;
 			uint32_t *buffer = _region_H_1;
@@ -468,13 +467,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			pair<uint8_t,uint8_t> counts = this->bucket_counts(h_bucket);
 			uint8_t count_1 = counts.first;		// favor the least full bucket ... but in case something doesn't move try both
 			uint8_t count_2 = counts.second;
-
-
-			if ( which_thread >= 0 ) {
-				my_per_thread_even_odd[which_thread][h_bucket%2]++;
-				my_per_thread_count[which_thread][h_bucket] = count_1 + count_2;
-			}
-
 
 			if ( (count_2 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
 				this->unlock_counter(h_bucket);
@@ -838,7 +830,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		uint64_t		 				*_region_V_2;
 		//
 		// ---- These two regions are interleaved in reality
-		uint16_t		 				*_region_C;
+		uint32_t		 				*_region_C;
 		// threads ...
 
 		atomic<uint32_t> 				*_random_gen_value;

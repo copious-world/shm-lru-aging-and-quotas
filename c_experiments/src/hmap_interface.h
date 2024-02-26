@@ -89,8 +89,8 @@ const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 
 const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
 const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
-const uint32_t HOLD_BIT_MASK = (0x1 << 7);
-const uint32_t FREE_BIT_MASK = ~HOLD_BIT_MASK;
+const uint32_t HOLD_BIT_SET = (0x1 << 7);
+const uint32_t FREE_BIT_MASK = ~HOLD_BIT_SET;
 const uint32_t LOW_WORD = 0xFFFF;
 
 
