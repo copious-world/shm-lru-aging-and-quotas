@@ -193,6 +193,28 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+		static uint32_t check_expected_hh_region_size(uint32_t els_per_tier) {
+			//
+			uint8_t sz = sizeof(HHash);
+			uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
+			auto max_count = els_per_tier/2;
+			//
+			uint32_t vh_region_size = (sizeof(hh_element)*max_count);
+			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
+			//
+			auto hv_offset_1 = header_size;
+			auto next_hh_offset = (hv_offset_1 + vh_region_size);  // now, the next array of buckets and values (controls are the very end for both)
+			//
+			uint32_t predict = next_hh_offset*2 + c_regions_size;
+			return predict;
+		} 
+
+
+
 		// clear
 		void clear(void) {
 			if ( _initializer ) {
@@ -228,23 +250,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				bits_for_test += this->_bits.size() + 4*sizeof(uint32_t);
 			}
 		}
-
-
-		static uint32_t check_expected_hh_region_size(uint32_t els_per_tier) {
-			//
-			uint8_t sz = sizeof(HHash);
-			uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
-			auto max_count = els_per_tier/2;
-			//
-			uint32_t vh_region_size = (sizeof(hh_element)*max_count);
-			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
-			//
-			auto hv_offset_1 = header_size;
-			auto next_hh_offset = (hv_offset_1 + vh_region_size);  // now, the next array of buckets and values (controls are the very end for both)
-			//
-			uint32_t predict = next_hh_offset*2 + c_regions_size;
-			return predict;
-		} 
 
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -700,7 +705,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		//  // caller will decrement count
 		//
 		uint32_t del_ref(uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end) {
-			hh_element *next = buffer + h_bucket; next = el_check_end(next,buffer,end);
+			hh_element *next = buffer + h_bucket; 
+			next = el_check_end(next,buffer,end);
 			uint32_t i = 0;
 			next = _succ_H_ref(next,i);  // i by ref
 			while ( next != nullptr ) {
@@ -729,11 +735,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			if ( v_passed == 0 ) return(false);  // zero indicates empty...
 			//
 			h_start = h_start % N;  // scale the hash .. make sure it indexes the array...
-			hh_element *hash_ref = (hh_element *)(buffer) + h_start;
+			hh_element *hash_ref = (hh_element *)(buffer) + h_start;  //  hash_ref aleady locked (by counter)
 			hh_element *v_ref = hash_ref;
 			hh_element *v_swap = nullptr;
-			hh_element *v_swap_base = nullptr;
-
+			hh_element *v_swap_bits = nullptr;
+			//
+			// v_ref comes back locked on the first free (also uncontended) hole.
 			uint32_t D = _circular_first_empty_from_ref(buffer, end_buffer, &v_ref);  // a distance starting from h (if wrapped, then past N)
 			if ( D == UINT32_MAX ) return(false); // the positions in the entire buffer are full.
 
@@ -758,23 +765,41 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				// Then swap with that position.
 
 				// found a position that can be moved... (offset from h <= d closer to the neighborhood)
-				v_swap_base = v_swap;
+				v_swap_bits = v_swap;
+				//
+				bool chk = false;
+				do  { chk = check_2lock(v_swap_bits,v_ref); } while ( !chk && !hopeless_2lock(v_swap_bits,v_ref) ); //
+				if ( hopeless_2lock(v_swap_bits,v_ref) ) {
+					free_lock(v_ref);
+					++v_ref;
+					D += _circular_first_empty_from_ref(buffer, end_buffer, &v_ref);
+					v_swap = v_ref;
+					continue;
+				}
+				//
 				uint32_t i = 0;
 				v_swap = _succ_H_ref(v_swap,i);				// i < j is the swap position in the neighborhood (for bits)
-				v_swap = el_check_end(v_swap,buffer,end_buffer);
 				if ( v_swap == nullptr ) return false;
+				v_swap = el_check_end(v_swap,buffer,end_buffer);
+				_swapper(v_swap_bits,v_swap,v_ref,i,j); // take care of the bits as well...
 				//
-				_swapper(v_swap_base,v_swap,v_ref,i,j); // take care of the bits as well...
+				free_lock(v_swap_bits);
+				free_lock(v_ref);
 				//
 				if ( v_swap > hash_ref ) {
 					D = (v_swap - hash_ref);
 				} else {
 					D = (end_buffer - hash_ref) + (v_swap - buffer);
 				}
+				v_ref = v_swap;   // where the hole is now
 			}
+
 			//
 			v_swap->_V = v_passed;
 			SET(hash_ref->c_bits,D);
+
+			free_lock(v_swap);
+			free_lock(v_ref);
 
 			return(true);
 		}
@@ -794,6 +819,25 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			_reset_bits(v_swap_base->c_bits,i,j);
 		}
 
+
+		bool check_lock([[maybe_unused]] hh_element *v) {
+			return true;
+		}
+
+		bool check_2lock([[maybe_unused]] hh_element *v1,[[maybe_unused]] hh_element *v2) {
+			return true;
+		}
+
+		void free_lock([[maybe_unused]] hh_element *v) {
+		}
+
+		bool hopeless_lock([[maybe_unused]] hh_element *v) {
+			return false;
+		}
+
+		bool hopeless_2lock([[maybe_unused]] hh_element *v1,[[maybe_unused]] hh_element *v2) {
+			return false;
+		}
 
 		/**
 		 *  _probe -- search for a free space within a bucket
@@ -815,9 +859,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			while ( vb_probe < end_buffer ) { // search forward to the end of the array (all the way even it its millions.)
 				uint64_t V = vb_probe->_V;
 				if ( V == 0 ) {
-					*h_ref_ref = vb_probe;
-					uint32_t dist_from_h = (uint32_t)(vb_probe - h_ref);
-					return dist_from_h;			// look no further
+					if ( check_lock(vb_probe) ) {
+						*h_ref_ref = vb_probe;
+						uint32_t dist_from_h = (uint32_t)(vb_probe - h_ref);
+						return dist_from_h;			// look no further
+					}
 				}
 				vb_probe++;
 			}
@@ -828,10 +874,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			while ( vb_probe < h_ref ) {
 				uint64_t V = vb_probe->_V;
 				if ( V == 0 ) {
-					uint32_t N = this->_max_n;
-					*h_ref_ref = vb_probe;
-					uint32_t dist_from_h = N + (uint32_t)(vb_probe - h_ref);	// (vb_end - h_ref) + (vb_probe - v_buffer) -> (vb_end  - v_buffer + vb_probe - h_ref)
-					return dist_from_h;	// look no further (notice quasi modular addition)
+					if ( check_lock(vb_probe) ) {
+						uint32_t N = this->_max_n;
+						*h_ref_ref = vb_probe;
+						uint32_t dist_from_h = N + (uint32_t)(vb_probe - h_ref);	// (vb_end - h_ref) + (vb_probe - v_buffer) -> (vb_end  - v_buffer + vb_probe - h_ref)
+						return dist_from_h;	// look no further (notice quasi modular addition)
+					}
 				}
 				vb_probe++;
 			}
@@ -859,10 +907,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			for ( uint32_t i = (K - 1); i > 0; --i ) {
 				v_swap++;
 				v_swap = el_check_end(v_swap,buffer,end);
-				uint32_t H = v_swap->c_bits; //[hi];   // CONTENTION
+				uint32_t H = v_swap->c_bits; // CONTENTION
 				if ( (H != 0) && (((uint32_t)countr_zero(H)) < i) ) {
 					*v_swap_ref = v_swap;
-					return (v_swap - v_swap_original);  // where the hole is in the neighborhood
+					if ( v_swap > v_swap_original ) {
+						return (v_swap - v_swap_original);  // where the hole is in the neighborhood
+					} else {
+						return (end - v_swap_original) + (v_swap - buffer);  // where the hole is in the neighborhood
+					}
 				}
 			}
 			return 0;

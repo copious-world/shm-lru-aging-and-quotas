@@ -71,7 +71,7 @@ using namespace node_shm;
 // ---- ---- ---- ---- ---- ---- ---- ----
 //
 
-static constexpr bool noisy_test = false;
+static constexpr bool noisy_test = true;
 
 
 // ---- ---- ---- ---- ---- ---- ---- ---
@@ -992,6 +992,8 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
 
   int status = 0;
 
+
+
   memset(my_zero_count,0,2048*256*sizeof(uint32_t));
 
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -1002,6 +1004,10 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
   uint32_t num_procs = 4;
   uint32_t els_per_tier = 1024;
   uint8_t num_tiers = 3;
+
+
+  cout << "test_hh_map_operation_initialization_linearization_many_buckets: # els: " << els_per_tier << endl;
+
 
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -1025,8 +1031,9 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
   key_t hh_key = hh_keys.front();
   uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
   uint32_t seg_sz = ssm->get_size(hh_key);
-  
-  if ( noisy_test ) cout << "seg_sz: " << seg_sz << endl;
+  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
+
+  if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
 
   uint8_t num_threads = 32;
   //
@@ -1252,7 +1259,7 @@ int main(int argc, char **argv) {
 		cout << argv[1] << endl;
 	}
 
-  butter_bug_test();
+  // butter_bug_test();
 
 
 

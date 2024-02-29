@@ -204,11 +204,11 @@ class SharedSegmentsManager : public SharedSegments {
 		int initialize_hmm_shm(key_t key,  bool am_initializer, uint32_t els_per_tier) {
 			int status = 0;
 			//
-			size_t hhash_header_allotment_sz = 2*sizeof(HHash);
-			size_t value_reagion_sz = sizeof(uint64_t)*els_per_tier;
-			size_t bucket_region_sz = sizeof(uint32_t)*els_per_tier;
-			size_t control_bits_sz = sizeof(atomic<uint32_t>)*els_per_tier;
-			size_t seg_size = hhash_header_allotment_sz + value_reagion_sz + bucket_region_sz + control_bits_sz;
+			// size_t hhash_header_allotment_sz = 2*sizeof(HHash);
+			// size_t value_reagion_sz = sizeof(uint64_t)*els_per_tier;
+			// size_t bucket_region_sz = sizeof(uint32_t)*els_per_tier;
+			// size_t control_bits_sz = sizeof(atomic<uint32_t>)*els_per_tier;
+			size_t seg_size = HH_map<>::check_expected_hh_region_size(els_per_tier);
 			//
 			if ( am_initializer ) {
 				status = _shm_creator(key,seg_size);
