@@ -509,7 +509,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			if ( wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&ends,which_table) ) {
 				//
 				uint64_t loaded_value = (((uint64_t)offset_value) << HALF) | el_key;
-				bool put_ok = put_hh_hash(T, h_bucket, loaded_value, buffer, ends);
+				bool put_ok = store_in_hash_bucket(T, h_bucket, loaded_value, buffer, ends);
 
 				if ( put_ok ) {
 					loaded_key = (((uint64_t)el_key) << HALF) | h_bucket; // LOADED
@@ -650,6 +650,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
+		inline hh_element *check_end(hh_element *ptr,hh_element *buffer,hh_element *end) {
+			if ( ptr >= end ) return buffer;
+			return ptr;
+		}
+
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
@@ -672,9 +677,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		hh_element *get_ref(uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end) {
 			//
 			hh_element *next = buffer + h_bucket;
+			next = check_end(next,buffer,end);
 			uint32_t i = 0;
 			next = _succ_H_ref(next,i);  // i by ref
 			while ( next != nullptr ) {
+				next = check_end(next,buffer,end);
 				if ( el_key == next->_kv.key ) {
 					return next;
 				}
@@ -688,11 +695,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// del_ref
 		//  // caller will decrement count
 		//
-		uint32_t del_ref(uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *ends) {
-			hh_element *next = buffer + h_bucket;
+		uint32_t del_ref(uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end) {
+			hh_element *next = buffer + h_bucket; next = check_end(next,buffer,end);
 			uint32_t i = 0;
 			next = _succ_H_ref(next,i);  // i by ref
 			while ( next != nullptr ) {
+				next = check_end(next,buffer,end);
 				if ( el_key == next->_kv.key ) {
 					auto H = next->c_bits;
 					if ( (next->_kv.value == 0) || !GET(H, i) ) return;
@@ -707,15 +715,15 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		// put_hh_hash
+		// store_in_hash_bucket
 		// Given a hash and a value, find a place for storing this pair
 		// (If the buffer is nearly full, this can take considerable time)
 		// Attempt to keep things organized in buckets, indexed by the hash module the number of elements
 		//
-		bool put_hh_hash(HHash *T, uint32_t h_start, uint64_t v_passed,const hh_element *buffer, const hh_element *end_buffer) {
+		bool store_in_hash_bucket(HHash *T, uint32_t h_start, uint64_t v_passed,const hh_element *buffer, const hh_element *end_buffer) {
 			//
 			uint32_t N = this->_max_n;
-			if ( (T->_count == N) || (v_passed == 0) ) return(false);  // FULL
+			if ( v_passed == 0 ) return(false);  // zero indicates empty...
 			//
 			h_start = h_start % N;  // scale the hash .. make sure it indexes the array...
 			hh_element *hash_ref = (hh_element *)(buffer) + h_start;
@@ -751,6 +759,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				v_swap_base = v_swap;
 				uint32_t i = 0;
 				v_swap = _succ_H_ref(v_swap,i);				// i < j is the swap position in the neighborhood (for bits)
+				v_swap = check_end(v_swap,buffer,end);
 				if ( v_swap == nullptr ) return false;
 				//
 				_swapper(v_swap_base,v_swap,v_ref,i,j); // take care of the bits as well...
@@ -847,7 +856,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				vswap = end_buffer - (K - beg + v_swap);
 			}
 			for ( uint32_t i = (K - 1); i > 0; --i ) {
-				v_swap++; if ( v_swap >= end_buffer ) v_swap = buffer;
+				v_swap++;
+				v_swap = check_end(v_swap,buffer,end);
 				uint32_t H = v_swap->c_bits; //[hi];   // CONTENTION
 				if ( (H != 0) && (((uint32_t)countr_zero(H)) < i) ) {
 					*v_swap_ref = v_swap;
