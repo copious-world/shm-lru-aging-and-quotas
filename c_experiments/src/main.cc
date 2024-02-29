@@ -21,6 +21,7 @@
 #include <future>
  
 #include <bitset>
+#include <bit>
 #include <random>
 
 //#include <linux/futex.h>
@@ -1027,7 +1028,7 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
   
   if ( noisy_test ) cout << "seg_sz: " << seg_sz << endl;
 
-  uint8_t num_threads = 16;
+  uint8_t num_threads = 32;
   //
   try {
     HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
@@ -1072,6 +1073,172 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
 
 
 
+void butter_bug_nothing() {
+
+  uint32_t nowish_1 = 0;
+  const auto right_now_1 = std::chrono::system_clock::now();
+  nowish_1 = std::chrono::system_clock::to_time_t(right_now_1);
+  // ----
+  uint32_t k = 0;
+  for ( uint32_t ii = 0; ii < 4000000000L; ii++ ) {
+    k++;
+  }
+  // ----
+  chrono::duration<double> dur_1 = chrono::system_clock::now() - right_now_1;
+  cout << "butter_bug test 1: " << k << "     " << dur_1.count() << " seconds" << endl;
+
+}
+
+
+void butter_bug_something() {
+
+  uint8_t butter_bug[10000];
+
+  uint32_t nowish_1 = 0;
+  const auto right_now_1 = std::chrono::system_clock::now();
+  nowish_1 = std::chrono::system_clock::to_time_t(right_now_1);
+  // ----
+  uint32_t k = 0;
+  for ( uint32_t ii = 0; ii < 4000000000L; ii++ ) {
+    k++;
+    butter_bug[k%10000] = k;
+  }
+  // ----
+  chrono::duration<double> dur_1 = chrono::system_clock::now() - right_now_1;
+  cout << "butter_bug test 2: " << butter_bug[k%10000] << "     " << dur_1.count() << " seconds" << endl;
+
+}
+
+
+
+void butter_bug_walk_only() {
+
+  uint8_t butter_bug[10000];
+
+  uint8_t *bb_tmp = butter_bug;
+  uint8_t *bb_end = butter_bug + 10000;
+  uint32_t nowish_2 = 0;
+  const auto right_now_2 = std::chrono::system_clock::now();
+  nowish_2 = std::chrono::system_clock::to_time_t(right_now_2);
+  // ----
+  for ( uint32_t ii = 0; ii < 4000000000L; ii++ ) {
+    bb_tmp++; if ( bb_tmp >= bb_end ) bb_tmp = butter_bug;
+  }
+  // ----
+  chrono::duration<double> dur_2 = chrono::system_clock::now() - right_now_2;
+  cout << "butter_bug test 3: " << (int)(bb_tmp - butter_bug) << "     " << dur_2.count() << " seconds" << endl;
+
+}
+
+
+
+void butter_bug_walk_n_store() {
+
+  uint8_t butter_bug[10000];
+
+  uint8_t *bb_tmp = butter_bug;
+  uint8_t *bb_end = butter_bug + 10000;
+  uint32_t nowish_2 = 0;
+  const auto right_now_2 = std::chrono::system_clock::now();
+  nowish_2 = std::chrono::system_clock::to_time_t(right_now_2);
+  // ----
+  for ( uint32_t ii = 0; ii < 4000000000L; ii++ ) {
+    *bb_tmp++ = ii; if ( bb_tmp >= bb_end ) bb_tmp = butter_bug;
+  }
+  // ----
+  chrono::duration<double> dur_2 = chrono::system_clock::now() - right_now_2;
+  cout << "butter_bug test walk_n_store: " << (int)(bb_tmp - butter_bug) << "     " << dur_2.count() << " seconds" << endl;
+
+}
+
+
+void butter_bug_walk_step_n_store() {
+
+  uint8_t butter_bug[10000];
+
+  uint8_t *bb_tmp = butter_bug;
+  uint8_t *bb_end = butter_bug + 10000;
+
+  uint32_t step = sizeof(uint32_t);
+
+  uint32_t nowish_2 = 0;
+  const auto right_now_2 = std::chrono::system_clock::now();
+  nowish_2 = std::chrono::system_clock::to_time_t(right_now_2);
+  // ----
+  for ( uint32_t ii = 0; ii < 4000000000L; ii++ ) {
+    *bb_tmp = ii; bb_tmp += step; if ( bb_tmp >= bb_end ) bb_tmp = butter_bug;
+  }
+  // ----
+  chrono::duration<double> dur_2 = chrono::system_clock::now() - right_now_2;
+  cout << "butter_bug test walk_step_n_store: " << (int)bb_tmp[0] << "     " << dur_2.count() << " seconds" << endl;
+
+}
+
+
+void butter_bug_walk_struct() {
+
+  uint8_t butter_bug[10000];
+  memset(butter_bug,0,10000);
+
+  hh_element *bb_tmp = (hh_element *)butter_bug;
+  hh_element *bb_end = (hh_element *)(butter_bug + 10000);
+
+  //uint32_t step = sizeof(uint32_t);
+
+  uint32_t nowish_2 = 0;
+  const auto right_now_2 = std::chrono::system_clock::now();
+  nowish_2 = std::chrono::system_clock::to_time_t(right_now_2);
+  // ----
+  for ( uint32_t ii = 0; ii < 4000000000L; ii++ ) {               // bb_tmp->key = ii;
+    bb_tmp++;  if ( bb_tmp >= bb_end ) bb_tmp = (hh_element *)butter_bug;
+  }
+  // ----
+  chrono::duration<double> dur_2 = chrono::system_clock::now() - right_now_2;
+  cout << "butter_bug test walk_struct: " << (int)bb_tmp->value << "     " << dur_2.count() << " seconds" << endl;
+
+}
+
+
+
+void butter_bug_walk_struct_n_store() {
+
+  uint8_t butter_bug[10000];
+
+  hh_element *bb_tmp = (hh_element *)butter_bug;
+  hh_element *bb_end = (hh_element *)(butter_bug + 10000) - 1;
+
+  //uint32_t step = sizeof(uint32_t);
+
+  uint32_t nowish_2 = 0;
+  const auto right_now_2 = std::chrono::system_clock::now();
+  nowish_2 = std::chrono::system_clock::to_time_t(right_now_2);
+  // ----
+  for ( uint32_t ii = 0; ii < 4000000000L; ii++ ) {               // bb_tmp->key = ii;
+    bb_tmp->key = ii;
+    bb_tmp++;
+    if ( bb_tmp >= bb_end ) bb_tmp = (hh_element *)butter_bug;
+  }
+  // ----
+  chrono::duration<double> dur_2 = chrono::system_clock::now() - right_now_2;
+  cout << "butter_bug test walk_struct_n_store: " << bb_tmp->key << "     " << dur_2.count() << " seconds" << endl;
+
+}
+
+
+
+void butter_bug_test() {
+  //
+  butter_bug_nothing();
+  butter_bug_something();
+  butter_bug_walk_only();
+  butter_bug_walk_n_store();
+  butter_bug_walk_step_n_store();
+  butter_bug_walk_struct();
+  butter_bug_walk_struct_n_store();
+  //
+}
+
+
 
 
 
@@ -1085,7 +1252,12 @@ int main(int argc, char **argv) {
 		cout << argv[1] << endl;
 	}
 
-  uint32_t nowish = 0; 
+  butter_bug_test();
+
+
+
+
+  uint32_t nowish = 0;
   const auto right_now = std::chrono::system_clock::now();
   nowish = std::chrono::system_clock::to_time_t(right_now);
 
@@ -1093,6 +1265,9 @@ int main(int argc, char **argv) {
 
   // ----
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
+
+
+
 
   // test 2
   auto start = chrono::system_clock::now();
@@ -1103,8 +1278,31 @@ int main(int argc, char **argv) {
 
     test_hh_map_operation_initialization_linearization_many_buckets();
 
-    const uint16_t my_uint = 1 << 7;
+
+    cout << "sizeof hh_element: " << sizeof(hh_element) << endl;
+
+    uint16_t my_uint = (1 << 7);
     cout << my_uint << " " << (HOLD_BIT_SET & my_uint) << "   "  << bitset<16>(HOLD_BIT_SET) << "   "  << bitset<16>(my_uint) << endl;
+
+    uint16_t a = (my_uint<<1);
+    uint16_t b = (my_uint>>1);
+    
+    cout << countr_zero(my_uint) << " " << countr_zero(a)<< " " << countr_zero(b) << endl;
+#ifdef FFS
+      cout << FFS(my_uint) << " " << FFS(a)<< " " << FFS(b) << endl;
+#endif
+
+    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
+        cout << "countr_zero( " << bitset<8>(i) << " ) = "
+              << countr_zero(i) << '\n';
+
+#ifdef FFS
+    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
+        cout << "countr_zero( " << bitset<8>(i) << " ) = "
+              << FFS(i) << '\n';
+#endif
+
+
 
     //test_sleep_methods();
 

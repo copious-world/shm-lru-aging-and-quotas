@@ -10,6 +10,7 @@
 #include <iostream>
 #include <sstream>
 
+#include <bit>
 
 using namespace std;
 
@@ -71,7 +72,7 @@ inline T CLZ(T x) {		// count leading zeros -- make sure it is not bigger than t
 	return(__builtin_clzl(x) % W);
 }
 
-#define FFS(x) (__builtin_ctzl(x))				// count trailing zeros (First Free Space in neighborhood)
+//#define FFS(x) (__builtin_ctzl(x))				// __builtin_ Count Trailing Zeros (First Free Space in neighborhood) Long
 #define FLS(x) WORD // (WORD - CLZ(x))			// number bits possible less leading zeros (limits the space of the neigborhood)
 #define GET(hh, i) ((hh) & (1L << (i)))			// ith bit returned   (hh for hash home)
 #define SET(hh, i) (hh = (hh) | (1L << (i)))	// or in ith bit (ith bit set - rest 0)
@@ -108,8 +109,7 @@ typedef struct HHASH {
 	uint32_t _max_n;			// max elements that can be in a container
 	uint32_t _control_bits;
 
-	uint32_t _H_Offset;
-	uint32_t _V_Offset;
+	uint32_t _HV_Offset;
 	uint32_t _C_Offset;
 
 
@@ -131,7 +131,7 @@ typedef struct HHASH {
 
 class HMap_interface {
 	public:
-		virtual uint64_t	store(uint32_t hash_bucket, uint32_t el_key, uint32_t v_value) = 0;
+		virtual uint64_t	update(uint32_t hash_bucket, uint32_t el_key, uint32_t v_value) = 0;
 		virtual uint32_t	get(uint64_t key) = 0;
 		virtual uint32_t	get(uint32_t key,uint32_t bucket) = 0;
 		virtual uint8_t		get_bucket(uint32_t h, uint32_t xs[32]) = 0;
