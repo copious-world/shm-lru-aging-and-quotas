@@ -811,13 +811,13 @@ int done_cntr = 0;
 
 void hash_counter_bucket_access(void) {
   	HHash *T = nullptr;
-		uint32_t *buffer = nullptr;
-		uint64_t *v_buffer = nullptr;
+		hh_element *buffer = nullptr;
+		hh_element *end = nullptr;
 		uint8_t which_table = 0;
-    //
+    // 
     for ( uint16_t j =  0; j < 1000; j++ ) {
       if ( sg_share_test_hh ) {
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(20,&T,&buffer,&v_buffer,which_table) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(20,&T,&buffer,&end,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
@@ -926,8 +926,8 @@ uint32_t my_false_count[256][2048];
 
 void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,int thread_num) {
   	HHash *T = nullptr;
-		uint32_t *buffer = nullptr;
-		uint64_t *v_buffer = nullptr;
+		hh_element *buffer = nullptr;
+		hh_element *end = nullptr;
 		uint8_t which_table = 0;
     //
     std::random_device rd;  // a seed source for the random number engine
@@ -939,7 +939,7 @@ void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,int th
         uint32_t h_bucket = ud(gen_v);
         my_zero_count[thread_num][h_bucket]++;
         //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&v_buffer,which_table) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&end,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
@@ -956,8 +956,8 @@ void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,int th
 
 void hash_counter_bucket_access_many_buckets(uint32_t num_elements,int thread_num) {
   	HHash *T = nullptr;
-		uint32_t *buffer = nullptr;
-		uint64_t *v_buffer = nullptr;
+		hh_element *buffer = nullptr;
+		hh_element *end = nullptr;
 		uint8_t which_table = 0;
     //
     uint32_t  bucket_counter = 0;
@@ -968,7 +968,7 @@ void hash_counter_bucket_access_many_buckets(uint32_t num_elements,int thread_nu
         bucket_counter = ((bucket_counter + skip) >= num_elements) ? 0 : bucket_counter;
         uint32_t h_bucket = bucket_counter += skip;
         //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&v_buffer,which_table) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&end,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
@@ -1194,7 +1194,7 @@ void butter_bug_walk_struct() {
   }
   // ----
   chrono::duration<double> dur_2 = chrono::system_clock::now() - right_now_2;
-  cout << "butter_bug test walk_struct: " << (int)bb_tmp->value << "     " << dur_2.count() << " seconds" << endl;
+  cout << "butter_bug test walk_struct: " << (int)bb_tmp->_kv.key << "     " << dur_2.count() << " seconds" << endl;
 
 }
 
@@ -1214,13 +1214,13 @@ void butter_bug_walk_struct_n_store() {
   nowish_2 = std::chrono::system_clock::to_time_t(right_now_2);
   // ----
   for ( uint32_t ii = 0; ii < 4000000000L; ii++ ) {               // bb_tmp->key = ii;
-    bb_tmp->key = ii;
+    bb_tmp->_kv.key = ii;
     bb_tmp++;
     if ( bb_tmp >= bb_end ) bb_tmp = (hh_element *)butter_bug;
   }
   // ----
   chrono::duration<double> dur_2 = chrono::system_clock::now() - right_now_2;
-  cout << "butter_bug test walk_struct_n_store: " << bb_tmp->key << "     " << dur_2.count() << " seconds" << endl;
+  cout << "butter_bug test walk_struct_n_store: " << bb_tmp->_kv.key << "     " << dur_2.count() << " seconds" << endl;
 
 }
 

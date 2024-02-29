@@ -212,6 +212,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			return false;
 		}
 
+
+		inline hh_element *el_check_end(hh_element *ptr, hh_element *buffer, hh_element *end) {
+			if ( ptr >= end ) return buffer;
+			return ptr;
+		}
+
+
 		// 4*(this->_bits.size() + 4*sizeof(uint32_t))
 		void set_random_bits(void *shared_bit_region) {
 			uint32_t *bits_for_test = (uint32_t *)(shared_bit_region);
@@ -410,12 +417,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			if ( which_table == 0 ) {
 				counter = controls & COUNT_MASK;
 				counter--;
-				counter = min(counter,0);
+				counter = min(counter,(uint8_t)0);
 				controls = (controls & ~COUNT_MASK) | (COUNT_MASK & counter);
 			} else {
 				counter = (controls>>EIGHTH) & COUNT_MASK;
 				counter--;
-				counter = min(counter,0);
+				counter = min(counter,(uint8_t)0);
 				uint32_t update = (counter << EIGHTH) & HI_COUNT_MASK;
 				controls = (controls & ~HI_COUNT_MASK) | update;
 			}
@@ -443,7 +450,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * wait_if_unlock_bucket_counts
 		*/
 
-		bool wait_if_unlock_bucket_counts(uint32_t h_bucket,HHash **T_ref,uint32_t **buffer_ref,uint64_t **end_buffer_ref,uint8_t &which_table) {
+		bool wait_if_unlock_bucket_counts(uint32_t h_bucket,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
 			// ----
 			HHash *T = _T1;
 			hh_element *buffer		= _region_HV_1;
@@ -509,7 +516,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			if ( wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&ends,which_table) ) {
 				//
 				uint64_t loaded_value = (((uint64_t)offset_value) << HALF) | el_key;
-				bool put_ok = store_in_hash_bucket(T, h_bucket, loaded_value, buffer, ends);
+				bool put_ok = store_in_hash_bucket(this->_max_n, h_bucket, loaded_value, buffer, ends);
 
 				if ( put_ok ) {
 					loaded_key = (((uint64_t)el_key) << HALF) | h_bucket; // LOADED
@@ -566,7 +573,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint32_t el_key = (uint32_t)((key >> HALF) & HASH_MASK);  // just unloads it (was index)
 			uint32_t hash = (uint32_t)(key & HASH_MASK);
 			//
-			return get(uint32_t bucket,uint32_t el_key);
+			return get(hash,el_key);
 		}
 
 
@@ -604,7 +611,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			hh_element *end = (selector ? _region_HV_1_end : _region_HV_2_end);
 			//
 			this->bucket_lock(h_bucket);
-			uint32_t i = del_ref(h_bucket, el_key, buffer, ends);
+			uint32_t i = del_ref(h_bucket, el_key, buffer, end);
 			if ( i == UINT32_MAX ) {
 				this->unlock_counter(h_bucket);
 			} else {
@@ -624,16 +631,17 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint8_t selector = ((h_bucket & HH_SELECT_BIT) == 0) ? 0 : 1;
 			//
 			hh_element *buffer = (selector ? _region_HV_1 : _region_HV_2);
-			hh_element *end = (selector ? _region_HV_1_end : _region_HV_2_end);
-			//
 			hh_element *next = buffer + h_bucket;
+			//
 			uint8_t count = 0;
 			uint32_t i = 0;
 			next = _succ_H_ref(next,i);
 			while ( next != nullptr ) {
 				xs[count++] = next->_kv.value;
-				next = _succ_H_ref(next,(i + 1));
+				i++;
+				next = _succ_H_ref(next,i);
 			}
+			//
 			return count;	// no value  (values will always be positive, perhaps a hash or'ed onto a 0 value)
 		}
 
@@ -650,10 +658,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		inline hh_element *check_end(hh_element *ptr,hh_element *buffer,hh_element *end) {
-			if ( ptr >= end ) return buffer;
-			return ptr;
-		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -676,14 +680,15 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		hh_element *get_ref(uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end) {
 			hh_element *next = buffer + h_bucket;
-			next = check_end(next,buffer,end);
+			next = el_check_end(next,buffer,end);
 			uint32_t i = 0;
 			next = _succ_H_ref(next,i);  // i by ref
 			while ( next != nullptr ) {
-				next = check_end(next,buffer,end);
+				next = el_check_end(next,buffer,end);
 				if ( el_key == next->_kv.key ) {
 					return next;
 				}
+				i++;
 				next = _succ_H_ref(next,i);  // i by ref
 			}
 			return nullptr;
@@ -695,20 +700,20 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		//  // caller will decrement count
 		//
 		uint32_t del_ref(uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end) {
-			hh_element *next = buffer + h_bucket; next = check_end(next,buffer,end);
+			hh_element *next = buffer + h_bucket; next = el_check_end(next,buffer,end);
 			uint32_t i = 0;
 			next = _succ_H_ref(next,i);  // i by ref
 			while ( next != nullptr ) {
-				next = check_end(next,buffer,end);
+				next = el_check_end(next,buffer,end);
 				if ( el_key == next->_kv.key ) {
 					auto H = next->c_bits;
-					if ( (next->_kv.value == 0) || !GET(H, i) ) return;
+					if ( (next->_kv.value == 0) || !GET(H, i) ) return UINT32_MAX;
 					next->_V = 0;
 					UNSET(H,i);
 					next->c_bits = H;
 					return i;
 				}
-				next = _succ_H_ref(next,i);  // i by ref
+				next = _succ_H_ref(next,++i);  // i by ref
 			}
 			return UINT32_MAX;
 		}
@@ -719,9 +724,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// (If the buffer is nearly full, this can take considerable time)
 		// Attempt to keep things organized in buckets, indexed by the hash module the number of elements
 		//
-		bool store_in_hash_bucket(HHash *T, uint32_t h_start, uint64_t v_passed,const hh_element *buffer, const hh_element *end_buffer) {
+		bool store_in_hash_bucket(uint32_t N, uint32_t h_start, uint64_t v_passed,hh_element *buffer,hh_element *end_buffer) {
 			//
-			uint32_t N = this->_max_n;
 			if ( v_passed == 0 ) return(false);  // zero indicates empty...
 			//
 			h_start = h_start % N;  // scale the hash .. make sure it indexes the array...
@@ -738,7 +742,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			// if the hole is father way from h_start than the neighborhood... then hopscotch
 			//
-			auto h_d = 0;
 			v_swap = v_ref;
 			while ( D >= NEIGHBORHOOD ) { // D is how far. If (D + h_start) > N, v_ref will be < hash_ref ... (v_ref < hash_ref)
 				//
@@ -758,7 +761,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				v_swap_base = v_swap;
 				uint32_t i = 0;
 				v_swap = _succ_H_ref(v_swap,i);				// i < j is the swap position in the neighborhood (for bits)
-				v_swap = check_end(v_swap,buffer,end);
+				v_swap = el_check_end(v_swap,buffer,end_buffer);
 				if ( v_swap == nullptr ) return false;
 				//
 				_swapper(v_swap_base,v_swap,v_ref,i,j); // take care of the bits as well...
@@ -803,7 +806,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * 
 		 * @returns {uint32_t} distance of the bucket from h
 		*/
-		uint32_t _circular_first_empty_from_ref(const hh_element *buffer, const hh_element *end_buffer, hh_element **h_ref_ref) {   // value probe ... looking for zero
+		uint32_t _circular_first_empty_from_ref(hh_element *buffer, hh_element *end_buffer, hh_element **h_ref_ref) {   // value probe ... looking for zero
 			// // 
 			// search in the bucket
 			hh_element *h_ref = *h_ref_ref;
@@ -821,7 +824,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			// WRAP CIRCULAR BUFFER
 			// look for anything starting at the beginning of the segment
 			// wrap... start searching from the start of all data...
-			vb_probe = v_buffer;
+			vb_probe = buffer;
 			while ( vb_probe < h_ref ) {
 				uint64_t V = vb_probe->_V;
 				if ( V == 0 ) {
@@ -850,12 +853,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			hh_element *v_swap = *v_swap_ref;
 			hh_element *v_swap_original = v_swap;
 			v_swap -= K;
-			if ( v_swap < beg ) {
-				v_swap = end - (K - beg + v_swap);
+			if ( v_swap < buffer ) {
+				v_swap = end - (buffer - v_swap);
 			}
 			for ( uint32_t i = (K - 1); i > 0; --i ) {
 				v_swap++;
-				v_swap = check_end(v_swap,buffer,end);
+				v_swap = el_check_end(v_swap,buffer,end);
 				uint32_t H = v_swap->c_bits; //[hi];   // CONTENTION
 				if ( (H != 0) && (((uint32_t)countr_zero(H)) < i) ) {
 					*v_swap_ref = v_swap;
@@ -870,6 +873,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+	public:
 
 		// ---- ---- ---- STATUS
 
