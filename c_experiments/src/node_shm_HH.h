@@ -675,7 +675,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// ----
 
 		hh_element *get_ref(uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end) {
-			//
 			hh_element *next = buffer + h_bucket;
 			next = check_end(next,buffer,end);
 			uint32_t i = 0;
@@ -771,7 +770,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				}
 			}
 			//
-			//
 			v_swap->_V = v_passed;
 			SET(hash_ref->c_bits,D);
 
@@ -846,14 +844,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * If h_d is empty, no one stored a value with this bucket as the anchor of an neighborhood.
 		*/
 
-		uint32_t _hop_scotch_refs(hh_element **v_swap_ref, hh_element *buffer, hh_element *end_buffer) {  // return an index
+		uint32_t _hop_scotch_refs(hh_element **v_swap_ref, hh_element *buffer, hh_element *end) {  // return an index
 			uint32_t K = NEIGHBORHOOD;
 			//
 			hh_element *v_swap = *v_swap_ref;
 			hh_element *v_swap_original = v_swap;
 			v_swap -= K;
 			if ( v_swap < beg ) {
-				vswap = end_buffer - (K - beg + v_swap);
+				v_swap = end - (K - beg + v_swap);
 			}
 			for ( uint32_t i = (K - 1); i > 0; --i ) {
 				v_swap++;
