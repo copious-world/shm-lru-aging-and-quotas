@@ -893,6 +893,15 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * If something within K (for swapping) can be found return it, otherwise 0 (indicates frozen)
 		 * 
 		 * If h_d is empty, no one stored a value with this bucket as the anchor of an neighborhood.
+		 * 
+		 * Don't forget that all the positions up to v_swap_original are in use, and belong to some 
+		 * bucket or other. If te c_bits of a position are zero, then the position is owned by another one.
+		 * The hop-scotch tries to get as close to the original hash bucke as possible. So, it starts as
+		 * close to the beginning of the buffer as it can. That is, it goes the length of a bucket less than
+		 * its position to check to see if the position owns the bucket it is in and if it has enough position
+		 * to make swapping possible. The position a full neighborhood away will may own just a few positions 
+		 * for swapping. But, in order to get a big a hop as possible, the positions closer to the hole (from probing)
+		 * need to have more positions for swapping (or else the number of hops may become quite large).
 		*/
 
 		uint32_t _hop_scotch_refs(hh_element **v_swap_ref, hh_element *buffer, hh_element *end) {  // return an index
@@ -908,6 +917,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				v_swap++;
 				v_swap = el_check_end(v_swap,buffer,end);
 				uint32_t H = v_swap->c_bits; // CONTENTION
+				// if H == 0, then the position does not own the contents of the position.
+				//
 				if ( (H != 0) && (((uint32_t)countr_zero(H)) < i) ) {
 					*v_swap_ref = v_swap;
 					if ( v_swap > v_swap_original ) {

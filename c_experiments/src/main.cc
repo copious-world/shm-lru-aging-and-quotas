@@ -71,7 +71,7 @@ using namespace node_shm;
 // ---- ---- ---- ---- ---- ---- ---- ----
 //
 
-static constexpr bool noisy_test = true;
+static constexpr bool noisy_test = false;
 
 
 // ---- ---- ---- ---- ---- ---- ---- ---
@@ -1246,6 +1246,61 @@ void butter_bug_test() {
 }
 
 
+void calc_prob_limis_experiment(uint64_t tab_sz,uint64_t num_keys) {
+  double alpha = (double)(num_keys)/tab_sz;
+  double items_per_bucket = 1.0 + (exp(2*alpha) - 1 - 2*alpha)/4;
+  cout << "items_per_bucket: " << items_per_bucket << endl;
+}
+
+
+
+void calc_prob_limis() {
+  uint64_t tab_sz = 4000000000L;     // m
+  uint64_t num_keys = 400000000L; //3000000000L;   // n
+  calc_prob_limis_experiment(tab_sz,num_keys);
+
+  tab_sz = 4000000L;     // m
+  num_keys = 3000000L; //3000000000L;   // n
+  calc_prob_limis_experiment(tab_sz,num_keys);
+
+  tab_sz = 4000000L;     // m
+  num_keys = 1000000L; //3000000000L;   // n
+  calc_prob_limis_experiment(tab_sz,num_keys);
+
+
+  tab_sz = 4000000L;     // m
+  num_keys = 4000000L; //3000000000L;   // n
+  calc_prob_limis_experiment(tab_sz,num_keys);
+
+
+  cout << endl;
+  cout << "Probability of probe length > 32" << endl;
+
+  double alpha = (double)(4000000000L)/4000000000L;
+  cout << "Alpha = " << alpha << " -> "  << pow(alpha,32) << endl;
+
+  alpha = (double)(3500000L)/4000000L;
+  cout << "Alpha = " << alpha << " -> "  << pow(alpha,32) << endl;
+  
+  alpha = (double)(3000000L)/4000000L;
+  cout << "Alpha = " << alpha << " -> "  << pow(alpha,32) << endl;
+
+  alpha = (double)(2000000L)/4000000L;
+  cout << "Alpha = " << alpha << " -> "  << pow(alpha,32) << endl;
+
+  alpha = (double)(1000000L)/4000000L;
+  cout << "Alpha = " << alpha << " -> "  << pow(alpha,32) << endl;
+
+  cout << endl;
+  cout << "Probability of more than 32 keys in a bucket is 1/factorial_32:" << endl;
+
+  double factorial_32 = 1.0;
+  for( int i = 1; i <= 32; i++ ) factorial_32 = factorial_32*i;
+  cout << "factorial_32: " << factorial_32 <<  endl;
+  cout << "1/factorial_32: " << 1.0/factorial_32 << endl;
+  cout << endl;
+
+}
 
 
 
@@ -1261,7 +1316,7 @@ int main(int argc, char **argv) {
 
   // butter_bug_test();
 
-
+  calc_prob_limis();
 
 
   uint32_t nowish = 0;
