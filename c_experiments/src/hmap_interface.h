@@ -83,22 +83,51 @@ const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 #define BitsPerByte 8
 #define HALF (sizeof(uint32_t)*BitsPerByte)  // should be 32
 #define QUARTER (sizeof(uint16_t)*BitsPerByte) // should be 16
-#define EIGHTH (sizeof(uint8_t)*BitsPerByte) // should be 16
+#define EIGHTH (sizeof(uint8_t)*BitsPerByte) // should be 8
 //
 
 
 
+const uint32_t DOUBLE_COUNT_MASK_BASE = 0xFF;  // up to (256-1)
+const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE<<16);
+
 const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
 const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
-const uint32_t HOLD_BIT_SET = (0x1 << 7);
+//
+const uint32_t HOLD_BIT_SET = (0x1 << 24);
 const uint32_t FREE_BIT_MASK = ~HOLD_BIT_SET;
 const uint32_t LOW_WORD = 0xFFFF;
+
+const uint32_t HOLD_BIT_ODD_SLICE = (0x1 << (7+8));
+const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
+
+const uint32_t HOLD_BIT_EVEN_SLICE = (0x1 << (7));
+const uint32_t FREE_BIT_EVEN_SLICE_MASK = ~HOLD_BIT_EVEN_SLICE;
 
 
 const uint32_t HH_SELECT_BIT = (1 << 24);
 const uint32_t HH_SELECT_BIT_MASK = (~HH_SELECT_BIT);
 const uint64_t HH_SELECT_BIT64 = (1 << 24);
 const uint64_t HH_SELECT_BIT_MASK64 = (~HH_SELECT_BIT64);
+
+
+typedef struct BucketSliceStats {
+	uint8_t			count	: 5;
+	uint8_t			busy	: 1;
+	uint8_t			mod		: 1;
+	uint8_t			memb	: 1;
+} buckets;
+
+
+typedef struct ControlBits {
+	buckets			_even;
+	buckets			_odd;
+	//
+	uint8_t			busy	: 1;
+	uint8_t			mod		: 1;
+	uint8_t			count	: 6; // shared count
+	uint8_t			rest;   // some of this has to do with the cache line...
+} control_bits;
 
 
 

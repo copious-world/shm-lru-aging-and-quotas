@@ -22,6 +22,7 @@
  
 #include <bitset>
 #include <bit>
+#include <cstdint>
 #include <random>
 
 //#include <linux/futex.h>
@@ -821,7 +822,7 @@ void hash_counter_bucket_access(void) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->bucket_count_incr(20,which_table);
+          sg_share_test_hh->slice_bucket_count_incr(20,which_table);
         }
       }
     }
@@ -901,8 +902,10 @@ void test_hh_map_operation_initialization_linearization() {
     }
 
     if ( noisy_test ) {
-      pair<uint8_t,uint8_t> counts = sg_share_test_hh->bucket_counts(20);
-      cout << "counts: " << (int)counts.first << " :: " << (int)counts.second << endl;
+        uint8_t count1;
+        uint8_t count2;
+        sg_share_test_hh->bucket_counts(20,count1,count2);
+        cout << "counts: " << (int)count1 << " :: " << (int)count2 << endl;
     }
 
   } catch ( const char *err ) {
@@ -943,7 +946,7 @@ void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,int th
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->bucket_count_incr(h_bucket,which_table);
+          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table);
         } else {
           my_false_count[thread_num][h_bucket]++;
         }
@@ -972,7 +975,7 @@ void hash_counter_bucket_access_many_buckets(uint32_t num_elements,int thread_nu
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->bucket_count_incr(h_bucket,which_table);
+          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table);
         } else {
           my_false_count[thread_num][h_bucket]++;
         }
@@ -1063,8 +1066,10 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
     if ( noisy_test ) {
       uint32_t nn = els_per_tier/2;
       for ( uint32_t i = 0; i < nn; i++ ) {
-        pair<uint8_t,uint8_t> counts = sg_share_test_hh->bucket_counts(i);
-        cout << "counts: " << (int)counts.first << " :: " << (int)counts.second << endl;
+        uint8_t count1;
+        uint8_t count2;
+        sg_share_test_hh->bucket_counts(i,count1,count2);
+        cout << "counts: " << (int)count1 << " :: " << (int)count2 << endl;
       }
     }
 
@@ -1299,6 +1304,88 @@ void calc_prob_limis() {
   cout << "factorial_32: " << factorial_32 <<  endl;
   cout << "1/factorial_32: " << 1.0/factorial_32 << endl;
   cout << endl;
+
+
+
+
+ 
+  struct S
+  {
+      // will usually occupy 2 bytes:
+      unsigned char b1 : 3; // 1st 3 bits (in 1st byte) are b1
+      unsigned char    : 2; // next 2 bits (in 1st byte) are blocked out as unused
+      unsigned char b2 : 6; // 6 bits for b2 - doesn't fit into the 1st byte => starts a 2nd
+      unsigned char b3 : 2; // 2 bits for b3 - next (and final) bits in the 2nd byte
+  };
+  
+
+    std::cout << sizeof(S) << '\n'; // usually prints 2
+ 
+    S s;
+    // set distinguishable field values
+    s.b1 = 0b111;
+    s.b2 = 0b101111;
+    s.b3 = 0b11;
+ 
+    // show layout of fields in S
+    auto i = (uint16_t)(*((uint16_t *)(&s)));
+    // usually prints 1110000011110111
+    // breakdown is:  \_/\/\_/\____/\/
+    //                 b1 u a   b2  b3
+    // where "u" marks the unused :2 specified in the struct, and
+    // "a" marks compiler-added padding to byte-align the next field.
+    // Byte-alignment is happening because b2's type is declared unsigned char;
+    // if b2 were declared uint16_t there would be no "a", b2 would abut "u".
+    for (auto b = i; b; b >>= 1) // print LSB-first
+        std::cout << (b & 1);
+    std::cout << '\n';
+
+    int n = sizeof(S)*8;
+    for (int b = 0; b < n; b++ ) // print LSB-first
+        std::cout << ((((0x0001 << b) & i) >> b) & 0x1);
+    std::cout << '\n';
+    cout << bitset<16>{i} << endl;
+
+
+  control_bits cb;
+
+  cb.busy = 1;
+  cb._even.busy = 0;
+  cb._even.count = 7;
+  cb._odd.count = 15;
+  cb._odd.busy = 1;
+
+
+  cout << "control_bits" << endl;
+
+  cout << sizeof(cb) << endl;
+  //
+  auto j =  ((uint32_t *)(&cb));
+  control_bits *ref = (control_bits *)j;
+
+  cout << bitset<32>{*j} << endl;
+
+  ref->busy = 0;
+  cout << bitset<32>{*j} << endl;
+
+  ref->_even.count++;
+  cout << bitset<32>{*j} << endl;
+
+  ref->_even.count--;
+  cout << bitset<32>{*j} << endl;
+
+  ref->count = 63;
+  ref->busy = 1;
+  ref->mod = 1;
+  ref->_even.count = 31;
+  ref->_even.busy = 1;
+  ref->_even.memb = 1;
+  ref->_even.mod = 1;
+
+  cout << bitset<32>{*j} << endl;
+
+
+  cout << "<< control_bits" << endl;
 
 }
 
