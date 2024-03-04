@@ -422,10 +422,19 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint32_t controls = controller->load(std::memory_order_consume);
 			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
 			//
-			while ( !controller->compare_exchange_weak(controls,(controls | vLOCK_BIT),std::memory_order_relaxed) && !(controls & vLOCK_BIT) );
+			while ( !controller->compare_exchange_weak(controls,(controls | vLOCK_BIT),std::memory_order_acq_rel) && !(controls & vLOCK_BIT) );
 			//
 			return controller;
 		}
+
+
+		atomic<uint32_t> *slice_bucket_set_bit(atomic<uint32_t> *controller,uint8_t which_table) {
+			uint32_t controls = controller->load(std::memory_order_consume);
+			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
+			controller->store((controls | vLOCK_BIT));
+			return controller;
+		}
+
 
 
 		atomic<uint32_t> * slice_bucket_lock(uint32_t h_bucket,uint8_t which_table) {   // where are the bucket counts??
@@ -557,23 +566,40 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		/**
 		 * bucket_lock
 		*/
+
+
 		atomic<uint32_t> * bucket_lock(uint32_t h_bucket,uint32_t &ret_control) {   // where are the bucket counts??
 			uint32_t *controllers = _region_C;
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			uint32_t controls = controller->load(std::memory_order_consume);
+			return bucket_lock(controller,ret_control);
+		}
+
+		atomic<uint32_t> * bucket_lock(atomic<uint32_t> *controller,uint32_t &ret_control,uint8_t thread_id) {   // where are the bucket counts??
+			uint32_t controls = controller->load(std::memory_order_acquire);
 			//
 			do {
 				while ( controls & HOLD_BIT_SET ) {  // while some other process is using this count bucket
-					controls = controller->load(std::memory_order_consume);
+					controls = controller->load(std::memory_order_acquire);
 				}
-				//
-				while ( !controller->compare_exchange_weak(controls,(controls | HOLD_BIT_SET)) && !(controls & HOLD_BIT_SET) );
-
-			 } while ( controls & HOLD_BIT_SET );
+				uint32_t lock_on_controls = (controls | HOLD_BIT_SET);
+				lock_on_controls = stamp_thread_id(lock_on_controls,thread_id);  // make sure that this is the thread that sets the bit high
+				controls = stamp_thread_id(controls,UINT8_MAX);
+				controls = controls & FREE_BIT_MASK;   // this should not change it...
+				// returns false if the value is stable or if something went wrong
+				while ( !(controller->compare_exchange_weak(controls,lock_on_controls,std::memory_order_acq_rel,std::memory_order_relaxed)) && !(controls & HOLD_BIT_SET) );
+			} while ( !(check_thread_id(controls,lock_on_controls)) );
 			//
+			// at this point this thread should own the bucket...
 			ret_control = controls;
 			return controller;
 		}
+
+
+
+		void store_controls(controller,controls) {
+			controller->store((controls & FREE_BIT_MASK),std::memory_order_release);
+		}
+
 
 
 		// shared bucket count for both segments....
@@ -606,7 +632,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		void bucket_count_incr(atomic<uint32_t> *controller) {
 			if ( controller == nullptr ) return;
 			//
-			uint32_t controls = controller->load(std::memory_order_consume);
+			uint32_t controls = controller->load(std::memory_order_acquire);
 			if ( !(controls & HOLD_BIT_SET) ) {	// should be the only one able to get here on this bucket.
 				this->_status = -1;
 				return;
@@ -619,7 +645,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				controls = (controls & ~DOUBLE_COUNT_MASK) | update;
 			}
 			//
-			controller->store((controls & FREE_BIT_MASK),std::memory_order_release);
+			store_controls(controller,controls);
 		}
 
 

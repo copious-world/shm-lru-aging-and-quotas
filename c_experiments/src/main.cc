@@ -32,9 +32,16 @@
 #include <sys/ipc.h>
 
 
+static constexpr bool noisy_test = false;
+static constexpr uint8_t THREAD_COUNT = 32;
+
 using namespace std;
 using namespace chrono;
 using namespace literals;
+
+
+// ---- ---- ---- ---- ---- ---- ---- ----
+//
 
 
 // Experiment with atomics for completing hash table operations.
@@ -68,11 +75,6 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 using namespace node_shm;
 
 
-
-// ---- ---- ---- ---- ---- ---- ---- ----
-//
-
-static constexpr bool noisy_test = true;
 
 
 // ---- ---- ---- ---- ---- ---- ---- ---
@@ -1037,7 +1039,7 @@ void hash_counter_bucket_access_many_buckets_shared_incr(uint32_t num_elements,[
 
           atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,count1,count2);
           if ( ui != nullptr ) {
-            sg_share_test_hh->slice_bucket_simple_lock(ui,j%2);
+            sg_share_test_hh->slice_bucket_set_bit(ui,j%2);
             //
             int i = 0; while ( i < 100 ) i++;
             //
@@ -1099,7 +1101,7 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
 
   if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
 
-  uint8_t num_threads = 32;
+  uint8_t num_threads = THREAD_COUNT;
   //
   try {
     HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
