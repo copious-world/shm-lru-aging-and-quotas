@@ -87,16 +87,19 @@ const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 //
 
 
+const uint32_t LOW_WORD = 0xFFFF;
 
-const uint32_t DOUBLE_COUNT_MASK_BASE = 0xFF;  // up to (256-1)
+
+// HH control buckets
+
+const uint32_t DOUBLE_COUNT_MASK_BASE = 0x7F;  // up to (256-1)
 const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE<<16);
+const uint32_t HOLD_BIT_SET = (0x1 << 24);
+const uint32_t FREE_BIT_MASK = ~HOLD_BIT_SET;
 
 const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
 const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
 //
-const uint32_t HOLD_BIT_SET = (0x1 << 24);
-const uint32_t FREE_BIT_MASK = ~HOLD_BIT_SET;
-const uint32_t LOW_WORD = 0xFFFF;
 
 const uint32_t HOLD_BIT_ODD_SLICE = (0x1 << (7+8));
 const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
@@ -104,6 +107,8 @@ const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
 const uint32_t HOLD_BIT_EVEN_SLICE = (0x1 << (7));
 const uint32_t FREE_BIT_EVEN_SLICE_MASK = ~HOLD_BIT_EVEN_SLICE;
 
+
+// select bits for the key
 
 const uint32_t HH_SELECT_BIT = (1 << 24);
 const uint32_t HH_SELECT_BIT_MASK = (~HH_SELECT_BIT);

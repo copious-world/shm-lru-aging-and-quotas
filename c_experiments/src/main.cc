@@ -72,7 +72,7 @@ using namespace node_shm;
 // ---- ---- ---- ---- ---- ---- ---- ----
 //
 
-static constexpr bool noisy_test = false;
+static constexpr bool noisy_test = true;
 
 
 // ---- ---- ---- ---- ---- ---- ---- ---
@@ -987,6 +987,67 @@ void hash_counter_bucket_access_many_buckets(uint32_t num_elements,int thread_nu
 
 
 
+void hash_counter_bucket_access_many_buckets_primitive(uint32_t num_elements,[[maybe_unused]] int thread_num) {
+  	// HHash *T = nullptr;
+		// hh_element *buffer = nullptr;
+		// hh_element *end = nullptr;
+		//uint8_t which_table = 0;
+    //
+    uint32_t  bucket_counter = 0;
+    uint8_t skip = 1;
+    if ( sg_share_test_hh ) {
+      for ( uint32_t j =  0; j < 15000; j++ ) {
+          //
+          bucket_counter = ((bucket_counter + skip) >= num_elements) ? 0 : bucket_counter;
+          uint32_t h_bucket = bucket_counter += skip;
+          //
+          uint8_t count1, count2;
+
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,count1,count2);
+          if ( ui != nullptr ) {
+            //
+            int i = 0; while ( i < 100 ) i++;
+            //
+            sg_share_test_hh->unlock_counter(ui);
+          }
+      }
+    }
+    //cout << "finished thread: " << done_cntr++ << endl;
+}
+
+
+
+
+
+void hash_counter_bucket_access_many_buckets_shared_incr(uint32_t num_elements,[[maybe_unused]] int thread_num) {
+  	// HHash *T = nullptr;
+		// hh_element *buffer = nullptr;
+		// hh_element *end = nullptr;
+		//uint8_t which_table = 0;
+    //
+    uint32_t  bucket_counter = 0;
+    uint8_t skip = 1;
+    if ( sg_share_test_hh ) {
+      for ( uint32_t j =  0; j < 15000; j++ ) {
+          //
+          bucket_counter = ((bucket_counter + skip) >= num_elements) ? 0 : bucket_counter;
+          uint32_t h_bucket = bucket_counter += skip;
+          //
+          uint8_t count1, count2;
+
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,count1,count2);
+          if ( ui != nullptr ) {
+            sg_share_test_hh->slice_bucket_simple_lock(ui,j%2);
+            //
+            int i = 0; while ( i < 100 ) i++;
+            //
+            sg_share_test_hh->bucket_count_incr(ui);
+            sg_share_test_hh->slice_bucket_count_incr(ui,j%2);
+          }
+      }
+    }
+    //cout << "finished thread: " << done_cntr++ << endl;
+}
 
 
 
@@ -1056,22 +1117,26 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
     thread *testers[256];
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
     for ( int i = 0; i < num_threads; i++ ) {
-      testers[i] = new thread(hash_counter_bucket_access_many_buckets_random,els_per_tier/2,i);
+      testers[i] = new thread(hash_counter_bucket_access_many_buckets_shared_incr,els_per_tier/2,i);
     }
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
     for ( int i = 0; i < num_threads; i++ ) {
       testers[i]->join();
     }
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    
     if ( noisy_test ) {
+      cout << "reading bucket counts" << endl;
       uint32_t nn = els_per_tier/2;
       for ( uint32_t i = 0; i < nn; i++ ) {
         uint8_t count1;
-        uint8_t count2;
-        sg_share_test_hh->bucket_counts(i,count1,count2);
-        cout << "counts: " << (int)count1 << " :: " << (int)count2 << endl;
+        count1 = sg_share_test_hh->get_buckt_count(i);
+        cout << "combined count: " << (int)count1 << endl;
+        pair<uint8_t,uint8_t> p = sg_share_test_hh->get_bucket_counts(i);
+        cout << "odd bucket: " << (int)(p.first) << " :: " << (int)(p.second) << endl;
       }
     }
+  
 
   } catch ( const char *err ) {
     cout << err << endl;
@@ -1387,8 +1452,58 @@ void calc_prob_limis() {
 
   cout << "<< control_bits" << endl;
 
+
+  cout << "---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----" << endl;
+  cout << endl;
+
+  cout << "MASK VALUES" << endl;
+
+  n = sizeof(uint32_t)*8;
+  uint32_t tst_i = DOUBLE_COUNT_MASK_BASE;
+  cout << "DOUBLE_COUNT_MASK_BASE:  " << bitset<32>{tst_i} << endl;
+  tst_i = DOUBLE_COUNT_MASK;
+  cout << "DOUBLE_COUNT_MASK:       " << bitset<32>{tst_i} << endl;
+  cout << std::hex << DOUBLE_COUNT_MASK_BASE << endl;
+  cout << std::hex << DOUBLE_COUNT_MASK << endl;
+  tst_i = HOLD_BIT_SET;
+  cout << "HOLD_BIT_SET:            " << bitset<32>{tst_i} << endl;
+  cout << std::hex << HOLD_BIT_SET << endl;
+  tst_i = FREE_BIT_MASK;
+  cout << "FREE_BIT_MASK:           " << bitset<32>{tst_i} << endl;
+  cout << std::hex << HOLD_BIT_SET << endl;
+
+  cout << std::dec;
+  cout << endl;
+  cout << endl;
+
 }
 
+/*
+const uint32_t DOUBLE_COUNT_MASK_BASE = 0xFF;  // up to (256-1)
+const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE<<16);
+
+const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
+const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
+//
+const uint32_t HOLD_BIT_SET = (0x1 << 23);
+const uint32_t FREE_BIT_MASK = ~HOLD_BIT_SET;
+const uint32_t LOW_WORD = 0xFFFF;
+
+const uint32_t HOLD_BIT_ODD_SLICE = (0x1 << (7+8));
+const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
+
+const uint32_t HOLD_BIT_EVEN_SLICE = (0x1 << (7));
+const uint32_t FREE_BIT_EVEN_SLICE_MASK = ~HOLD_BIT_EVEN_SLICE;
+
+
+const uint32_t HH_SELECT_BIT = (1 << 24);
+const uint32_t HH_SELECT_BIT_MASK = (~HH_SELECT_BIT);
+const uint64_t HH_SELECT_BIT64 = (1 << 24);
+const uint64_t HH_SELECT_BIT_MASK64 = (~HH_SELECT_BIT64);
+
+
+
+*/
 
 
 
@@ -1428,28 +1543,6 @@ int main(int argc, char **argv) {
     test_hh_map_operation_initialization_linearization_many_buckets();
 
 
-    cout << "sizeof hh_element: " << sizeof(hh_element) << endl;
-
-    uint16_t my_uint = (1 << 7);
-    cout << my_uint << " " << (HOLD_BIT_SET & my_uint) << "   "  << bitset<16>(HOLD_BIT_SET) << "   "  << bitset<16>(my_uint) << endl;
-
-    uint16_t a = (my_uint<<1);
-    uint16_t b = (my_uint>>1);
-    
-    cout << countr_zero(my_uint) << " " << countr_zero(a)<< " " << countr_zero(b) << endl;
-#ifdef FFS
-      cout << FFS(my_uint) << " " << FFS(a)<< " " << FFS(b) << endl;
-#endif
-
-    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
-        cout << "countr_zero( " << bitset<8>(i) << " ) = "
-              << countr_zero(i) << '\n';
-
-#ifdef FFS
-    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
-        cout << "countr_zero( " << bitset<8>(i) << " ) = "
-              << FFS(i) << '\n';
-#endif
 
 
 
@@ -1480,6 +1573,34 @@ int main(int argc, char **argv) {
 
 
 /*
+
+
+
+    cout << "sizeof hh_element: " << sizeof(hh_element) << endl;
+
+    uint16_t my_uint = (1 << 7);
+    cout << my_uint << " " << (HOLD_BIT_SET & my_uint) << "   "  << bitset<16>(HOLD_BIT_SET) << "   "  << bitset<16>(my_uint) << endl;
+
+    uint16_t a = (my_uint<<1);
+    uint16_t b = (my_uint>>1);
+    
+    cout << countr_zero(my_uint) << " " << countr_zero(a)<< " " << countr_zero(b) << endl;
+#ifdef FFS
+      cout << FFS(my_uint) << " " << FFS(a)<< " " << FFS(b) << endl;
+#endif
+
+    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
+        cout << "countr_zero( " << bitset<8>(i) << " ) = "
+              << countr_zero(i) << '\n';
+
+#ifdef FFS
+    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
+        cout << "countr_zero( " << bitset<8>(i) << " ) = "
+              << FFS(i) << '\n';
+#endif
+
+
+
 auto ms_since_epoch(std::int64_t m){
   return std::chrono::system_clock::from_time_t(time_t{0})+std::chrono::milliseconds(m);
 }

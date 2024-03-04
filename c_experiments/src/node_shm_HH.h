@@ -399,60 +399,30 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		/**
-		 * bucket_lock
+		 * slice_bucket_lock
 		*/
-		atomic<uint32_t> * bucket_lock(uint32_t h_bucket,uint32_t &controls) {   // where are the bucket counts??
-			uint32_t *controllers = _region_C;
-			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			controls = controller->load(std::memory_order_consume);
+		atomic<uint32_t> *slice_bucket_lock(atomic<uint32_t> *controller,uint8_t which_table) {
+			uint32_t controls = controller->load(std::memory_order_consume);
+			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
 			//
 			do {
-				while ( controls & HOLD_BIT_SET ) {  // while some other process is using this count bucket
+				while ( controls & vLOCK_BIT ) {  // while some other process is using this count bucket
 					controls = controller->load(std::memory_order_consume);
 				}
 				//
-				while ( !controller->compare_exchange_weak(controls,(controls | HOLD_BIT_SET)) && !(controls & HOLD_BIT_SET) );
+				while ( !controller->compare_exchange_weak(controls,(controls | vLOCK_BIT)) && !(controls & vLOCK_BIT) );
 
-			 } while ( controls & HOLD_BIT_SET );
+			 } while ( controls & vLOCK_BIT );
 			//
 			return controller;
 		}
 
 
-		/**
-		 * bucket_counts
-		*/
-		pair<atomic<uint32_t> *, uint32_t> bucket_counts(uint32_t h_bucket, uint8_t &count_1, uint8_t &count_2) {   // where are the bucket counts??
-			//
-			pair<atomic<uint32_t> *, uint32_t> ctrls;
-			uint32_t controls = 0;
-			auto controller = this->bucket_lock(h_bucket,controls);
-			//
-			ctrls.first = controller;
-			ctrls.second = controls;
-			//
-			count_1 = (controls & COUNT_MASK);
-			count_2 = (count_2>>EIGHTH) & COUNT_MASK;
-			//
-			return (ctrls);
-		}
-
-
-		/**
-		 * slice_bucket_lock
-		*/
-		atomic<uint32_t> *slice_bucket_lock(atomic<uint32_t> *controller,uint8_t which_table) {
+		atomic<uint32_t> *slice_bucket_simple_lock(atomic<uint32_t> *controller,uint8_t which_table) {
 			uint32_t controls = controller->load(std::memory_order_consume);
-			uint32_t lock_bit = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
+			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
 			//
-			do {
-				while ( controls & lock_bit ) {  // while some other process is using this count bucket
-					controls = controller->load(std::memory_order_consume);
-				}
-				//
-				while ( !controller->compare_exchange_weak(controls,(controls | lock_bit)) && !(controls & lock_bit) );
-
-			 } while ( controls & lock_bit );
+			while ( !controller->compare_exchange_weak(controls,(controls | vLOCK_BIT),std::memory_order_relaxed) && !(controls & vLOCK_BIT) );
 			//
 			return controller;
 		}
@@ -495,7 +465,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		void slice_bucket_count_incr(atomic<uint32_t> *controller,uint8_t which_table) {
 			if ( controller == nullptr ) return;
-			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_ODD_SLICE;
+			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
 			uint32_t vUNLOCK_BIT_MASK = which_table ? FREE_BIT_ODD_SLICE_MASK : FREE_BIT_EVEN_SLICE_MASK;
 			//
 			uint32_t controls = controller->load(std::memory_order_consume);
@@ -536,7 +506,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		void slice_bucket_count_decr(atomic<uint32_t> *controller,uint8_t which_table) {
 			//
-			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_ODD_SLICE;
+			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
 			uint32_t vUNLOCK_BIT_MASK = which_table ? FREE_BIT_ODD_SLICE_MASK : FREE_BIT_EVEN_SLICE_MASK;
 			//
 			uint32_t controls = controller->load(std::memory_order_consume);
@@ -562,6 +532,64 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			}
 			//
 			controller->store((controls & vUNLOCK_BIT_MASK),std::memory_order_release);
+		}
+
+		pair<uint8_t,uint8_t> get_bucket_counts(uint32_t h_bucket) {
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			return get_bucket_counts(controller);
+		}
+
+
+		pair<uint8_t,uint8_t> get_bucket_counts(atomic<uint32_t> *controller) {
+			uint32_t controls = controller->load(std::memory_order_consume);
+			pair<uint8_t,uint8_t> p;
+			p.first  = controls & COUNT_MASK;
+			p.second = (controls>>EIGHTH) & COUNT_MASK;
+			return p;
+		}
+
+
+
+
+
+
+		/**
+		 * bucket_lock
+		*/
+		atomic<uint32_t> * bucket_lock(uint32_t h_bucket,uint32_t &ret_control) {   // where are the bucket counts??
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			uint32_t controls = controller->load(std::memory_order_consume);
+			//
+			do {
+				while ( controls & HOLD_BIT_SET ) {  // while some other process is using this count bucket
+					controls = controller->load(std::memory_order_consume);
+				}
+				//
+				while ( !controller->compare_exchange_weak(controls,(controls | HOLD_BIT_SET)) && !(controls & HOLD_BIT_SET) );
+
+			 } while ( controls & HOLD_BIT_SET );
+			//
+			ret_control = controls;
+			return controller;
+		}
+
+
+		// shared bucket count for both segments....
+
+		/**
+		 * bucket_counts
+		*/
+		atomic<uint32_t> *bucket_counts(uint32_t h_bucket, uint8_t &count_1, uint8_t &count_2) {   // where are the bucket counts??
+			//
+			uint32_t controls = 0;
+			auto controller = this->bucket_lock(h_bucket,controls);
+			//
+			count_1 = (controls & COUNT_MASK);
+			count_2 = (controls>>EIGHTH) & COUNT_MASK;
+			//
+			return (controller);
 		}
 
 
@@ -592,6 +620,21 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			}
 			//
 			controller->store((controls & FREE_BIT_MASK),std::memory_order_release);
+		}
+
+
+
+		uint32_t get_buckt_count(uint32_t h_bucket) {
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			return get_buckt_count(controller);
+		}
+
+
+		uint32_t get_buckt_count(atomic<uint32_t> *controller) {
+			uint32_t controls = controller->load(std::memory_order_consume);
+			uint8_t counter = (uint8_t)((controls & DOUBLE_COUNT_MASK) >> QUARTER);  
+			return counter;
 		}
 
 
@@ -664,13 +707,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint8_t count_2 = 0;
 
 			// ----
-			pair<atomic<uint32_t> *, uint32_t> ctrl_info = this->bucket_counts(h_bucket,count_1,count_2);
-			auto control = ctrl_info.second;
-			atomic<uint32_t> *controller = ctrl_info.first;
+			atomic<uint32_t> *controller = this->bucket_counts(h_bucket,count_1,count_2);
 			*controller_ref = controller;
 
 			if ( (count_2 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
-				this->unlock_counter(control);
+				this->unlock_counter(controller);
 				return false;
 			}
 
