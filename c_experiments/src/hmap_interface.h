@@ -91,11 +91,17 @@ const uint32_t LOW_WORD = 0xFFFF;
 
 
 // HH control buckets
+const uint32_t THREAD_ID_SHIFT = 24;
+const uint32_t HOLD_BIT_SHIFT = 23;
+const uint32_t DBL_COUNT_MASK_SHIFT = 16;
 
-const uint32_t DOUBLE_COUNT_MASK_BASE = 0x7F;  // up to (256-1)
-const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE<<16);
-const uint32_t HOLD_BIT_SET = (0x1 << 24);
+const uint32_t DOUBLE_COUNT_MASK_BASE = 0x7F;  // up to (128-1)
+const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE << DBL_COUNT_MASK_SHIFT);
+const uint32_t HOLD_BIT_SET = (0x1 << HOLD_BIT_SHIFT);
 const uint32_t FREE_BIT_MASK = ~HOLD_BIT_SET;
+
+const uint32_t THREAD_ID_SECTION = (0x0FFFF << THREAD_ID_SHIFT);
+const uint32_t THREAD_ID_SECTION_MASK = (~THREAD_ID_SECTION);
 
 const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
 const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);

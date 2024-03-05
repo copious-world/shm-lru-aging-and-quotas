@@ -543,32 +543,35 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			controller->store((controls & vUNLOCK_BIT_MASK),std::memory_order_release);
 		}
 
-		pair<uint8_t,uint8_t> get_bucket_counts(uint32_t h_bucket) {
-			uint32_t *controllers = _region_C;
-			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			return get_bucket_counts(controller);
-		}
 
-
-		pair<uint8_t,uint8_t> get_bucket_counts(atomic<uint32_t> *controller) {
-			uint32_t controls = controller->load(std::memory_order_consume);
-			pair<uint8_t,uint8_t> p;
-			p.first  = controls & COUNT_MASK;
-			p.second = (controls>>EIGHTH) & COUNT_MASK;
-			return p;
-		}
-
-
-
-
-
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		/**
 		 * bucket_lock
+		 * 
 		*/
 
+		// thread id's must be one based... (from 1)
 
-		atomic<uint32_t> * bucket_lock(uint32_t h_bucket,uint32_t &ret_control) {   // where are the bucket counts??
+		uint32_t stamp_thread_id(uint32_t controls,uint32_t thread_id) {
+			controls = controls & THREAD_ID_SECTION_MASK; // CLEAR THE SECTION
+			controls = controls | ((thread_id & 0xFFFF) << THREAD_ID_SHIFT);
+			return controls;
+		}
+
+		uint32_t clear_thread_stamp(uint32_t controls) {
+			controls = controls & THREAD_ID_SECTION_MASK; // CLEAR THE SECTION
+			return controls;
+		}
+
+		bool check_thread_id(uint32_t controls,uint32_t lock_on_controls) {
+			uint32_t check_mask = DOUBLE_COUNT_MASK | HOLD_BIT_SET;
+			bool check = ((controls & check_mask) == (lock_on_controls & check_mask));
+			return check;
+		}
+
+
+		atomic<uint32_t> * bucket_lock(uint32_t h_bucket,uint32_t &ret_control,uint8_t thread_id) {   // where are the bucket counts??
 			uint32_t *controllers = _region_C;
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
 			return bucket_lock(controller,ret_control);
@@ -596,21 +599,38 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
-		void store_controls(controller,controls) {
+		void store_controls(atomic<uint32_t> *controller,uint32_t controls) {
+			controls = clear_thread_stamp(controls);
 			controller->store((controls & FREE_BIT_MASK),std::memory_order_release);
 		}
 
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+		pair<uint8_t,uint8_t> get_bucket_counts(uint32_t h_bucket) {
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			return get_bucket_counts(controller);
+		}
+
+
+		pair<uint8_t,uint8_t> get_bucket_counts(atomic<uint32_t> *controller) {
+			uint32_t controls = controller->load(std::memory_order_consume);
+			pair<uint8_t,uint8_t> p;
+			p.first  = controls & COUNT_MASK;
+			p.second = (controls>>EIGHTH) & COUNT_MASK;
+			return p;
+		}
 
 		// shared bucket count for both segments....
 
 		/**
 		 * bucket_counts
 		*/
-		atomic<uint32_t> *bucket_counts(uint32_t h_bucket, uint8_t &count_1, uint8_t &count_2) {   // where are the bucket counts??
+		atomic<uint32_t> *bucket_counts(uint32_t h_bucket, uint8_t thread_id, uint8_t &count_1, uint8_t &count_2) {   // where are the bucket counts??
 			//
 			uint32_t controls = 0;
-			auto controller = this->bucket_lock(h_bucket,controls);
+			auto controller = this->bucket_lock(h_bucket,controls,thread_id);
 			//
 			count_1 = (controls & COUNT_MASK);
 			count_2 = (controls>>EIGHTH) & COUNT_MASK;
@@ -714,14 +734,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		/**
 		 * wait_if_unlock_bucket_counts
 		*/
-		bool wait_if_unlock_bucket_counts(uint32_t h_bucket,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
+		bool wait_if_unlock_bucket_counts(uint32_t h_bucket,uint8_t thread_id,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
 			atomic<uint32_t> *controller = nullptr;
-			return wait_if_unlock_bucket_counts(&controller,h_bucket,T_ref,buffer_ref,end_buffer_ref,which_table);
+			return wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,T_ref,buffer_ref,end_buffer_ref,which_table);
 		}
 
 	
 
-		bool wait_if_unlock_bucket_counts(atomic<uint32_t> **controller_ref,uint32_t h_bucket,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
+		bool wait_if_unlock_bucket_counts(atomic<uint32_t> **controller_ref,uint8_t thread_id,uint32_t h_bucket,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
 			// ----
 			HHash *T = _T1;
 			hh_element *buffer		= _region_HV_1;
@@ -733,7 +753,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint8_t count_2 = 0;
 
 			// ----
-			atomic<uint32_t> *controller = this->bucket_counts(h_bucket,count_1,count_2);
+			atomic<uint32_t> *controller = this->bucket_counts(h_bucket,thread_id,count_1,count_2);
 			*controller_ref = controller;
 
 			if ( (count_2 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
@@ -856,7 +876,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * 
 		*/
 
-		uint64_t add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value) {
+		uint64_t add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t thread_id = 0) {
 			//
 			// Threads from this process will not contend with each other.
 			// They will work on two different memory sections.
@@ -877,7 +897,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			uint64_t loaded_key = UINT64_MAX;
 			atomic<uint32_t> *controller = nullptr;
-			if ( (offset_value != 0) && wait_if_unlock_bucket_counts(&controller,h_bucket,&T,&buffer,&end,which_table) ) {
+			if ( (offset_value != 0) && wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,&T,&buffer,&end,which_table) ) {
 				//
 				auto N = this->_max_n;
 				uint32_t h_start = h_bucket % N;  // scale the hash .. make sure it indexes the array...
@@ -907,7 +927,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 								if ( GET(H, k) ) {
 									this->slice_unlock_counter(controller,which_table);
 									h_bucket -= k;
-									while (!wait_if_unlock_bucket_counts(&controller,h_bucket,&T,&buffer,&end,which_table));
+									while (!wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,&T,&buffer,&end,which_table));
 									wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, buffer, end);
 									k = NEIGHBORHOOD;
 									break;
@@ -922,7 +942,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 									if ( GET(H, k) ) {
 										this->slice_unlock_counter(controller,which_table);
 										h_bucket -= k;
-										while (!wait_if_unlock_bucket_counts(&controller,h_bucket,&T,&buffer,&end,which_table));
+										while (!wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,&T,&buffer,&end,which_table));
 										wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, buffer, end);
 										k = NEIGHBORHOOD;
 										break;
