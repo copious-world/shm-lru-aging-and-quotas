@@ -554,56 +554,104 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// thread id's must be one based... (from 1)
 
 		uint32_t stamp_thread_id(uint32_t controls,uint32_t thread_id) {
-			controls = controls & THREAD_ID_SECTION_MASK; // CLEAR THE SECTION
+			controls = controls & THREAD_ID_SECTION_CLEAR_MASK; // CLEAR THE SECTION
 			controls = controls | ((thread_id & 0xFFFF) << THREAD_ID_SHIFT);
 			return controls;
 		}
 
-		uint32_t clear_thread_stamp(uint32_t controls) {
-			controls = controls & THREAD_ID_SECTION_MASK; // CLEAR THE SECTION
+		uint32_t clear_thread_stamp_unlock(uint32_t controls) {
+			controls = (controls & (THREAD_ID_SECTION_CLEAR_MASK & FREE_BIT_MASK)); // CLEAR THE SECTION
 			return controls;
 		}
 
+		uint32_t thread_id_of(uint32_t controls) {
+			uint32_t thread_id =  ((controls & THREAD_ID_SECTION) >> THREAD_ID_SHIFT);
+			return thread_id & 0xFF;
+		}
+
+
 		bool check_thread_id(uint32_t controls,uint32_t lock_on_controls) {
-			uint32_t check_mask = DOUBLE_COUNT_MASK | HOLD_BIT_SET;
-			bool check = ((controls & check_mask) == (lock_on_controls & check_mask));
+			uint32_t vCHECK_MASK = THREAD_ID_SECTION | HOLD_BIT_SET;
+			bool check = ((controls & vCHECK_MASK) == (lock_on_controls & vCHECK_MASK));
 			return check;
 		}
+
+		void store_controls(atomic<uint32_t> *controller,uint32_t controls,uint8_t thread_id) {
+			auto previous = controls;
+			auto cleared_controls = clear_thread_stamp_unlock(controls);
+			while ( !(controller->compare_exchange_weak(controls,cleared_controls,std::memory_order_acq_rel,std::memory_order_relaxed)) ) {
+				if (( thread_id_of(controls) != thread_id) && (controls & HOLD_BIT_SET) ) {
+					break;
+				}
+			}
+		}
+
 
 
 		atomic<uint32_t> * bucket_lock(uint32_t h_bucket,uint32_t &ret_control,uint8_t thread_id) {   // where are the bucket counts??
 			uint32_t *controllers = _region_C;
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			return bucket_lock(controller,ret_control);
+			return bucket_lock(controller,ret_control,thread_id);
 		}
 
 		atomic<uint32_t> * bucket_lock(atomic<uint32_t> *controller,uint32_t &ret_control,uint8_t thread_id) {   // where are the bucket counts??
+			//
 			uint32_t controls = controller->load(std::memory_order_acquire);
 			//
+			uint32_t count_loops = 0;
+			uint32_t count_tls = 0;
+			uint32_t lock_on_controls = 0;
 			do {
+				count_loops++;
+				// if ( count_loops > 100 ) break;
+				
 				while ( controls & HOLD_BIT_SET ) {  // while some other process is using this count bucket
 					controls = controller->load(std::memory_order_acquire);
+					if ( (controls & HOLD_BIT_SET) && (thread_id_of(controls) == thread_id) ) {
+						unlock_counter(controller,thread_id);
+					}
+					count_tls++;
+					if ( count_tls > 200 && count_tls < 250  ) {
+						cout << "." << (int)thread_id << "<"   << thread_id_of(controls)  << ">T"; cout.flush();
+					}
 				}
-				uint32_t lock_on_controls = (controls | HOLD_BIT_SET);
-				lock_on_controls = stamp_thread_id(lock_on_controls,thread_id);  // make sure that this is the thread that sets the bit high
-				controls = stamp_thread_id(controls,UINT8_MAX);
-				controls = controls & FREE_BIT_MASK;   // this should not change it...
-				// returns false if the value is stable or if something went wrong
-				while ( !(controller->compare_exchange_weak(controls,lock_on_controls,std::memory_order_acq_rel,std::memory_order_relaxed)) && !(controls & HOLD_BIT_SET) );
-			} while ( !(check_thread_id(controls,lock_on_controls)) );
+				if ( count_tls > 200 ) {
+					cout << "." << (int)thread_id << "T -- " << count_tls << " " << bitset<32>{controls} << endl;
+				}
+				lock_on_controls = stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;  // make sure that this is the thread that sets the bit high
+				controls = clear_thread_stamp_unlock(controls);   // desire that the controller is in this state (0s)
+				// (cew) returns true if the value changes ... meaning the lock is acquired by someone since the last load
+				// i.e. loop exits if the value changes from no thread id and clear bit to at least the bit
+				uint32_t count_loops_2 = 0;
+				while ( !(controller->compare_exchange_weak(controls,lock_on_controls,std::memory_order_release,std::memory_order_relaxed)) );  //  && (count_loops_2++ < 1000)  && !(controls & HOLD_BIT_SET)
+				// but we care if this thread is the one that gets the bit.. so check to see that `lock_on_controls` contains 
+				// this thread id.
+				if ( count_loops > 100 ) {
+					cout << "OOPS! " << controls << " " << lock_on_controls <<  count_loops << endl; 
+				}
+			} while ( !(check_thread_id(controls,lock_on_controls)) );  // failing this, we wait on the other thread to give up the lock..
 			//
 			// at this point this thread should own the bucket...
-			ret_control = controls;
+			ret_control = lock_on_controls;  // return the control word that was loaded and change to carrying this thread id and lock bit
 			return controller;
 		}
 
 
 
-		void store_controls(atomic<uint32_t> *controller,uint32_t controls) {
-			controls = clear_thread_stamp(controls);
-			controller->store((controls & FREE_BIT_MASK),std::memory_order_release);
+		/**
+		 * unlock_counter
+		*/
+
+		void unlock_counter(uint32_t h_bucket,uint8_t thread_id) {
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			unlock_counter(controller,thread_id);
 		}
 
+		void unlock_counter(atomic<uint32_t> *controller,uint8_t thread_id) {
+			uint32_t controls = controller->load(std::memory_order_acquire);
+			store_controls(controller,controls,thread_id);
+		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -642,20 +690,19 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		/**
 		 * bucket_count_incr
 		*/
-		void bucket_count_incr(uint32_t h_bucket) {
+		void bucket_count_incr(uint32_t h_bucket, uint8_t thread_id) {
 			uint32_t *controllers = _region_C;
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			bucket_count_incr(controller);
+			bucket_count_incr(controller,thread_id);
 		}
 
 
-		void bucket_count_incr(atomic<uint32_t> *controller) {
+		void bucket_count_incr(atomic<uint32_t> *controller, uint8_t thread_id) {
 			if ( controller == nullptr ) return;
 			//
 			uint32_t controls = controller->load(std::memory_order_acquire);
-			if ( !(controls & HOLD_BIT_SET) ) {	// should be the only one able to get here on this bucket.
-				this->_status = -1;
-				return;
+			while ( !(controls & HOLD_BIT_SET) ) {	// should be the only one able to get here on this bucket.
+				this->bucket_lock(controller,controls,thread_id);  // aqcuire the lock again...
 			}
 			//
 			uint8_t counter = (controls & DOUBLE_COUNT_MASK) >> QUARTER;   // update the counter for both buffers.
@@ -665,7 +712,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				controls = (controls & ~DOUBLE_COUNT_MASK) | update;
 			}
 			//
-			store_controls(controller,controls);
+			store_controls(controller,controls,thread_id);
 		}
 
 
@@ -715,21 +762,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		/**
-		 * unlock_counter
-		*/
 
-		void unlock_counter(uint32_t h_bucket) {
-			uint32_t *controllers = _region_C;
-			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			unlock_counter(controller);
-		}
 
-		void unlock_counter(atomic<uint32_t> *controller) {
-			uint32_t controls = controller->load(std::memory_order_consume);
-			controller->store((controls & FREE_BIT_MASK),std::memory_order_release);
-		}
-
+		// 
 
 		/**
 		 * wait_if_unlock_bucket_counts
@@ -757,7 +792,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			*controller_ref = controller;
 
 			if ( (count_2 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
-				this->unlock_counter(controller);
+				this->unlock_counter(controller,thread_id);
 				return false;
 			}
 
@@ -778,7 +813,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			}
 
 			this->slice_bucket_lock(controller,which_table);
-			this->bucket_count_incr(controller);   // unlocks -- may roll back if adding fails
+			this->bucket_count_incr(controller,thread_id);   // unlocks -- may roll back if adding fails
 
 			*T_ref = T;
 			*buffer_ref = buffer;
@@ -787,6 +822,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 		}
 
+		// ----
 
 
 		bool all_restore_threads_busy(void) {

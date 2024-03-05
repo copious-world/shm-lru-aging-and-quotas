@@ -15,6 +15,8 @@
 #include <thread>
 #include <atomic>
 
+#include <csignal>
+
 #include <chrono>
 #include <vector>
 
@@ -33,7 +35,7 @@
 
 
 static constexpr bool noisy_test = false;
-static constexpr uint8_t THREAD_COUNT = 32;
+static constexpr uint8_t THREAD_COUNT = 64;
 
 using namespace std;
 using namespace chrono;
@@ -106,6 +108,12 @@ void print_stored(pair<uint32_t,uint32_t> *primary_storage,uint32_t print_max = 
 
 
 
+
+
+// -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
+
+SharedSegmentsManager *g_ssm_catostrophy_handler = nullptr;
+volatile std::sig_atomic_t gSignalStatus;
 
 // -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
 
@@ -820,11 +828,11 @@ void hash_counter_bucket_access(void) {
     // 
     for ( uint16_t j =  0; j < 1000; j++ ) {
       if ( sg_share_test_hh ) {
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(20,&T,&buffer,&end,which_table) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(20,1,&T,&buffer,&end,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->slice_bucket_count_incr(20,which_table);
+          sg_share_test_hh->slice_bucket_count_incr(20,which_table); // 
         }
       }
     }
@@ -896,7 +904,7 @@ void test_hh_map_operation_initialization_linearization() {
 
     thread *testers[10];
     for ( int i = 0; i < 10; i++ ) {
-      testers[i] = new thread(hash_counter_bucket_access);
+      testers[i] = new thread(hash_counter_bucket_access);   // uses default consts for els_per_tier,thread_id
     }
 
     for ( int i = 0; i < 10; i++ ) {
@@ -906,7 +914,7 @@ void test_hh_map_operation_initialization_linearization() {
     if ( noisy_test ) {
         uint8_t count1;
         uint8_t count2;
-        sg_share_test_hh->bucket_counts(20,count1,count2);
+        sg_share_test_hh->bucket_counts(20,1,count1,count2);
         cout << "counts: " << (int)count1 << " :: " << (int)count2 << endl;
     }
 
@@ -929,7 +937,10 @@ void test_hh_map_operation_initialization_linearization() {
 uint32_t my_zero_count[256][2048];
 uint32_t my_false_count[256][2048];
 
-void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,int thread_num) {
+
+// thread func
+
+void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,uint8_t thread_num) {
   	HHash *T = nullptr;
 		hh_element *buffer = nullptr;
 		hh_element *end = nullptr;
@@ -944,11 +955,11 @@ void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,int th
         uint32_t h_bucket = ud(gen_v);
         my_zero_count[thread_num][h_bucket]++;
         //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&end,which_table) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,thread_num,&T,&buffer,&end,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table);
+          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table); // ,thread_num);
         } else {
           my_false_count[thread_num][h_bucket]++;
         }
@@ -958,8 +969,9 @@ void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,int th
 }
 
 
+// thread func
 
-void hash_counter_bucket_access_many_buckets(uint32_t num_elements,int thread_num) {
+void hash_counter_bucket_access_many_buckets(uint32_t num_elements,uint8_t thread_num) {
   	HHash *T = nullptr;
 		hh_element *buffer = nullptr;
 		hh_element *end = nullptr;
@@ -973,11 +985,11 @@ void hash_counter_bucket_access_many_buckets(uint32_t num_elements,int thread_nu
         bucket_counter = ((bucket_counter + skip) >= num_elements) ? 0 : bucket_counter;
         uint32_t h_bucket = bucket_counter += skip;
         //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,&T,&buffer,&end,which_table) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,thread_num,&T,&buffer,&end,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table);
+          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table); // ,thread_num);
         } else {
           my_false_count[thread_num][h_bucket]++;
         }
@@ -988,8 +1000,9 @@ void hash_counter_bucket_access_many_buckets(uint32_t num_elements,int thread_nu
 
 
 
+// thread func
 
-void hash_counter_bucket_access_many_buckets_primitive(uint32_t num_elements,[[maybe_unused]] int thread_num) {
+void hash_counter_bucket_access_many_buckets_primitive(uint32_t num_elements,uint8_t thread_num) {
   	// HHash *T = nullptr;
 		// hh_element *buffer = nullptr;
 		// hh_element *end = nullptr;
@@ -1005,12 +1018,12 @@ void hash_counter_bucket_access_many_buckets_primitive(uint32_t num_elements,[[m
           //
           uint8_t count1, count2;
 
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,count1,count2);
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,thread_num,count1,count2);
           if ( ui != nullptr ) {
             //
             int i = 0; while ( i < 100 ) i++;
             //
-            sg_share_test_hh->unlock_counter(ui);
+            sg_share_test_hh->unlock_counter(ui,thread_num);
           }
       }
     }
@@ -1019,9 +1032,9 @@ void hash_counter_bucket_access_many_buckets_primitive(uint32_t num_elements,[[m
 
 
 
+// thread func
 
-
-void hash_counter_bucket_access_many_buckets_shared_incr(uint32_t num_elements,[[maybe_unused]] int thread_num) {
+void hash_counter_bucket_access_many_buckets_shared_incr(uint32_t num_elements,uint8_t thread_id) {
   	// HHash *T = nullptr;
 		// hh_element *buffer = nullptr;
 		// hh_element *end = nullptr;
@@ -1031,21 +1044,20 @@ void hash_counter_bucket_access_many_buckets_shared_incr(uint32_t num_elements,[
     uint8_t skip = 1;
     if ( sg_share_test_hh ) {
       for ( uint32_t j =  0; j < 15000; j++ ) {
-          //
-          bucket_counter = ((bucket_counter + skip) >= num_elements) ? 0 : bucket_counter;
-          uint32_t h_bucket = bucket_counter += skip;
+          bucket_counter = (bucket_counter >= num_elements) ? 0 : bucket_counter;
+          uint32_t h_bucket = bucket_counter;
           //
           uint8_t count1, count2;
-
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,count1,count2);
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,thread_id,count1,count2);
           if ( ui != nullptr ) {
-            sg_share_test_hh->slice_bucket_set_bit(ui,j%2);
+            //sg_share_test_hh->slice_bucket_set_bit(ui,j%2);
             //
             int i = 0; while ( i < 100 ) i++;
             //
-            sg_share_test_hh->bucket_count_incr(ui);
-            sg_share_test_hh->slice_bucket_count_incr(ui,j%2);
+            sg_share_test_hh->bucket_count_incr(ui,thread_id);
+            //sg_share_test_hh->slice_bucket_count_incr(ui,j%2);
           }
+          bucket_counter += skip;
       }
     }
     //cout << "finished thread: " << done_cntr++ << endl;
@@ -1065,6 +1077,8 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
   //
   SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  g_ssm_catostrophy_handler = ssm;
 
   uint32_t max_obj_size = 128;
   uint32_t num_procs = 4;
@@ -1119,7 +1133,8 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
     thread *testers[256];
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
     for ( int i = 0; i < num_threads; i++ ) {
-      testers[i] = new thread(hash_counter_bucket_access_many_buckets_shared_incr,els_per_tier/2,i);
+      uint8_t thread_id = (i + 1);
+      testers[i] = new thread(hash_counter_bucket_access_many_buckets_shared_incr,els_per_tier/2,thread_id);
     }
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
     for ( int i = 0; i < num_threads; i++ ) {
@@ -1149,6 +1164,248 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
   cout << p.first << ", " << p.second << endl;
 
 }
+
+
+
+
+
+
+
+// thread func
+
+void hash_counter_bucket_access_try_a_few(uint32_t num_elements,uint8_t thread_id) {
+  	// HHash *T = nullptr;
+		// hh_element *buffer = nullptr;
+		// hh_element *end = nullptr;
+		//uint8_t which_table = 0;
+    //
+    uint32_t  bucket_counter = 0;
+    uint8_t skip = 1;
+    if ( sg_share_test_hh ) {
+      uint32_t N = 10;
+      for ( uint32_t j =  0; j < N; j++ ) {
+          bucket_counter = (bucket_counter >= num_elements) ? 0 : bucket_counter;
+          uint32_t h_bucket = bucket_counter;
+          //
+          uint8_t count1, count2;
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,thread_id,count1,count2);
+          if ( ui != nullptr ) {
+            //sg_share_test_hh->slice_bucket_set_bit(ui,j%2);
+            //
+            int i = 0; while ( i < 100 ) i++;
+            //
+            sg_share_test_hh->bucket_count_incr(ui,thread_id);
+            //sg_share_test_hh->slice_bucket_count_incr(ui,j%2);
+          } else {
+            sg_share_test_hh->bucket_count_incr(h_bucket,thread_id);
+          }
+          bucket_counter += skip;
+      }
+    }
+    cout << "finished thread: " << done_cntr++ << endl;
+}
+
+
+void handle_catastrophic(int signal) {
+  gSignalStatus = signal;
+  if ( g_ssm_catostrophy_handler != nullptr ) {
+    g_ssm_catostrophy_handler->detach_all(true);
+    exit(0);
+  }
+}
+
+void test_hh_map_operation_initialization_linearization_small_noisy() {
+
+  int status = 0;
+
+  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  uint32_t max_obj_size = 128;
+  uint32_t num_procs = 4;
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+
+
+  cout << "test_hh_map_operation_initialization_linearization_small_noisy: # els: " << els_per_tier << endl;
+
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+
+  g_ssm_catostrophy_handler = ssm;
+
+  key_t hh_key = hh_keys.front();
+  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
+  uint32_t seg_sz = ssm->get_size(hh_key);
+  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
+
+  if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
+
+  uint8_t NUM_THREADS = 4;
+  //
+  try {
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
+    cout << test_hh->ok() << endl;
+
+    //
+    uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
+    // uint32_t r_seg_sz = ssm->get_size(randoms_key);
+    //
+    test_hh->set_random_bits(r_region);
+
+    sg_share_test_hh = test_hh;
+
+
+    thread *testers[256];
+    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    for ( int i = 0; i < NUM_THREADS; i++ ) {
+      uint8_t thread_id = (i + 1);
+      testers[i] = new thread(hash_counter_bucket_access_try_a_few,els_per_tier/2,thread_id);
+    }
+    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    for ( int i = 0; i < NUM_THREADS; i++ ) {
+      testers[i]->join();
+    }
+    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    
+    cout << "reading bucket counts" << endl;
+    uint32_t nn = 10; //els_per_tier/2;   // same as loop constant in thread
+    for ( uint32_t i = 0; i < nn; i++ ) {
+      uint8_t count1;
+      count1 = sg_share_test_hh->get_buckt_count(i);
+      cout << "combined count: " << (int)count1 << endl;
+      pair<uint8_t,uint8_t> p = sg_share_test_hh->get_bucket_counts(i);
+      cout << "odd bucket: " << (int)(p.first) << " :: " << (int)(p.second) << endl;
+    }
+
+  
+
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
+void test_method_checks() {
+
+  int status = 0;
+
+  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  uint32_t max_obj_size = 128;
+  uint32_t num_procs = 4;
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+
+
+  cout << "test_method_checks: # els: " << els_per_tier << endl;
+
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  //  region initialization
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+
+  g_ssm_catostrophy_handler = ssm;
+
+  key_t hh_key = hh_keys.front();
+  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
+  uint32_t seg_sz = ssm->get_size(hh_key);
+  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
+
+  if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
+
+  uint8_t NUM_THREADS = 4;
+  //
+  try {
+
+    //  HH_map sg_share_test_hh
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
+    cout << test_hh->ok() << endl;
+    //
+    sg_share_test_hh = test_hh;
+
+    //
+    uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
+    //
+    test_hh->set_random_bits(r_region);
+
+    uint32_t controls = 0;
+    uint32_t thread_id = 63 - 6;
+    uint32_t lock_on_controls = test_hh->stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;
+
+    cout << "thread_id:\t\t" << bitset<32>{thread_id} << endl;
+    cout << "lock_on_controls:\t"  << bitset<32>{lock_on_controls} << endl;
+    controls = lock_on_controls;
+
+    cout << "check_thread_id:\t"  << test_hh->check_thread_id(controls,lock_on_controls) << endl;
+
+    controls |= 1;
+    cout << "check_thread_id:\t"  << test_hh->check_thread_id(controls,lock_on_controls) << endl;
+    controls &= ~1;
+    cout << "controls:\t"   << bitset<32>{controls} << endl;
+
+    controls = test_hh->clear_thread_stamp_unlock(controls);
+    cout << "controls:\t"   << bitset<32>{controls} << endl;
+    cout << "check_thread_id:\t"  << test_hh->check_thread_id(controls,lock_on_controls) << endl;
+
+
+
+
+    cout << " << test_method_checks << -----------------------> "  << endl;
+
+
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+}
+
 
 
 
@@ -1508,11 +1765,39 @@ const uint64_t HH_SELECT_BIT_MASK64 = (~HH_SELECT_BIT64);
 */
 
 
+/**
+#include <signal.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+static volatile sig_atomic_t keep_running = 1;
+
+static void sig_handler(int _)
+{
+    (void)_;
+    keep_running = 0;
+}
+
+int main(void)
+{
+    signal(SIGINT, sig_handler);
+
+    while (keep_running)
+        puts("Still running...");
+
+    puts("Stopped by signal `SIGINT'");
+    return EXIT_SUCCESS;
+}
+*/
+
 
 int main(int argc, char **argv) {
 	//
 
   // int status = 0;
+
+
+  std::signal(SIGINT, handle_catastrophic);
 
 	if ( argc == 2 ) {
 		cout << argv[1] << endl;
@@ -1541,12 +1826,12 @@ int main(int argc, char **argv) {
 
     //test_hh_map_creation_and_initialization();
     //test_lru_creation_and_initialization();
+    //
+    // test_hh_map_operation_initialization_linearization_many_buckets();
 
-    test_hh_map_operation_initialization_linearization_many_buckets();
+    test_hh_map_operation_initialization_linearization_small_noisy();
 
-
-
-
+    //test_method_checks();
 
     //test_sleep_methods();
 

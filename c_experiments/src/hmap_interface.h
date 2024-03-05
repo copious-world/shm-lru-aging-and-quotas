@@ -100,8 +100,8 @@ const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE << DBL_COUNT_MASK_SHI
 const uint32_t HOLD_BIT_SET = (0x1 << HOLD_BIT_SHIFT);
 const uint32_t FREE_BIT_MASK = ~HOLD_BIT_SET;
 
-const uint32_t THREAD_ID_SECTION = (0x0FFFF << THREAD_ID_SHIFT);
-const uint32_t THREAD_ID_SECTION_MASK = (~THREAD_ID_SECTION);
+const uint32_t THREAD_ID_SECTION = ((uint32_t)0x0FF << THREAD_ID_SHIFT);
+const uint32_t THREAD_ID_SECTION_CLEAR_MASK = (~THREAD_ID_SECTION);
 
 const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
 const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
@@ -177,7 +177,7 @@ class HMap_interface {
 		virtual uint8_t		get_bucket(uint32_t h, uint32_t xs[32]) = 0;
 		virtual uint32_t	del(uint64_t key) = 0;
 		virtual void		clear(void) = 0;
-		virtual uint64_t	add_key_value(uint32_t hash64,uint32_t hash_bucket,uint32_t offset_value) = 0;
+		virtual uint64_t	add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t thread_id = 0) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 };
 
