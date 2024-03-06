@@ -832,7 +832,7 @@ void hash_counter_bucket_access(void) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->slice_bucket_count_incr(20,which_table); // 
+          sg_share_test_hh->slice_bucket_count_incr(20,which_table,1); // 
         }
       }
     }
@@ -959,7 +959,7 @@ void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,uint8_
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table); // ,thread_num);
+          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table,thread_num);
         } else {
           my_false_count[thread_num][h_bucket]++;
         }
@@ -989,7 +989,7 @@ void hash_counter_bucket_access_many_buckets(uint32_t num_elements,uint8_t threa
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table); // ,thread_num);
+          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table,thread_num);
         } else {
           my_false_count[thread_num][h_bucket]++;
         }
@@ -1050,12 +1050,12 @@ void hash_counter_bucket_access_many_buckets_shared_incr(uint32_t num_elements,u
           uint8_t count1, count2;
           atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,thread_id,count1,count2);
           if ( ui != nullptr ) {
-            //sg_share_test_hh->slice_bucket_set_bit(ui,j%2);
+            //sg_share_test_hh->slice_bucket_set_bit(ui,j%2,thread_id);
             //
             int i = 0; while ( i < 100 ) i++;
             //
             sg_share_test_hh->bucket_count_incr(ui,thread_id);
-            //sg_share_test_hh->slice_bucket_count_incr(ui,j%2);
+            //sg_share_test_hh->slice_bucket_count_incr(ui,j%2,thread_id);
           }
           bucket_counter += skip;
       }
@@ -1190,12 +1190,12 @@ void hash_counter_bucket_access_try_a_few(uint32_t num_elements,uint8_t thread_i
           uint8_t count1, count2;
           atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,thread_id,count1,count2);
           if ( ui != nullptr ) {
-            //sg_share_test_hh->slice_bucket_set_bit(ui,j%2);
+            //sg_share_test_hh->slice_bucket_set_bit(ui,j%2,thread_id);
             //
             int i = 0; while ( i < 100 ) i++;
             //
             sg_share_test_hh->bucket_count_incr(ui,thread_id);
-            //sg_share_test_hh->slice_bucket_count_incr(ui,j%2);
+            //sg_share_test_hh->slice_bucket_count_incr(ui,j%2,thread_id);
           } else {
             sg_share_test_hh->bucket_count_incr(h_bucket,thread_id);
           }
