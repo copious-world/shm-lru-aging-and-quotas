@@ -513,9 +513,9 @@ void shared_mem_test_initialization_one_call() {
   SharedSegmentsManager *ssm = new SharedSegmentsManager();
 
   uint32_t max_obj_size = 128;
-  uint32_t num_procs = 4;
   uint32_t els_per_tier = 1024;
   uint8_t num_tiers = 3;
+  uint32_t num_procs = 4;
 
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -547,7 +547,7 @@ void shared_mem_test_initialization_one_call() {
   cout << endl;
 
   auto check_lru_sz = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier,num_procs);
-  auto check_hh_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
+  auto check_hh_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
   cout << "LRU Expected Buf size: "  << check_lru_sz << endl;
   cout << " HH Expected Buf size: "  << check_hh_sz << endl;
 
@@ -613,9 +613,9 @@ void test_hh_map_creation_and_initialization() {
   SharedSegmentsManager *ssm = new SharedSegmentsManager();
 
   uint32_t max_obj_size = 128;
-  uint32_t num_procs = 4;
   uint32_t els_per_tier = 1024;
   uint8_t num_tiers = 3;
+  uint32_t num_procs = 4;
 
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -644,7 +644,7 @@ void test_hh_map_creation_and_initialization() {
 
   //
   try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
     cout << test_hh->ok() << endl;
 
 
@@ -670,9 +670,9 @@ void test_lru_creation_and_initialization() {
   int status = 0;
 
   uint32_t max_obj_size = 128;
-  uint32_t num_procs = 4;
   uint32_t els_per_tier = 1024;
   uint8_t num_tiers = 3;
+  uint32_t num_procs = 4;
 
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -700,7 +700,7 @@ void test_lru_creation_and_initialization() {
   size_t reserve = 0;
 
   auto check_lru_sz = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier,num_procs);
-  auto check_hh_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
+  auto check_hh_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
   for ( auto p : ssm->_seg_to_lrus ) {
     cout << "LRU SEG SIZE: " << p.first << " .. " <<  ssm->_ids_to_seg_sizes[p.first] << ", " << check_lru_sz << endl;
   }
@@ -852,9 +852,10 @@ void test_hh_map_operation_initialization_linearization() {
   SharedSegmentsManager *ssm = new SharedSegmentsManager();
 
   uint32_t max_obj_size = 128;
-  uint32_t num_procs = 4;
   uint32_t els_per_tier = 1024;
   uint8_t num_tiers = 3;
+  uint32_t num_procs = 10;
+  uint32_t num_threads = num_procs;
 
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -884,7 +885,7 @@ void test_hh_map_operation_initialization_linearization() {
   //
   try {
     //
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
     cout << test_hh->ok() << endl;
     //
     uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
@@ -902,12 +903,12 @@ void test_hh_map_operation_initialization_linearization() {
       cout << endl;
     }
 
-    thread *testers[10];
-    for ( int i = 0; i < 10; i++ ) {
+    thread *testers[num_threads];
+    for ( uint32_t i = 0; i < num_threads; i++ ) {
       testers[i] = new thread(hash_counter_bucket_access);   // uses default consts for els_per_tier,thread_id
     }
 
-    for ( int i = 0; i < 10; i++ ) {
+    for ( uint32_t i = 0; i < num_threads; i++ ) {
       testers[i]->join();
     }
 
@@ -1081,10 +1082,11 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
   g_ssm_catostrophy_handler = ssm;
 
   uint32_t max_obj_size = 128;
-  uint32_t num_procs = 4;
+
   uint32_t els_per_tier = 1024;
   uint8_t num_tiers = 3;
-
+  uint8_t num_threads = THREAD_COUNT;
+  uint32_t num_procs = num_threads;
 
   cout << "test_hh_map_operation_initialization_linearization_many_buckets: # els: " << els_per_tier << endl;
 
@@ -1111,14 +1113,13 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
   key_t hh_key = hh_keys.front();
   uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
   uint32_t seg_sz = ssm->get_size(hh_key);
-  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
+  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
 
   if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
 
-  uint8_t num_threads = THREAD_COUNT;
   //
   try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
     cout << test_hh->ok() << endl;
 
     //
@@ -1225,10 +1226,10 @@ void test_hh_map_operation_initialization_linearization_small_noisy() {
   SharedSegmentsManager *ssm = new SharedSegmentsManager();
 
   uint32_t max_obj_size = 128;
-  uint32_t num_procs = 4;
   uint32_t els_per_tier = 1024;
   uint8_t num_tiers = 3;
-
+  uint32_t num_procs = 4;
+  uint8_t NUM_THREADS = 4;
 
   cout << "test_hh_map_operation_initialization_linearization_small_noisy: # els: " << els_per_tier << endl;
 
@@ -1256,14 +1257,14 @@ void test_hh_map_operation_initialization_linearization_small_noisy() {
   key_t hh_key = hh_keys.front();
   uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
   uint32_t seg_sz = ssm->get_size(hh_key);
-  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
+  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
 
   if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
 
-  uint8_t NUM_THREADS = 4;
+
   //
   try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
     cout << test_hh->ok() << endl;
 
     //
@@ -1321,9 +1322,9 @@ void test_method_checks() {
   SharedSegmentsManager *ssm = new SharedSegmentsManager();
 
   uint32_t max_obj_size = 128;
-  uint32_t num_procs = 4;
   uint32_t els_per_tier = 1024;
   uint8_t num_tiers = 3;
+  uint32_t num_procs = 4;
 
 
   cout << "test_method_checks: # els: " << els_per_tier << endl;
@@ -1353,7 +1354,7 @@ void test_method_checks() {
   key_t hh_key = hh_keys.front();
   uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
   uint32_t seg_sz = ssm->get_size(hh_key);
-  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier);
+  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
 
   if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
 
@@ -1362,7 +1363,7 @@ void test_method_checks() {
   try {
 
     //  HH_map sg_share_test_hh
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, true);
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
     cout << test_hh->ok() << endl;
     //
     sg_share_test_hh = test_hh;
@@ -1700,7 +1701,7 @@ void calc_prob_limis() {
 
   ref->count = 63;
   ref->busy = 1;
-  ref->mod = 1;
+  //ref->mod = 1;
   ref->_even.count = 31;
   ref->_even.busy = 1;
   ref->_even.memb = 1;

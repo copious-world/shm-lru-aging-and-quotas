@@ -89,21 +89,30 @@ const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 
 const uint32_t LOW_WORD = 0xFFFF;
 
+//
+// The control bit and the shared bit are mutually exclusive.
+// They can both be off at the same time, but not both on at the same time.
+//
 
 // HH control buckets
+const uint32_t SHARED_BIT_SHIFT = 31;
 const uint32_t THREAD_ID_SHIFT = 24;
 const uint32_t HOLD_BIT_SHIFT = 23;
 const uint32_t DBL_COUNT_MASK_SHIFT = 16;
 
-const uint32_t DOUBLE_COUNT_MASK_BASE = 0x7F;  // up to (128-1)
+const uint32_t DOUBLE_COUNT_MASK_BASE = 0x3F;  // up to (64-1)
 const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE << DBL_COUNT_MASK_SHIFT);
 const uint32_t HOLD_BIT_SET = (0x1 << HOLD_BIT_SHIFT);
 const uint32_t FREE_BIT_MASK = ~HOLD_BIT_SET;
 
-const uint32_t THREAD_ID_SECTION = ((uint32_t)0x0FF << THREAD_ID_SHIFT);
-const uint32_t THREAD_ID_SECTION_CLEAR_MASK = (~THREAD_ID_SECTION);
+const uint32_t SHARED_BIT_SET = (0x1 << SHARED_BIT_SHIFT);
+const uint32_t QUIT_SHARE_BIT_MASK = ~SHARED_BIT_SET;   // if 0 then thread_id == 0 means no thread else one thread. If 1, the XOR is two.
 
-const uint32_t COUNT_MASK = 0x3F;  // up to (64-1)
+const uint32_t THREAD_ID_BASE = (uint32_t)0x07F;
+const uint32_t THREAD_ID_SECTION = (THREAD_ID_BASE << THREAD_ID_SHIFT);
+const uint32_t THREAD_ID_SECTION_CLEAR_MASK = (~THREAD_ID_SECTION & ~SHARED_BIT_SET);
+
+const uint32_t COUNT_MASK = 0x1F;  // up to (32-1)
 const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
 //
 
@@ -112,6 +121,59 @@ const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
 
 const uint32_t HOLD_BIT_EVEN_SLICE = (0x1 << (7));
 const uint32_t FREE_BIT_EVEN_SLICE_MASK = ~HOLD_BIT_EVEN_SLICE;
+
+
+
+
+static inline uint32_t add_thread_id(uint32_t target, uint32_t thread_id) {
+	auto rethread_id = thread_id & THREAD_ID_BASE;
+	if ( rethread_id != thread_id ) return 0;
+	rethread_id = (rethread_id << THREAD_ID_SHIFT);
+	if ( target & HOLD_BIT_SET ) {
+		if ( target & SHARED_BIT_SET ) return 0;
+		target = target | SHARED_BIT_SET;
+		target = (target & THREAD_ID_SECTION_CLEAR_MASK) | ((target & THREAD_ID_SECTION) ^ rethread_id);
+	} else {
+		target = target | rethread_id;
+	}
+	return target;
+}
+
+
+static inline uint32_t remove_thread_id(uint32_t target, uint32_t thread_id) {
+	auto rethread_id = thread_id & THREAD_ID_BASE;
+	if ( rethread_id != thread_id ) return 0;
+	if ( target & HOLD_BIT_SET ) {
+		rethread_id = rethread_id << THREAD_ID_SHIFT;
+		if ( target & SHARED_BIT_SET ) {
+			target = target & QUIT_SHARE_BIT_MASK;
+			target = (target & THREAD_ID_SECTION_CLEAR_MASK) | ((target & THREAD_ID_SECTION) ^ rethread_id);
+		} else {
+			target = target & QUIT_SHARE_BIT_MASK;
+			target = (target & THREAD_ID_SECTION_CLEAR_MASK);
+		}
+	}
+	return target;
+}
+
+
+
+static inline uint32_t get_partner_thread_id(uint32_t target, uint32_t thread_id) {
+	auto rethread_id = thread_id & THREAD_ID_BASE;
+	if ( rethread_id != thread_id ) return 0;
+	if ( target & HOLD_BIT_SET ) {
+		if ( target & SHARED_BIT_SET ) {
+			uint32_t partner_id = target & THREAD_ID_SECTION;
+			partner_id = (partner_id >> THREAD_ID_SHIFT) & THREAD_ID_BASE;
+			partner_id = (partner_id ^ rethread_id);
+			return partner_id;
+		} else {
+			return 0;
+		}
+	}
+	return 0;
+}
+
 
 
 // select bits for the key
@@ -135,9 +197,9 @@ typedef struct ControlBits {
 	buckets			_odd;
 	//
 	uint8_t			busy	: 1;
-	uint8_t			mod		: 1;
+	uint8_t			shared	: 1;
 	uint8_t			count	: 6; // shared count
-	uint8_t			rest;   // some of this has to do with the cache line...
+	uint8_t			thread_id;   // some of this has to do with the cache line...
 } control_bits;
 
 

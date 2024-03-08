@@ -201,14 +201,14 @@ class SharedSegmentsManager : public SharedSegments {
 		//sz = sizeof(HHash)
 		//uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
 
-		int initialize_hmm_shm(key_t key,  bool am_initializer, uint32_t els_per_tier) {
+		int initialize_hmm_shm(key_t key,  bool am_initializer, uint32_t els_per_tier,uint32_t num_threads) {
 			int status = 0;
 			//
 			// size_t hhash_header_allotment_sz = 2*sizeof(HHash);
 			// size_t value_reagion_sz = sizeof(uint64_t)*els_per_tier;
 			// size_t bucket_region_sz = sizeof(uint32_t)*els_per_tier;
 			// size_t control_bits_sz = sizeof(atomic<uint32_t>)*els_per_tier;
-			size_t seg_size = HH_map<>::check_expected_hh_region_size(els_per_tier);
+			size_t seg_size = HH_map<>::check_expected_hh_region_size(els_per_tier,num_threads);
 			//
 			if ( am_initializer ) {
 				status = _shm_creator(key,seg_size);
@@ -240,7 +240,7 @@ class SharedSegmentsManager : public SharedSegments {
 				if ( hh_key < keyMin || hh_key >= keyMax ) {
 					return -1;
 				}
-				status = this->initialize_hmm_shm(hh_key,am_initializer,els_per_tier);
+				status = this->initialize_hmm_shm(hh_key,am_initializer,els_per_tier,num_procs);
 
 				if ( status != 0 ) { return status; }
 			}
