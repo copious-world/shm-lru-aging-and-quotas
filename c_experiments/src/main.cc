@@ -915,7 +915,7 @@ void test_hh_map_operation_initialization_linearization() {
     if ( noisy_test ) {
         uint8_t count1;
         uint8_t count2;
-        sg_share_test_hh->bucket_counts(20,1,count1,count2);
+        sg_share_test_hh->bucket_counts_lock(20,1,count1,count2);
         cout << "counts: " << (int)count1 << " :: " << (int)count2 << endl;
     }
 
@@ -1019,12 +1019,12 @@ void hash_counter_bucket_access_many_buckets_primitive(uint32_t num_elements,uin
           //
           uint8_t count1, count2;
 
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,thread_num,count1,count2);
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,thread_num,count1,count2);
           if ( ui != nullptr ) {
             //
             int i = 0; while ( i < 100 ) i++;
             //
-            sg_share_test_hh->unlock_counter(ui,thread_num);
+            sg_share_test_hh->store_unlock_controller(ui,thread_num);
           }
       }
     }
@@ -1049,7 +1049,7 @@ void hash_counter_bucket_access_many_buckets_shared_incr(uint32_t num_elements,u
           uint32_t h_bucket = bucket_counter;
           //
           uint8_t count1, count2;
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,thread_id,count1,count2);
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,thread_id,count1,count2);
           if ( ui != nullptr ) {
             //sg_share_test_hh->slice_bucket_set_bit(ui,j%2,thread_id);
             //
@@ -1189,7 +1189,7 @@ void hash_counter_bucket_access_try_a_few(uint32_t num_elements,uint8_t thread_i
           uint32_t h_bucket = bucket_counter;
           //
           uint8_t count1, count2;
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts(h_bucket,thread_id,count1,count2);
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,thread_id,count1,count2);
           if ( ui != nullptr ) {
             //sg_share_test_hh->slice_bucket_set_bit(ui,j%2,thread_id);
             //
@@ -1375,7 +1375,7 @@ void test_method_checks() {
 
     uint32_t controls = 0;
     uint32_t thread_id = 63 - 6;
-    uint32_t lock_on_controls = test_hh->stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;
+    uint32_t lock_on_controls = test_hh->bitp_stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;
 
     cout << "thread_id:\t\t" << bitset<32>{thread_id} << endl;
     cout << "lock_on_controls:\t"  << bitset<32>{lock_on_controls} << endl;
@@ -1388,7 +1388,7 @@ void test_method_checks() {
     controls &= ~1;
     cout << "controls:\t"   << bitset<32>{controls} << endl;
 
-    controls = test_hh->clear_thread_stamp_unlock(controls);
+    controls = test_hh->bitp_clear_thread_stamp_unlock(controls);
     cout << "controls:\t"   << bitset<32>{controls} << endl;
     cout << "check_thread_id:\t"  << test_hh->check_thread_id(controls,lock_on_controls) << endl;
 
