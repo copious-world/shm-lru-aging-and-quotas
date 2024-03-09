@@ -462,11 +462,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				while ( controls & HOLD_BIT_SET ) {  // while some other process is using this count bucket
 					controls = controller->load(std::memory_order_acquire);
 					if ( (controls & HOLD_BIT_SET) && (thread_id_of(controls) == thread_id) ) { // This thread is responsible for it being unlocked but is trying to lock it.
-						unlock_counter(controller,thread_id);   // so, unlock it..
+						store_unlock_controller(controller,thread_id);   // so, unlock it..
 					}
 				}
-				lock_on_controls = stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;  // make sure that this is the thread that sets the bit high
-				controls = clear_thread_stamp_unlock(controls);   // desire that the controller is in this state (0s)
+				lock_on_controls = bitp_stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;  // make sure that this is the thread that sets the bit high
+				controls = bitp_clear_thread_stamp_unlock(controls);   // desire that the controller is in this state (0s)
 				// (cew) returns true if the value changes ... meaning the lock is acquired by someone since the last load
 				// i.e. loop exits if the value changes from no thread id and clear bit to at least the bit
 				while ( !(controller->compare_exchange_weak(controls,lock_on_controls,std::memory_order_release,std::memory_order_relaxed)) );  //  && (count_loops_2++ < 1000)  && !(controls & HOLD_BIT_SET)
@@ -491,7 +491,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		/**
-		 * unlock_counter
+		 * store_unlock_controller
 		*/
 
 		void slice_unlock_counter(uint32_t h_bucket,uint8_t which_table,[[maybe_unused]] uint8_t thread_id = 1) {
@@ -602,13 +602,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		// thread id's must be one based... (from 1)
 
-		uint32_t stamp_thread_id(uint32_t controls,uint32_t thread_id) {
+		uint32_t bitp_stamp_thread_id(uint32_t controls,uint32_t thread_id) {
 			controls = controls & THREAD_ID_SECTION_CLEAR_MASK; // CLEAR THE SECTION
 			controls = controls | ((thread_id & THREAD_ID_BASE) << THREAD_ID_SHIFT);
 			return controls;
 		}
 
-		uint32_t clear_thread_stamp_unlock(uint32_t controls) {
+		uint32_t bitp_clear_thread_stamp_unlock(uint32_t controls) {
 			controls = (controls & (THREAD_ID_SECTION_CLEAR_MASK & FREE_BIT_MASK)); // CLEAR THE SECTION
 			return controls;
 		}
@@ -625,28 +625,34 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			return check;
 		}
 
-		void partner_thread_with(uint32_t ctrl_thread,uint32_t thread_id) {
+		void table_store_partnership(uint32_t ctrl_thread,uint32_t thread_id) {
 			_process_table[ctrl_thread].partner_thread = thread_id;
 			_process_table[thread_id].partner_thread = ctrl_thread;
 		}
 
 
 		// store_and_unlock_controls ----
-		void store_and_unlock_controls(atomic<uint32_t> *controller,uint32_t controls,uint8_t thread_id) {
-			auto cleared_controls = controls;
+		uint32_t store_and_unlock_controls(atomic<uint32_t> *controller,uint32_t controls,uint8_t thread_id) {
 			if ( !(controls & SHARED_BIT_SET) ) {
-				cleared_controls = clear_thread_stamp_unlock(controls);
+				auto cleared_controls = bitp_clear_thread_stamp_unlock(controls);
+				while ( !(controller->compare_exchange_weak(controls,cleared_controls,std::memory_order_acq_rel,std::memory_order_relaxed)) ) {
+					if (( thread_id_of(controls) != thread_id) && (controls & HOLD_BIT_SET) ) {
+						break;
+					}
+				}
+				return controls;
 			} else {
 				auto partner = _process_table[thread_id].partner_thread;  // this partner still has his slice.
-				controls = stamp_thread_id(controls,partner);
-				controls = controls & FREE_BIT_MASK;   // leave the shared bit... 
+				auto partner_controls = bitp_stamp_thread_id(controls,partner);
+				partner_controls = partner_controls & FREE_BIT_MASK;   // leave the shared bit... 
 				_process_table[thread_id].partner_thread = 0;		// but break the partnership
 				_process_table[partner].partner_thread = 0;
-			}
-			while ( !(controller->compare_exchange_weak(controls,cleared_controls,std::memory_order_acq_rel,std::memory_order_relaxed)) ) {
-				if (( thread_id_of(controls) != thread_id) && (controls & HOLD_BIT_SET) ) {
-					break;
+				while ( !(controller->compare_exchange_weak(controls,partner_controls,std::memory_order_acq_rel,std::memory_order_relaxed)) ) {
+					if (( thread_id_of(controls) != thread_id) && ((controls & HOLD_BIT_SET) || (controls & SHARED_BIT_SET)) ) {
+						break;
+					}
 				}
+				return controls;
 			}
 		}
 
@@ -681,7 +687,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			auto p_thread = this->_process_table[thread_id].partner_thread;
 			if ( rider ) {
-				control_bits = stamp_thread_id(control_bits,p_thread);
+				control_bits = bitp_stamp_thread_id(control_bits,p_thread);
 			}
 			control_bits = control_bits & QUIT_SHARE_BIT_MASK;
 			this->_process_table[thread_id].partner_thread = 0;
@@ -706,36 +712,60 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint32_t controls = controller->load(std::memory_order_acquire);
 			//
 			uint32_t lock_on_controls = 0;
-			auto ctrl_thread = thread_id;
+			uint8_t thread_salvage = 0;
 			do {
 				while ( controls & HOLD_BIT_SET ) {  // while some other process is using this count bucket
 					//
 					controls = controller->load(std::memory_order_acquire);
 					//
 					auto ctrl_thread = thread_id_of(controls);
-					if ( controls & HOLD_BIT_SET ) {   // this can be on... 
-						if ( ctrl_thread == thread_id ) {  // This thread is responsible for it being unlocked but is trying to lock it.
-							unlock_counter(controller,thread_id);   // so, unlock it..
-						}  // otherwise this bucket belongs to another thread...
+					//
+					if ( controls & HOLD_BIT_SET ) {
+						// can fix this situation if thread_id holds the lock....
+						// given the proper order of bucket locking, etc. At this point, this is a fix for failed locking...
+						if ( ctrl_thread == thread_id ) {
+							// Clear the hold bit in any way possible (because thread_id is blocking itself)
+							// store_unlock_controller will either (1) clear the control word of any thread
+							// or (2) remove thread_id from a partnership. 
+							controls = store_unlock_controller(controller,thread_id);
+						} else {  // another thread is in charge. But, thread_id may still be blocking
+							// thread_id is partnered if the shared bit is set and crtr_thread indicates thread_id
+							// in the process table.
+							if ( partnered(ctrl_thread,thread_id) ) {
+								// the thread found leads to information indicating thread_id as being 
+								// present in the bucket. So, quit the partnership thereby clearing the hold bit.
+								store_relinquish_partnership(thread_id,ctrl_thread);
+							}
+
+						}
 					}
 				}
+				//  At this point the bucket is cleared of thread id. And the hold bit is not set.
+				// 	Make sure the expected pattern of storage makes sense. And, write the sensible pattern 
+				//	indicating pure lock or shared lock.
 				// 
-				lock_on_controls = stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;  // make sure that this is the thread that sets the bit high
-				if ( controls & SHARED_BIT_SET ) {
-					ctrl_thread = thread_id_of(controls);
+				if ( controls & SHARED_BIT_SET ) {   // Indicates that another thread (stored in controls) can share.
+					// This means there is a free slice and thread_id could access that slice.
+					// So, produce the bit pattern that will indicate sharing from this point, 
+					// i.e. thread_id will be in the control word while the current one will be in salvage (in tables later)
+					thread_salvage = thread_id_of(controls);  // in the mean time, we expect the partner to be stored.
+					// pass the `controls` word (it has info that must be preserved) ... don't change the process tables yet
+					lock_on_controls = bitp_partner_thread(thread_salvage,thread_id,controls) | HOLD_BIT_SET; // 
+				} else {
+					lock_on_controls = bitp_stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;  // make sure that this is the thread that sets the bit high
+					controls = bitp_clear_thread_stamp_unlock(controls);   // desire that the controller is in this state (0s)
 				}
-				controls = clear_thread_stamp_unlock(controls);   // desire that the controller is in this state (0s)
 				// (cew) returns true if the value changes ... meaning the lock is acquired by someone since the last load
 				// i.e. loop exits if the value changes from no thread id and clear bit to at least the bit
+				// or it changes from the partner thread and shared bit set to thread_id and hold bit set and shared bit still set.
 				while ( !(controller->compare_exchange_weak(controls,lock_on_controls,std::memory_order_release,std::memory_order_relaxed)) );  //  && (count_loops_2++ < 1000)  && !(controls & HOLD_BIT_SET)
-				// but we care if this thread is the one that gets the bit.. so check to see that `lock_on_controls` contains 
-				// this thread id.
+				// but we care if this thread is the one that gets the bit.. so check to see that `controls` contains 
+				// this thread id and the `HOLD_BIT_SET`
 			} while ( !(check_thread_id(controls,lock_on_controls)) );  // failing this, we wait on the other thread to give up the lock..
 			//
-			if ( controls & SHARED_BIT_SET ) {
-				partner_thread_with(ctrl_thread,thread_id);
+			if ( controls & SHARED_BIT_SET ) {  // at this poin thread_id is stored in controls, and if shared bit, then partnership
+				table_store_partnership(thread_id,thread_salvage); // thread_salvage has to have been set.
 			}
-			//
 			// at this point this thread should own the bucket...
 			ret_control = lock_on_controls;  // return the control word that was loaded and change to carrying this thread id and lock bit
 			return controller;
@@ -744,18 +774,18 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		/**
-		 * unlock_counter
+		 * store_unlock_controller
 		*/
 
-		void unlock_counter(uint32_t h_bucket,uint8_t thread_id) {
+		uint32_t store_unlock_controller(uint32_t h_bucket,uint8_t thread_id) {
 			uint32_t *controllers = _region_C;
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			unlock_counter(controller,thread_id);
+			return store_unlock_controller(controller,thread_id);
 		}
 
-		void unlock_counter(atomic<uint32_t> *controller,uint8_t thread_id) {
+		uint32_t store_unlock_controller(atomic<uint32_t> *controller,uint8_t thread_id) {
 			uint32_t controls = controller->load(std::memory_order_acquire);
-			store_and_unlock_controls(controller,controls,thread_id);
+			return store_and_unlock_controls(controller,controls,thread_id);
 		}
 
 
@@ -799,7 +829,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				}
 				// the keep thread is now corrected
 			}
-			auto restored_controls = stamp_thread_id(controls,keep_thread);
+			auto restored_controls = bitp_stamp_thread_id(controls,keep_thread);
 			restored_controls = restored_controls & QUIT_SHARE_BIT_MASK;
 			//
 			_process_table[keep_thread].partner_thread = 0;
@@ -819,7 +849,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			uint32_t controls = controller->load(std::memory_order_acquire);
 			//
-			auto update_controls = stamp_thread_id(controls,thread_id);
+			auto update_controls = bitp_stamp_thread_id(controls,thread_id);
 			update_controls = update_controls | SHARED_BIT_SET;    // set the shared bit
 			//
 			_process_table[thread_id].partner_thread = thread_id;
@@ -976,7 +1006,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			*controller_ref = controller;
 
 			if ( (count_2 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
-				this->unlock_counter(controller,thread_id);
+				this->store_unlock_controller(controller,thread_id);
 				return false;
 			}
 
@@ -1244,11 +1274,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			hh_element *storage_ref = get_ref(h_bucket, el_key, buffer, end);
 			//
 			if ( storage_ref == nullptr ) {
-				//this->unlock_counter(h_bucket);
+				//this->store_unlock_controller(h_bucket);
 				return UINT32_MAX;
 			}
 			uint32_t V = storage_ref->_kv.value;
-			//this->unlock_counter(h_bucket);
+			//this->store_unlock_controller(h_bucket);
 			//
 			return V;
 		}
