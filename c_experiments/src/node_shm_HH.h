@@ -172,7 +172,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			this->_max_n = max_count;
 			//
-			_T1 = T;   // keep the reference handy
+			_T0 = T;   // keep the reference handy
 			//
 			uint32_t vh_region_size = (sizeof(hh_element)*max_count);
 			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
@@ -201,13 +201,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			// # 1
 			//
-			_region_HV_1 = (hh_element *)(start + hv_offset_1);  // start on word boundary
-			_region_HV_1_end = (hh_element *)(start + hv_offset_1 + vh_region_size);
+			_region_HV_0 = (hh_element *)(start + hv_offset_1);  // start on word boundary
+			_region_HV_0_end = (hh_element *)(start + hv_offset_1 + vh_region_size);
 
 			//
 			if ( am_initializer ) {
-				if ( check_end((uint8_t *)_region_HV_1) && check_end((uint8_t *)_region_HV_1_end) ) {
-					memset((void *)(_region_HV_1),0,vh_region_size);
+				if ( check_end((uint8_t *)_region_HV_0) && check_end((uint8_t *)_region_HV_0_end) ) {
+					memset((void *)(_region_HV_0),0,vh_region_size);
 				} else {
 					throw "hh_map (1) sizes overrun allocated region determined by region_sz";
 				}
@@ -216,7 +216,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			// # 2
 			// ----
 			T = (HHash *)(start + next_hh_offset);
-			_T2 = T;   // keep the reference handy
+			_T1 = T;   // keep the reference handy
 			
 			start = (uint8_t *)(T);
 
@@ -231,8 +231,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			// # 2
 			//
-			_region_HV_2 = (hh_element *)(start + hv_offset_1);  // start on word boundary
-			_region_HV_2_end = (hh_element *)(start + hv_offset_1 + vh_region_size);
+			_region_HV_1 = (hh_element *)(start + hv_offset_1);  // start on word boundary
+			_region_HV_1_end = (hh_element *)(start + hv_offset_1 + vh_region_size);
 
 			auto hv_offset_2 = next_hh_offset + header_size;
 
@@ -240,8 +240,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			T->_C_Offset = (hv_offset_2 + vh_region_size)*2;
 			//
 			//
-			_T1->_C_Offset = c_offset*2;			// Both regions use the same control regions (interleaved)
-			_T2->_C_Offset = c_offset;				// the caller will access the counts of the two buckets at the same offset often
+			_T0->_C_Offset = c_offset*2;			// Both regions use the same control regions (interleaved)
+			_T1->_C_Offset = c_offset;				// the caller will access the counts of the two buckets at the same offset often
 
 			//
 			//
@@ -256,13 +256,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			if ( am_initializer ) {
 				//
-				if ( check_end((uint8_t *)_region_HV_2) && check_end((uint8_t *)_region_HV_2_end) ) {
-					memset((void *)(_region_HV_2),0,vh_region_size);
+				if ( check_end((uint8_t *)_region_HV_1) && check_end((uint8_t *)_region_HV_1_end) ) {
+					memset((void *)(_region_HV_1),0,vh_region_size);
 				} else {
 					throw "hh_map (2) sizes overrun allocated region determined by region_sz";
 				}
 				// one 16 bit word for two counters
-				if ( check_end((uint8_t *)_region_C) && check_end((uint8_t *)_region_HV_2_end,true) ) {
+				if ( check_end((uint8_t *)_region_C) && check_end((uint8_t *)_region_HV_1_end,true) ) {
 					memset((void *)(_region_C), 0, c_regions_size);
 				} else {
 					throw "hh_map (3) sizes overrun allocated region determined by region_sz";
@@ -453,35 +453,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
-		atomic<uint32_t> * slice_bucket_lock_one(atomic<uint32_t> *controller,uint8_t which_table,uint32_t &ret_control,uint8_t thread_id) {   // where are the bucket counts??
-			//
-			uint32_t controls = controller->load(std::memory_order_acquire);
-			//
-			uint32_t lock_on_controls = 0;
-			do {				
-				while ( controls & HOLD_BIT_SET ) {  // while some other process is using this count bucket
-					controls = controller->load(std::memory_order_acquire);
-					if ( (controls & HOLD_BIT_SET) && (thread_id_of(controls) == thread_id) ) { // This thread is responsible for it being unlocked but is trying to lock it.
-						store_unlock_controller(controller,thread_id);   // so, unlock it..
-					}
-				}
-				lock_on_controls = bitp_stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;  // make sure that this is the thread that sets the bit high
-				controls = bitp_clear_thread_stamp_unlock(controls);   // desire that the controller is in this state (0s)
-				// (cew) returns true if the value changes ... meaning the lock is acquired by someone since the last load
-				// i.e. loop exits if the value changes from no thread id and clear bit to at least the bit
-				while ( !(controller->compare_exchange_weak(controls,lock_on_controls,std::memory_order_release,std::memory_order_relaxed)) );  //  && (count_loops_2++ < 1000)  && !(controls & HOLD_BIT_SET)
-				// but we care if this thread is the one that gets the bit.. so check to see that `lock_on_controls` contains 
-				// this thread id.
-			} while ( !(check_thread_id(controls,lock_on_controls)) );  // failing this, we wait on the other thread to give up the lock..
-			//
-			// at this point this thread should own the bucket...
-			ret_control = lock_on_controls;  // return the control word that was loaded and change to carrying this thread id and lock bit
-			return controller;
-		}
-
-
-
-
 		atomic<uint32_t> *slice_bucket_set_bit(atomic<uint32_t> *controller,uint8_t which_table,[[maybe_unused]] uint8_t thread_id = 1) {
 			uint32_t controls = controller->load(std::memory_order_acquire);
 			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
@@ -619,6 +590,18 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			controls = controls | ((thread_id & THREAD_ID_BASE) << THREAD_ID_SHIFT);
 			return controls;
 		}
+		
+		/**
+		 * check_thread_id
+		*/
+		bool check_thread_id(uint32_t controls,uint32_t lock_on_controls) {
+			uint32_t vCHECK_MASK = THREAD_ID_SECTION | HOLD_BIT_SET;
+			bool check = ((controls & vCHECK_MASK) == (lock_on_controls & vCHECK_MASK));
+			return check;
+		}
+
+
+
 
 		/**
 		 * bucket_blocked
@@ -679,10 +662,24 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		bool check_thread_id(uint32_t controls,uint32_t lock_on_controls) {
-			uint32_t vCHECK_MASK = THREAD_ID_SECTION | HOLD_BIT_SET;
-			bool check = ((controls & vCHECK_MASK) == (lock_on_controls & vCHECK_MASK));
-			return check;
+
+
+		/**
+		 * to_slice_transition
+		 * 
+		 *			this hold bit must be set prior to calling this method.
+		*/
+
+		void to_slice_transition(atomic<uint32_t> *controller, uint32_t controls, uint8_t which_table, uint32_t thread_id) {
+			auto pre_store = controller->load(std::memory_order_acquire);
+			if ( !(controls & SHARED_BIT_SET) ) {
+				controls = controls | SHARED_BIT_SET;
+			}
+			if ( thread_id_of(controls) != thread_id ) {
+				table_store_partnership(thread_id,thread_id_of(controls)); // thread_salvage has to have been set.
+			}
+			controls = which_table ? (controls | HOLD_BIT_ODD_SLICE) : (controls | HOLD_BIT_EVEN_SLICE);
+			while ( !(controller->compare_exchange_weak(pre_store,controls,std::memory_order_acq_rel,std::memory_order_relaxed)) );  //  && (count_loops_2++ < 1000)  && !(controls & HOLD_BIT_SET)
 		}
 
 
@@ -822,80 +819,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-
-		/**
-		 * confirm_shared
-		 * 
-		 * 
-		 * confirm_shared cannot be applied to a relfexive case in which (ctrl_thread == thread_id)
-		 * 
-		 * 
-		*/
-
-		bool confirm_shared(uint32_t thread_id,uint32_t ctrl_thread) {
-			if ( thread_id == ctrl_thread ) return false;
-			//
-			auto first_shared = _process_table[thread_id].partner_thread;
-			if ( first_shared == ctrl_thread ) {
-				auto second_shared = _process_table[ctrl_thread].partner_thread;
-				if ( second_shared == thread_id ) {
-					return true;
-				}
-			}
-			//
-			return false;
-		}
-
-
-		/*
-		*
-		*/
-		void unlock_shared_counter(atomic<uint32_t> *controller,uint32_t keep_thread,uint32_t discard_thread) {
-			//
-			uint32_t controls = controller->load(std::memory_order_acquire);
-			if ( keep_thread == discard_thread ) {
-				keep_thread = _process_table[keep_thread].partner_thread;
-				if ( keep_thread == 0 ) {
-					controls = (controls & QUIT_SHARE_BIT_MASK);
-					store_and_unlock_controls(controller,controls,discard_thread);
-					return;
-				}
-				// the keep thread is now corrected
-			}
-			auto restored_controls = bitp_stamp_thread_id(controls,keep_thread);
-			restored_controls = restored_controls & QUIT_SHARE_BIT_MASK;
-			//
-			_process_table[keep_thread].partner_thread = 0;
-			_process_table[discard_thread].partner_thread = 0;
-			//
-			while ( !(controller->compare_exchange_weak(controls,restored_controls,std::memory_order_acq_rel,std::memory_order_relaxed)) ) {
-				if (( thread_id_of(controls) != discard_thread) && (controls & HOLD_BIT_SET) ) {
-					break;
-				}
-			}
-			//
-		}
-
-
-
-		void lock_shared_counter(atomic<uint32_t> *controller,uint32_t thread_id,uint32_t resident_thread) {
-			//
-			uint32_t controls = controller->load(std::memory_order_acquire);
-			//
-			auto update_controls = bitp_stamp_thread_id(controls,thread_id);
-			update_controls = update_controls | SHARED_BIT_SET;    // set the shared bit
-			//
-			_process_table[thread_id].partner_thread = thread_id;
-			_process_table[resident_thread].partner_thread = resident_thread;
-			//
-			while ( !(controller->compare_exchange_weak(controls,update_controls,std::memory_order_acq_rel,std::memory_order_relaxed)) ) {
-				if (( thread_id_of(controls) != thread_id) && (controls & HOLD_BIT_SET) ) {
-					break;
-				}
-			}
-			//
-		}
-
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
@@ -933,13 +856,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * 		Leaves the bucket lock upon return. 
 		 * 		The caller must call a method to unlock the buffer. 
 		*/
-		atomic<uint32_t> *bucket_counts_lock(uint32_t h_bucket, uint8_t thread_id, uint8_t &count_1, uint8_t &count_2) {   // where are the bucket counts??
+		atomic<uint32_t> *bucket_counts_lock(uint32_t h_bucket, uint8_t thread_id, uint8_t &count_0, uint8_t &count_1) {   // where are the bucket counts??
 			//
 			uint32_t controls = 0;
 			auto controller = this->bucket_lock(h_bucket,controls,thread_id);
 			//
-			count_1 = (controls & COUNT_MASK);
-			count_2 = (controls>>EIGHTH) & COUNT_MASK;
+			count_0 = (controls & COUNT_MASK);
+			count_1 = (controls>>EIGHTH) & COUNT_MASK;
 			//
 			return (controller);
 		}
@@ -962,6 +885,41 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+		uint32_t update_slice_counters(uint32_t controls,uint32_t count_0,uint32_t count_1) {
+			//
+			auto counter = controls & COUNT_MASK;
+			if ( counter < (uint8_t)COUNT_MASK ) {
+				controls = (controls & ~COUNT_MASK) | (COUNT_MASK & count_0);
+			}
+
+			counter = (controls>>EIGHTH) & COUNT_MASK;
+			if ( counter < (uint8_t)COUNT_MASK ) {
+				uint32_t update = (count_1 << EIGHTH) & HI_COUNT_MASK;
+				controls = (controls & ~HI_COUNT_MASK) | update;
+			}
+			//
+			return controls;
+		}
+
+		uint32_t update_count_incr(uint32_t controls) {
+			auto counter = ((controls & DOUBLE_COUNT_MASK) >> QUARTER);   // update the counter for both buffers.
+			if ( counter < (uint8_t)DOUBLE_COUNT_MASK_BASE ) {
+				counter++;
+				uint32_t update = (counter << QUARTER) & DOUBLE_COUNT_MASK;
+				controls = (controls & ~DOUBLE_COUNT_MASK) | update;
+			}
+			return controls;
+		}
+
+		uint32_t update_count_decr(uint32_t controls) {
+			auto counter = ((controls & DOUBLE_COUNT_MASK) >> QUARTER);   // update the counter for both buffers.
+			if ( counter > 0 ) {
+				counter--;
+				uint32_t update = (counter << QUARTER) & DOUBLE_COUNT_MASK;
+				controls = (controls & ~DOUBLE_COUNT_MASK) | update;
+			}
+			return controls;
+		}
 
 
 		/**
@@ -974,24 +932,29 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		void bucket_count_incr(atomic<uint32_t> *controller, uint8_t thread_id) {
-			if ( controller == nullptr ) return;
+		uint32_t bucket_count_incr(atomic<uint32_t> *controller, uint8_t thread_id) {
+			if ( controller == nullptr ) return 0;
 			//
 			uint32_t controls = controller->load(std::memory_order_acquire);
+			auto pre_controls = controls;
 			while ( !(controls & HOLD_BIT_SET) ) {	// should be the only one able to get here on this bucket.
 				this->bucket_lock(controller,controls,thread_id);  // aqcuire the lock again... if somehow this unlocked
 			}
 			//
-			uint8_t counter = (controls & DOUBLE_COUNT_MASK) >> QUARTER;   // update the counter for both buffers.
-			if ( counter < (uint8_t)DOUBLE_COUNT_MASK_BASE ) {
-				counter++;
-				uint32_t update = (counter << QUARTER) & DOUBLE_COUNT_MASK;
-				controls = (controls & ~DOUBLE_COUNT_MASK) | update;
-			}
+			controls = update_count_incr(controls);
 			//
-			store_and_unlock_controls(controller,controls,thread_id);
+			while ( !(controller->compare_exchange_weak(pre_controls,controls,std::memory_order_acq_rel,std::memory_order_relaxed)) );
+			return controls;
 		}
 
+
+		void bucket_count_incr_and_unlock(atomic<uint32_t> *controller, uint8_t thread_id) {
+			if ( controller == nullptr ) return;
+			auto controls = bucket_count_incr(controller, thread_id);
+			if ( controls > 0 ) {
+				store_and_unlock_controls(controller,controls,thread_id);
+			}
+		}
 
 		/**
 		 * bucket_count_decr
@@ -1003,24 +966,27 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		void bucket_count_decr(atomic<uint32_t> *controller, uint8_t thread_id) {
-			if ( controller == nullptr ) return;
+		uint32_t bucket_count_decr(atomic<uint32_t> *controller, uint8_t thread_id) {
+			if ( controller == nullptr ) return 0;
 			//
 			uint32_t controls = controller->load(std::memory_order_acquire);
+			auto pre_controls = controls;
 			while ( !(controls & HOLD_BIT_SET) ) {	// should be the only one able to get here on this bucket.
 				this->bucket_lock(controller,controls,thread_id);  // aqcuire the lock again...
 			}
 			//
-			uint8_t counter = (controls & DOUBLE_COUNT_MASK) >> QUARTER;   // update the counter for both buffers.
-			if ( counter > 0 ) {
-				counter--;
-				uint32_t update = (counter << QUARTER) & DOUBLE_COUNT_MASK;
-				controls = (controls & ~DOUBLE_COUNT_MASK) | update;
-			}
+			controls = update_count_decr(controls);
 			//
-			store_and_unlock_controls(controller,controls,thread_id);
+			while ( !(controller->compare_exchange_weak(pre_controls,controls,std::memory_order_acq_rel,std::memory_order_relaxed)) );
+			return controls;
 		}
 
+
+		void bucket_count_decr_and_unlock(atomic<uint32_t> *controller, uint8_t thread_id) {
+			if ( controller == nullptr ) return;
+			auto controls = bucket_count_decr(controller, thread_id);
+			store_and_unlock_controls(controller,controls,thread_id);
+		}
 
 
 		// 
@@ -1037,42 +1003,76 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		bool wait_if_unlock_bucket_counts(atomic<uint32_t> **controller_ref,uint8_t thread_id,uint32_t h_bucket,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
 			// ----
-			HHash *T = _T1;
-			hh_element *buffer		= _region_HV_1;
-			hh_element *end_buffer	= _region_HV_1_end;
+			HHash *T = _T0;
+			hh_element *buffer		= _region_HV_0;
+			hh_element *end_buffer	= _region_HV_0_end;
+			//
 			which_table = 0;
 
-
-			uint8_t count_1 = 0;		// favor the least full bucket ... but in case something doesn't move try both
-			uint8_t count_2 = 0;
+			uint8_t count_0 = 0;		// favor the least full bucket ... but in case something doesn't move try both
+			uint8_t count_1 = 0;
 
 			// ----
-			atomic<uint32_t> *controller = this->bucket_counts_lock(h_bucket,thread_id,count_1,count_2);
+			atomic<uint32_t> *controller = this->bucket_counts_lock(h_bucket,thread_id,count_0,count_1);
 			*controller_ref = controller;
 
-			if ( (count_2 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
+			if ( (count_0 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
 				this->store_unlock_controller(controller,thread_id);
 				return false;
 			}
 
-			//
-			if ( count_2 < count_1 ) {
-				T = _T2;
-				which_table = 1;
-				buffer = _region_HV_2;
-				end_buffer = _region_HV_2_end;
-			} else if ( count_2 == count_1 ) {
-				uint8_t bit = pop_shared_bit();
-				if ( bit ) {
-					T = _T2;
+
+			// 1 odd 0 even 
+	
+			auto controls = controller->load();
+			if ( controls & SHARED_BIT_SET ) {
+				if ( (controls & HOLD_BIT_ODD_SLICE) && (count_1 < COUNT_MASK) ) {
 					which_table = 1;
-					buffer = _region_HV_2;
-					end_buffer = _region_HV_2_end;
+					T = _T1;
+					buffer = _region_HV_1;
+					end_buffer = _region_HV_1_end;			// otherwise, the 0 region remains in use
+					count_1++;
+				} else if ( (controls & HOLD_BIT_EVEN_SLICE)  && (count_0 < COUNT_MASK) ) {
+					which_table = 0;
+					count_0++;
+				} else if ( ( controls & HOLD_BIT_ODD_SLICE ) && ( controls & HOLD_BIT_EVEN_SLICE ) ) {
+					// should not be here
+					this->store_unlock_controller(controller,thread_id);
+					return false;
+				} else {
+					// running out of space....
+					this->store_unlock_controller(controller,thread_id);
+					return false;
 				}
+			} else {  // changing from T0 to T1 otherwise leave it alone.
+				//
+				if ( (count_1 < count_0) && (count_1 < COUNT_MASK) ) {
+					T = _T1;
+					which_table = 1;
+					buffer = _region_HV_1;
+					end_buffer = _region_HV_1_end;
+					count_1++;
+				} else if ( (count_1 == count_0) && (count_1 < COUNT_MASK) ) {
+					uint8_t bit = pop_shared_bit();
+					if ( bit ) {
+						T = _T1;
+						which_table = 1;
+						buffer = _region_HV_1;
+						end_buffer = _region_HV_1_end;
+						count_1++;
+					} else {
+						count_0++;
+					}
+				} else if ( count_0 < COUNT_MASK ) {
+					count_0++;
+				} else return false;
+				//
 			}
 
-			this->slice_bucket_lock(controller,which_table,thread_id);
-			this->bucket_count_incr(controller,thread_id);   // unlocks -- may roll back if adding fails
+			controls = this->update_slice_counters(controls,count_0,count_1);
+			controls = this->update_count_incr(controls);   // does not lock -- may roll back if adding fails
+			//
+			this->to_slice_transition(controller,controls,which_table,thread_id);
 
 			*T_ref = T;
 			*buffer_ref = buffer;
@@ -1187,9 +1187,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			// with the threads, just current process threads at the curren tier.
 
 			//
-			HHash *T = _T1;
-			hh_element *buffer	= _region_HV_1;
-			hh_element *end	= _region_HV_1_end;
+			HHash *T = _T0;
+			hh_element *buffer	= _region_HV_0;
+			hh_element *end	= _region_HV_0_end;
 			uint8_t which_table = 0;
 
 			//
@@ -1273,8 +1273,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint8_t selector = ((el_key & HH_SELECT_BIT) == 0) ? 0 : 1;
 			el_key = clear_selector_bit(el_key);
 			//
-			hh_element *buffer = (selector ? _region_HV_1 : _region_HV_2);
-			hh_element *end = (selector ? _region_HV_1_end : _region_HV_2_end);
+			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
+			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
 			//
 			//uint64_t loaded_value = (((uint64_t)v_value) << HALF) | el_key;
 			//
@@ -1312,8 +1312,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint8_t selector = ((el_key & HH_SELECT_BIT) == 0) ? 0 : 1;
 			el_key = clear_selector_bit(el_key);
 			//
-			hh_element *buffer = (selector ? _region_HV_1 : _region_HV_2);
-			hh_element *end = (selector ? _region_HV_1_end : _region_HV_2_end);
+			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
+			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
 			//
 			//this->bucket_lock(h_bucket);
 			hh_element *storage_ref = get_ref(h_bucket, el_key, buffer, end);
@@ -1336,8 +1336,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint32_t h_bucket = (uint32_t)(key & HASH_MASK);
 			uint8_t selector = ((key & HH_SELECT_BIT) == 0) ? 0 : 1;
 			//
-			hh_element *buffer = (selector ? _region_HV_1 : _region_HV_2);
-			hh_element *end = (selector ? _region_HV_1_end : _region_HV_2_end);
+			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
+			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
 			//
 			atomic<uint32_t> *controller = this->slice_bucket_lock(h_bucket,selector,thread_id);
 			uint32_t i = del_ref(h_bucket, el_key, buffer, end);
@@ -1359,7 +1359,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			uint8_t selector = ((h_bucket & HH_SELECT_BIT) == 0) ? 0 : 1;
 			//
-			hh_element *buffer = (selector ? _region_HV_1 : _region_HV_2);
+			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
 			hh_element *next = buffer + h_bucket;
 			//
 			uint8_t count = 0;
@@ -1690,12 +1690,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		uint8_t		 					*_region;
 		uint8_t		 					*_endof_region;
 		//
+		HHash							*_T0;
 		HHash							*_T1;
-		HHash							*_T2;
+		hh_element		 				*_region_HV_0;
 		hh_element		 				*_region_HV_1;
-		hh_element		 				*_region_HV_2;
+		hh_element		 				*_region_HV_0_end;
 		hh_element		 				*_region_HV_1_end;
-		hh_element		 				*_region_HV_2_end;
 		//
 		// ---- These two regions are interleaved in reality
 		uint32_t		 				*_region_C;
