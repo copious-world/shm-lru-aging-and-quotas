@@ -434,31 +434,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
-		atomic<uint32_t> *slice_bucket_lock(atomic<uint32_t> *controller,uint8_t which_table,[[maybe_unused]] uint8_t thread_id = 1) {
-			uint32_t controls = controller->load(std::memory_order_acquire);
-			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
+		atomic<uint32_t> *slice_bucket_lock(atomic<uint32_t> *controller,uint8_t which_table, uint8_t thread_id = 1) {
 			//
-			do {
-				while ( controls & vLOCK_BIT ) {  // while some other process is using this count bucket
-					controls = controller->load(std::memory_order_consume);
-				}
-				//
-				while ( !controller->compare_exchange_weak(controls,(controls | vLOCK_BIT)) && !(controls & vLOCK_BIT) );
-
-			 } while ( controls & vLOCK_BIT );
+			this->bucket_lock(controller,controls,thread_id);
+			this->to_slice_transition(controller,controls,which_table,thread_id);
 			//
 			return controller;
 		}
 
-
-
-
-		atomic<uint32_t> *slice_bucket_set_bit(atomic<uint32_t> *controller,uint8_t which_table,[[maybe_unused]] uint8_t thread_id = 1) {
-			uint32_t controls = controller->load(std::memory_order_acquire);
-			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
-			controller->store((controls | vLOCK_BIT));
-			return controller;
-		}
 
 
 		/**
@@ -474,94 +457,59 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		// slice_unlock_counter
 		//
-		void slice_unlock_counter(atomic<uint32_t> *controller,uint8_t which_table,[[maybe_unused]] uint8_t thread_id = 1) {
+		void slice_unlock_counter(atomic<uint32_t> *controller,uint8_t which_table,uint8_t thread_id = 1) {
 			if ( controller == nullptr ) return;
-			uint32_t vUNLOCK_BIT_MASK = which_table ? FREE_BIT_ODD_SLICE_MASK : FREE_BIT_EVEN_SLICE_MASK;
-			//
-			uint32_t controls = controller->load(std::memory_order_acquire);
-			controller->store((controls & vUNLOCK_BIT_MASK),std::memory_order_release);
+			auto controls = which_table ? (controls & FREE_BIT_ODD_SLICE_MASK) : (controls & FREE_BIT_EVEN_SLICE_MASK);
+			store_and_unlock_controls(controller,controls,thread_id);
 		}
 
 
 		/**
-		 * slice_bucket_count_incr
+		 * slice_bucket_count_incr_unlock
 		*/
-		void slice_bucket_count_incr(uint32_t h_bucket, uint8_t which_table, uint8_t thread_id) {
+		void slice_bucket_count_incr_unlock(uint32_t h_bucket, uint8_t which_table, uint8_t thread_id) {
 			uint32_t *controllers = _region_C;
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			slice_bucket_count_incr(controller,which_table,thread_id);
+			slice_bucket_count_incr_unlock(controller,which_table,thread_id);
 		}
 
-		void slice_bucket_count_incr(atomic<uint32_t> *controller, uint8_t which_table, [[maybe_unused]] uint8_t thread_id) {
+		void slice_bucket_count_incr_unlock(atomic<uint32_t> *controller, uint8_t which_table, [[maybe_unused]] uint8_t thread_id) {
 			if ( controller == nullptr ) return;
 			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
 			uint32_t vUNLOCK_BIT_MASK = which_table ? FREE_BIT_ODD_SLICE_MASK : FREE_BIT_EVEN_SLICE_MASK;
 			//
 			uint32_t controls = controller->load(std::memory_order_consume);
-			if ( !(controls & vLOCK_BIT) ) {	// should be the only one able to get here on this bucket.
-				this->_status = -1;
-				return;
-			}
 			//
-			uint8_t counter = 0;
-			if ( which_table == 0 ) {
-				counter = controls & COUNT_MASK;
-				if ( counter < (uint8_t)COUNT_MASK ) {
-					counter++;
-					controls = (controls & ~COUNT_MASK) | (COUNT_MASK & counter);
-				}
-			} else {
-				counter = (controls>>EIGHTH) & COUNT_MASK;
-				if ( counter < (uint8_t)COUNT_MASK ) {
-					counter++;
-					uint32_t update = (counter << EIGHTH) & HI_COUNT_MASK;
-					controls = (controls & ~HI_COUNT_MASK) | update;
-				}
-			}
-			//
-			controller->store((controls & vUNLOCK_BIT_MASK),std::memory_order_release);
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			slice_unlock_counter(controller,which_table,thread_id);
 		}
 
 
 		/**
 		 * bucket_count_decr
 		*/
-		void slice_bucket_count_decr(uint32_t h_bucket, uint8_t which_table,[[maybe_unused]] uint8_t thread_id) {
+		void slice_bucket_count_decr_unlock(uint32_t h_bucket, uint8_t which_table, uint8_t thread_id) {
 			uint32_t *controllers = _region_C;
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			bucket_count_decr(controller,which_table,thread_id);
+			slice_bucket_count_decr_unlock(controller,selector,thread_id);
 		}
 
 
-		void slice_bucket_count_decr(atomic<uint32_t> *controller, uint8_t which_table,[[maybe_unused]] uint8_t thread_id) {
-			//
-			uint32_t vLOCK_BIT = which_table ? HOLD_BIT_ODD_SLICE : HOLD_BIT_EVEN_SLICE;
-			uint32_t vUNLOCK_BIT_MASK = which_table ? FREE_BIT_ODD_SLICE_MASK : FREE_BIT_EVEN_SLICE_MASK;
+		void slice_bucket_count_decr_unlock(atomic<uint32_t> *controller, uint8_t which_table, uint8_t thread_id) {
 			//
 			uint32_t controls = controller->load(std::memory_order_consume);
-			if ( !(controls & vLOCK_BIT) ) {	// should be the only one able to get here on this bucket.
-				this->_status = -1;
-				return;
-			}
-			//
-			uint8_t counter = 0;
-			if ( which_table == 0 ) {
-				counter = controls & COUNT_MASK;
-				if ( counter > 0 ) {
-					counter--;
-					controls = (controls & ~COUNT_MASK) | (COUNT_MASK & counter);
-				}
+			uint32_t count_0 = (controls & COUNT_MASK);
+			uint32_t count_1 = ((controls>>EIGHTH) & COUNT_MASK);
+			if ( which_table ) {
+				if ( count_1 > 0 ) count_1--;
 			} else {
-				counter = (controls>>EIGHTH) & COUNT_MASK;
-				if ( counter > 0 ) {
-					counter--;
-					uint32_t update = (counter << EIGHTH) & HI_COUNT_MASK;
-					controls = (controls & ~HI_COUNT_MASK) | update;
-				}
+				if ( count_0 > 0 ) count_0--;
 			}
-			//
-			controller->store((controls & vUNLOCK_BIT_MASK),std::memory_order_release);
+			///
+			controls = update_slice_counters(controls,count_0,count_1);
+			slice_unlock_counter(controller, which_table, thread_id);
 		}
+
 
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -1109,11 +1057,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				while ( restore_queue_empty() && _restore_operational ) wait_notification_restore();
 				if ( _restore_operational ) {
 					dequeue_restore(&hash_ref, h_bucket, loaded_value, which_table, thread_id, &buffer, &end);
+					// store... if here, it should be locked
 					bool put_ok = store_in_hash_bucket(hash_ref, loaded_value, buffer, end);
 					if ( put_ok ) {
-						this->slice_bucket_count_incr(h_bucket,which_table,thread_id);
-					} else {
 						this->slice_unlock_counter(h_bucket,which_table,thread_id);
+					} else {
+						this->slice_bucket_count_decr_unlock(h_bucket,which_table,thread_id);
 					}
 				}
 			}
@@ -1209,7 +1158,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 					hash_ref->_kv.value = offset_value;
 					hash_ref->_kv.key = el_key;
 					SET( hash_ref->c_bits, 0);
-					this->slice_bucket_count_incr(h_bucket,which_table,thread_id);
+					this->slice_bucket_count_incr_unlock(h_bucket,which_table,thread_id);
 				} else {
 					uint64_t loaded_value = (((uint64_t)tmp_value) << HALF) | tmp_key;
 					if ( tmp_c_bits != 0 ) {  // don't touch c_bits (restore will)
@@ -1344,7 +1293,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			if ( i == UINT32_MAX ) {
 				this->slice_unlock_counter(controller,selector,thread_id);
 			} else {
-				this->slice_bucket_count_decr(controller,selector,thread_id);
+				this->slice_bucket_count_decr_unlock(controller,selector,thread_id);
 			}
 			return i;
 		}
