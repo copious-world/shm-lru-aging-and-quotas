@@ -832,7 +832,7 @@ void hash_counter_bucket_access(void) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->slice_bucket_count_incr(20,which_table,1); // 
+          sg_share_test_hh->slice_bucket_count_incr_unlock(20,which_table,1); // 
         }
       }
     }
@@ -915,7 +915,8 @@ void test_hh_map_operation_initialization_linearization() {
     if ( noisy_test ) {
         uint8_t count1;
         uint8_t count2;
-        sg_share_test_hh->bucket_counts_lock(20,1,count1,count2);
+        uint32_t controls;
+        sg_share_test_hh->bucket_counts_lock(20,controls,1,count1,count2);
         cout << "counts: " << (int)count1 << " :: " << (int)count2 << endl;
     }
 
@@ -960,7 +961,7 @@ void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,uint8_
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table,thread_num);
+          sg_share_test_hh->slice_bucket_count_incr_unlock(h_bucket,which_table,thread_num);
         } else {
           my_false_count[thread_num][h_bucket]++;
         }
@@ -990,7 +991,7 @@ void hash_counter_bucket_access_many_buckets(uint32_t num_elements,uint8_t threa
           //
           int i = 0; while ( i < 100 ) i++;
           //
-          sg_share_test_hh->slice_bucket_count_incr(h_bucket,which_table,thread_num);
+          sg_share_test_hh->slice_bucket_count_incr_unlock(h_bucket,which_table,thread_num);
         } else {
           my_false_count[thread_num][h_bucket]++;
         }
@@ -1018,8 +1019,9 @@ void hash_counter_bucket_access_many_buckets_primitive(uint32_t num_elements,uin
           uint32_t h_bucket = bucket_counter += skip;
           //
           uint8_t count1, count2;
+          uint32_t controls;
 
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,thread_num,count1,count2);
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,controls,thread_num,count1,count2);
           if ( ui != nullptr ) {
             //
             int i = 0; while ( i < 100 ) i++;
@@ -1049,7 +1051,8 @@ void hash_counter_bucket_access_many_buckets_shared_incr(uint32_t num_elements,u
           uint32_t h_bucket = bucket_counter;
           //
           uint8_t count1, count2;
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,thread_id,count1,count2);
+          uint32_t controls;
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,controls,thread_id,count1,count2);
           if ( ui != nullptr ) {
             //
             int i = 0; while ( i < 100 ) i++;
@@ -1187,7 +1190,8 @@ void hash_counter_bucket_access_try_a_few(uint32_t num_elements,uint8_t thread_i
           uint32_t h_bucket = bucket_counter;
           //
           uint8_t count1, count2;
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,thread_id,count1,count2);
+          uint32_t controls;
+          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,controls,thread_id,count1,count2);
           if ( ui != nullptr ) {
             //
             int i = 0; while ( i < 100 ) i++;
