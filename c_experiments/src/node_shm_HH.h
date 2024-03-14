@@ -52,6 +52,7 @@ typedef struct KEY_VALUE<uint32_t> key_value;
 
 
 typedef struct HH_element {
+	uint32_t			taken_spots;
 	uint32_t			c_bits;   // control bit mask
 	union {
 		key_value		_kv;
@@ -154,6 +155,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			// initialize from constructor
 			this->setup_region(am_initializer,header_size,(max_element_count/2),num_threads);
+
+			_random_gen_region->store(0);
 		}
 
 
@@ -172,6 +175,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		void setup_region(bool am_initializer,uint8_t header_size,uint32_t max_count,uint32_t num_threads) {
 			// ----
 			uint8_t *start = _region;
+
+			_random_gen_thread_lock = (atomic_flag *)start++;
+			_random_share_lock = (atomic_flag *)start++;
+			_random_gen_region = (atomic<uint32_t> *)start++;
+
+
 			HHash *T = (HHash *)start;
 
 			//
@@ -288,6 +297,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		static uint32_t check_expected_hh_region_size(uint32_t els_per_tier, uint32_t num_threads) {
+
+			uint8_t atomics_size = 2*sizeof(atomic_flag) + sizeof(atomic<uint32_t>);
 			//
 			uint8_t sz = sizeof(HHash);
 			uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
@@ -300,9 +311,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			auto next_hh_offset = (hv_offset_1 + vh_region_size);  // now, the next array of buckets and values (controls are the very end for both)
 			auto proc_region_size = num_threads*sizeof(proc_descr);
 			//
-			uint32_t predict = next_hh_offset*2 + c_regions_size + proc_region_size;
+			uint32_t predict = atomics_size + next_hh_offset*2 + c_regions_size + proc_region_size;
 			return predict;
-		} 
+		}
 
 
 
@@ -355,30 +366,72 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-
 		// THREAD CONTROL
 
 		void tick() {
 			nanosleep(&request, &remaining);
 		}
 
-		void wakeup_random_genator(uint8_t which_region) {   // 
-			// regenerate_shared(which_region);
-			_random_gen_value->store(which_region);
+		void wakeup_random_genator(uint8_t which_region) {   //
+			//
+			_random_gen_region->store(which_region);
+#ifndef __APPLE__
+			while ( !(_random_gen_thread_lock->test_and_set()) );
+			_random_gen_thread_lock->notify_one();
+#else
+			while ( !(_random_gen_thread_lock->test_and_set()) );
+#endif
 		}
 
 		void thread_sleep([[maybe_unused]] uint8_t ticks) {
 
 		}
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+		void share_lock(void) {
+#ifndef __APPLE__
+				while ( _random_gen_thread_lock->test() ) {  // if not cleared, then wait
+					_random_gen_thread_lock->wait();
+				};
+				while ( !_random_gen_thread_lock->test_and_set() );
+#else
+				while ( _random_gen_thread_lock->test() ) {
+					thread_sleep(10);
+				};
+				while ( !_random_gen_thread_lock->test_and_set() );
+#endif			
+		}
+
+		
+		void share_unlock(void) {
+#ifndef __APPLE__
+			while ( _random_share_lock->test() ) {
+				_random_share_lock->clear();
+			};
+			_random_share_lock->notify_one();
+#else
+			while ( _random_share_lock->test() ) {
+				_random_share_lock->clear();
+			};
+#endif
+		}
+
+
 		void random_generator_thread_runner() {
 			while ( true ) {
-				uint8_t which_region = _random_gen_value->load();
-				if ( which_region != UINT8_MAX ) {
-					this->regenerate_shared(which_region);
-					_random_gen_value->store(UINT8_MAX);
-				}
-				thread_sleep(10);
+#ifndef __APPLE__
+				do {
+					_random_gen_thread_lock->wait();
+				} while ( !_random_gen_thread_lock->test() )
+#else
+				do {
+					thread_sleep(10);
+				} while ( !_random_gen_thread_lock->test() );
+#endif
+				bool which_region = _random_gen_region->load(std::memory_order_acquire);
+				this->regenerate_shared(which_region);		
+				_random_gen_thread_lock->clear();		
 			}
 		}
 
@@ -1089,8 +1142,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 #endif
 		}
 
-	
-		bool restore_queue_empty() {
+
+		bool is_restore_queue_empty() {
 			bool is_empty = _process_queue.empty();
 #ifndef __APPLE__
 
@@ -1108,11 +1161,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			hh_element *buffer = nullptr;
 			hh_element *end = nullptr;
 			while ( _restore_operational ) {
-				while ( restore_queue_empty() && _restore_operational ) wait_notification_restore();
+				while ( is_restore_queue_empty() && _restore_operational ) wait_notification_restore();
 				if ( _restore_operational ) {
 					dequeue_restore(&hash_ref, h_bucket, loaded_value, which_table, thread_id, &buffer, &end);
 					// store... if here, it should be locked
-					bool put_ok = store_in_hash_bucket(hash_ref, loaded_value, buffer, end);
+					uint32_t *controllers = _region_C;
+					auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+					//
+					bool put_ok = store_in_hash_bucket(controller, thread_id, hash_ref, loaded_value, buffer, end);
 					if ( put_ok ) {
 						this->slice_unlock_counter(h_bucket,which_table,thread_id);
 					} else {
@@ -1465,7 +1521,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// (If the buffer is nearly full, this can take considerable time)
 		// Attempt to keep things organized in buckets, indexed by the hash module the number of elements
 		//
-		bool store_in_hash_bucket(hh_element *hash_ref, uint64_t v_passed,hh_element *buffer,hh_element *end_buffer) {
+		bool store_in_hash_bucket(atomic<uint32_t> *controller, uint8_t thread_id, hh_element *hash_ref, uint64_t v_passed, hh_element *buffer, hh_element *end_buffer) {
 			//
 			if ( v_passed == 0 ) return(false);  // zero indicates empty...
 			//
@@ -1476,7 +1532,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			// v_ref comes back locked on the first free (also uncontended) hole.
 			// This lock is basically the CAS for the position (Kelly 2018). A hole will be bipassed 
 			// if it is owned by another processess/thread.
-			uint32_t D = _circular_first_empty_from_ref(buffer, end_buffer, &v_ref);  // a distance starting from h (if wrapped, then past N)
+			uint32_t D = _circular_first_empty_from_ref(buffer, end_buffer, &v_ref, &controller, thread_id);  // a distance starting from h (if wrapped, then past N)
 			if ( D == UINT32_MAX ) return(false); // the positions in the entire buffer are full.
 
 			// If we got to here, v_ref is now pointing at an empty spot (increasing mod N from h_start), first one found
@@ -1503,11 +1559,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				v_swap_bits = v_swap;
 				//
 				bool chk = false;
-				do  { chk = check_2lock(v_swap_bits,v_ref); } while ( !chk && !hopeless_2lock(v_swap_bits,v_ref) ); //
-				if ( hopeless_2lock(v_swap_bits,v_ref) ) {
-					free_lock(v_ref);
+				do  { chk = check_2lock(thread_id,v_swap_bits,v_ref); } while ( !chk && !hopeless_2lock(controller,thread_id,v_swap_bits,v_ref) ); //
+				if ( hopeless_2lock(controller,thread_id,v_swap_bits,v_ref) ) {
+					free_lock(controller,thread_id,v_ref);
 					++v_ref;
-					D += _circular_first_empty_from_ref(buffer, end_buffer, &v_ref);
+					D += _circular_first_empty_from_ref(buffer, end_buffer, &v_ref, &controller, thread_id);
 					v_swap = v_ref;
 					continue;
 				}
@@ -1518,8 +1574,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				v_swap = el_check_end(v_swap,buffer,end_buffer);
 				_swapper(v_swap_bits,v_swap,v_ref,i,j); // take care of the bits as well...
 				//
-				free_lock(v_swap_bits);
-				free_lock(v_ref);
+				free_lock(controller,thread_id,v_swap_bits);
+				free_lock(controller,thread_id,v_ref);
 				//
 				if ( v_swap > hash_ref ) {
 					D = (v_swap - hash_ref);
@@ -1533,8 +1589,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			v_swap->_V = v_passed;
 			SET(hash_ref->c_bits,D);
 
-			free_lock(v_swap);
-			free_lock(v_ref);
+			free_lock(controller,thread_id,v_swap);
+			free_lock(controller,thread_id,v_ref);
 
 			return(true);
 		}
@@ -1555,24 +1611,32 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		bool check_lock([[maybe_unused]] hh_element *v) {
-			return true;
-		}
+		// ----
 
-		bool check_2lock([[maybe_unused]] hh_element *v1,[[maybe_unused]] hh_element *v2) {
-			return true;
-		}
-
-		void free_lock([[maybe_unused]] hh_element *v) {
-		}
-
-		bool hopeless_lock([[maybe_unused]] hh_element *v) {
+		bool check_lock(atomic<uint32_t> *controller, uint8_t thread_id, [[maybe_unused]] hh_element *v) {
+			auto controls = controller->load();
+			bool busy_now = (controls & HOLD_BIT_SHIFT);
+			if ( !busy_now ) {
+				if ( controls & SHARED_BIT_SET ) {
+					
+				}
+				return true;
+			}
 			return false;
 		}
 
-		bool hopeless_2lock([[maybe_unused]] hh_element *v1,[[maybe_unused]] hh_element *v2) {
+
+		bool check_2lock(atomic<uint32_t> *controller, uint8_t thread_id,[[maybe_unused]] hh_element *v1,[[maybe_unused]] hh_element *v2) {
+			return true;
+		}
+
+		bool hopeless_2lock(atomic<uint32_t> *controller, uint8_t thread_id,[[maybe_unused]] hh_element *v1,[[maybe_unused]] hh_element *v2) {
 			return false;
 		}
+
+		void free_lock(atomic<uint32_t> *controller, uint8_t thread_id,[[maybe_unused]] hh_element *v) {
+		}
+
 
 		/**
 		 *  _probe -- search for a free space within a bucket
@@ -1585,42 +1649,159 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * 
 		 * @returns {uint32_t} distance of the bucket from h
 		*/
-		uint32_t _circular_first_empty_from_ref(hh_element *buffer, hh_element *end_buffer, hh_element **h_ref_ref) {   // value probe ... looking for zero
+		uint32_t _circular_first_empty_from_ref(hh_element *buffer, hh_element *end_buffer, hh_element **h_ref_ref, atomic<uint32_t> **controller_ref, uint8_t thread_id) {   // value probe ... looking for zero
 			// // 
 			// search in the bucket
 			hh_element *h_ref = *h_ref_ref;
 			hh_element *vb_probe = h_ref;
+			auto controller = *controller_ref;
 			//
 			while ( vb_probe < end_buffer ) { // search forward to the end of the array (all the way even it its millions.)
 				uint64_t V = vb_probe->_V;
 				if ( V == 0 ) {
-					if ( check_lock(vb_probe) ) {
+					if ( check_lock(controller,thread_id,vb_probe) ) {
 						*h_ref_ref = vb_probe;
+						*controller_ref = controller;
 						uint32_t dist_from_h = (uint32_t)(vb_probe - h_ref);
 						return dist_from_h;			// look no further
 					}
 				}
-				vb_probe++;
+				vb_probe++; controller++;
 			}
 			// WRAP CIRCULAR BUFFER
 			// look for anything starting at the beginning of the segment
 			// wrap... start searching from the start of all data...
 			vb_probe = buffer;
+			controller = (atomic<uint32_t> *)(_region_C);
 			while ( vb_probe < h_ref ) {
 				uint64_t V = vb_probe->_V;
 				if ( V == 0 ) {
-					if ( check_lock(vb_probe) ) {
+					if ( check_lock(controller,thread_id,vb_probe) ) {
 						uint32_t N = this->_max_n;
 						*h_ref_ref = vb_probe;
+						*controller_ref = controller;
 						uint32_t dist_from_h = N + (uint32_t)(vb_probe - h_ref);	// (vb_end - h_ref) + (vb_probe - v_buffer) -> (vb_end  - v_buffer + vb_probe - h_ref)
 						return dist_from_h;	// look no further (notice quasi modular addition)
 					}
 				}
-				vb_probe++;
+				vb_probe++; controller++;
 			}
 			// BUFFER FULL
 			return UINT32_MAX;  // this will be taken care of by a modulus in the caller
 		}
+
+
+
+		/**
+		 *  _circular_blocks_first_empty_from_ref
+		 *  _probe -- search for a free space within a bucket
+		 * 		h : the bucket starts at h (an offset in _region_V)
+		 * 
+		 *  zero in the value buffer means no entry, because values do not start at zero for the offsets 
+		 *  (free list header is at zero if not allocated list)
+		 * 
+		 * `_probe` wraps around search before h (bucket index) returns the larger value N + j if the wrap returns a position
+		 * 
+		 * @returns {uint32_t} distance of the bucket from h
+		*/
+		uint32_t _circular_blocks_first_empty_from_ref(hh_element *buffer, hh_element *end_buffer, hh_element **h_ref_ref, atomic<uint32_t> **controller_ref, uint8_t thread_id) {   // value probe ... looking for zero
+			// // 
+			// search in the bucket
+			hh_element *h_ref = *h_ref_ref;
+			hh_element *vb_probe = h_ref;
+			hh_element *vb_probe_limit = vb_probe + 32*(4);  // this is 128 positions... maybe
+			//
+			auto controller = *controller_ref;
+			//
+			uint32_t a = vb_probe->c_bits;
+			if ( a == UINT32_MAX ) {
+				return UINT32_MAX;
+			}
+			uint32_t b = vb_probe->taken_spots;
+			uint8_t hole = 0;
+			uint32_t dist_from_h = 0;
+			//
+			if ( popcount(b) < 32 ) {	// This means there is a free space within the bucket
+				if ( (a == 0) && !(b & 0x1) ) { // a very common special case... i.e. the primary hash bucket is empty
+					return 0;			// use this bucket for the first time.
+				} else {				// 
+					hole = countr_zero(b);
+					*h_ref_ref = vb_probe + hole;
+					*controller_ref = controller + hole;
+					return hole;			// look no further
+				}
+			}
+
+			// failing a hole in the first window, look at the next bucket center and see if there is something 
+			// farther out..
+			auto offset_check = (a ^ b);
+			auto offset = countr_zero(offset_check);
+			hh_element *vb_probe_base = vb_probe;
+			vb_probe = vb_probe_base + offset;
+			offset_check = offset_check & (~(1 << offset));
+			dist_from_h = offset;
+			//
+			uint16_t advance = 0;
+			while ( (vb_probe < vb_probe_limit) && (vb_probe < end_buffer) ) { // search forward to the end of the array (all the way even it its millions.)
+				//
+				uint32_t b = vb_probe->taken_spots;
+				if ( popcount(b) < 32 ) {
+					hole = countr_zero(b);
+					*h_ref_ref = vb_probe + hole;
+					*controller_ref = controller + hole;
+					return dist_from_h + hole;			// look no further
+				}
+				//
+				offset = countr_zero(offset_check);
+				auto up_offset = countr_zero(offset_check);
+				if ( up_offset >= 32 ) {
+					advance += offset;
+					a = vb_probe->c_bits;
+					offset_check = (a ^ b);
+					offset = countr_zero(offset_check);
+				} else offset = up_offset;
+				vb_probe = vb_probe_base + offset;
+				offset_check = offset_check & (~(1 << offset));
+				dist_from_h = offset + advance;
+				//
+			}
+
+			// WRAP CIRCULAR BUFFER
+			// look for anything starting at the beginning of the segment
+			// wrap... start searching from the start of all data...
+			if ( vb_probe < vb_probe_limit ) {
+				vb_probe_limit = buffer + (vb_probe_limit - end_buffer);
+				vb_probe = buffer + (vb_probe  - end_buffer);
+				while ( (vb_probe < vb_probe_limit) && (vb_probe < h_ref) ) { // search forward to the end of the array (all the way even it its millions.)
+					//
+					uint32_t b = vb_probe->taken_spots;
+					if ( popcount(b) < 32 ) {
+						hole = countr_zero(b);
+						*h_ref_ref = vb_probe + hole;
+						*controller_ref = controller + hole;
+						return dist_from_h + hole;			// look no further
+					}
+					//
+					auto up_offset = countr_zero(offset_check);
+					if ( up_offset >= 32 ) {
+						advance += offset;
+						a = vb_probe->c_bits;
+						offset_check = (a ^ b);
+						offset = countr_zero(offset_check);
+					} else offset = up_offset;
+					vb_probe = vb_probe_base + offset;
+					offset_check = offset_check & (~(1 << offset));
+					dist_from_h = offset + advance;
+					//
+				}
+			}
+
+			// BUFFER FULL
+			return UINT32_MAX;  // this will be taken care of by a modulus in the caller
+		}
+
+
+
 
 		/**
 		 * Look at one bit pattern after another from distance `d` shifted 'down' to h by K (as close as possible).
@@ -1710,7 +1891,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		proc_descr						*_end_procs;						
 
 		bool 							_restore_operational;
-		atomic<uint32_t> 				*_random_gen_value;
+
+		atomic_flag		 				*_random_gen_thread_lock;
+		atomic_flag		 				*_random_share_lock;
+		atomic<uint32_t>				*_random_gen_region;
 
 		QueueEntryHolder<>				_process_queue;
 		atomic_flag						_sleeping_reclaimer;

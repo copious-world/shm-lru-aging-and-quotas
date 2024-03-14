@@ -90,7 +90,6 @@ public:
 	}
 
 
-
 	uint32_t generate_word() {
 		uint32_t bits = 0;
 		for ( uint8_t i = 0; i < 32; i++ ) {
@@ -99,6 +98,7 @@ public:
 		}
 		return bits;
 	}
+
 
     template <typename OutputIt>
     void generate(OutputIt first, OutputIt last) {
@@ -113,6 +113,7 @@ public:
 		_bits.resize(NbitWords);   // fr list ??
 		generate(_bits.begin(), _bits.end());
 	}
+
 
 	uint8_t pop_bit() {
 		//
@@ -133,6 +134,7 @@ public:
 		//
 		return the_bit;
 	}
+
 
 
 	void transfer_to_shared_buffer(uint32_t *shared_bit_area, uint32_t size, uint8_t selector = UINT8_MAX) {
@@ -165,6 +167,7 @@ public:
 		//
 		if ( _shared_bits == nullptr ) return 0;  // get nothing.... not random
 		//
+		share_lock();
 		uint32_t shared_bcount = _shared_bits[1];
 		if ( _shared_bcount == 0 ) {
 			uint32_t index = _shared_bits[0];
@@ -186,6 +189,7 @@ public:
 		//
 		_shared_bits[1] = shared_bcount;
 		_shared_bits[2] = shared_last_bits;
+		share_unlock();
 		//
 		return the_bit;
 	}
@@ -205,10 +209,17 @@ public:
 		//
 		if ( (region_selector < SELECTOR_MAX) && (_shared_bits_regions[region_selector] != nullptr) ) {
 			_create_random_bits();
+			share_lock();
 			transfer_to_shared_buffer(_shared_bits_regions[region_selector],_bits.size());
+			share_unlock();
 		}
 		//
 	}
+
+
+
+	void share_lock(void) {}
+	void share_unlock(void) {}
 
 };
 

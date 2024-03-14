@@ -26,6 +26,8 @@
 #include <bit>
 #include <cstdint>
 #include <random>
+#include <bit>
+
 
 //#include <linux/futex.h>
 
@@ -1738,6 +1740,35 @@ void calc_prob_limis() {
 
 }
 
+
+
+void test_some_bit_patterns(void) {
+
+  uint32_t A = 0b10110110101011101011011010101110;
+  uint32_t B = 0b10111110101111101111111011101111;
+
+  uint32_t D = 1;
+  while ( D != 0 ) {
+    uint32_t C = A | B;
+    D = ~C;
+    uint32_t E = A ^ B;
+
+    cout << bitset<32>(A) << " A"  << endl;
+    cout << bitset<32>(B) << " B"  << endl;
+    cout << bitset<32>(C) << "  A | B" << endl;
+    cout << bitset<32>(D) << "  ~(A | B)" << endl;
+    cout << bitset<32>(E) << " A ^ B ... " << countr_one(E) << " ... " << countr_zero((A ^ B) & ~1) << endl;
+    //
+    cout << countr_zero(D)  <<  " : "  << countl_zero(D) << endl;
+    bitset<32> d(D);
+    cout << "any: " << d.any() <<  " count: " << d.count() << endl;
+    uint8_t shft = countr_zero(D);
+    A |= (1 << shft);
+    B |= (1 << shft);
+  }
+  // cout << bitset<32>(E) << endl;
+}
+
 /*
 const uint32_t DOUBLE_COUNT_MASK_BASE = 0xFF;  // up to (256-1)
 const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE<<16);
@@ -1806,7 +1837,7 @@ int main(int argc, char **argv) {
 
   // butter_bug_test();
 
-  calc_prob_limis();
+  // calc_prob_limis();
 
 
   uint32_t nowish = 0;
@@ -1830,11 +1861,14 @@ int main(int argc, char **argv) {
     //
     // test_hh_map_operation_initialization_linearization_many_buckets();
 
-    test_hh_map_operation_initialization_linearization_small_noisy();
+    //test_hh_map_operation_initialization_linearization_small_noisy();
 
     //test_method_checks();
 
     //test_sleep_methods();
+
+
+    test_some_bit_patterns();
 
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
