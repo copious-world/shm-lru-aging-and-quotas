@@ -1769,6 +1769,90 @@ void test_some_bit_patterns(void) {
   // cout << bitset<32>(E) << endl;
 }
 
+
+
+void test_zero_above(void) {
+  //
+  for ( uint8_t i = 0; i < 32; i ++ ) {
+    cout << "test_zero_above:\t" << bitset<32>(HH_map<>::zero_levels[i]) << endl;
+  }
+
+  uint32_t test_pattern =  1  | (1 << 4) | (1 << 7) | (1 << 11) | (1 << 16) | (1 << 17) | (1 << 20) | (1 << 21) | (1 << 22) | 
+                          (1 << 23) | (1 << 24) | (1 << 26) | (1 << 27) | (1 << 29) | (1 << 30) | (1 << 31);
+
+  cout << "test_pattern:\t\t" << bitset<32>(test_pattern) << endl;
+
+  uint32_t a = test_pattern;
+  a &= (~(uint32_t)1);
+
+  while ( a ) {
+    cout << countr_zero(a) << endl;
+    uint8_t shift =  countr_zero(a);
+    auto masked = a & HH_map<>::zero_above(shift);
+    cout << "test_mask   :\t\t" << bitset<32>(masked) << endl;
+    a &= (~(uint32_t)(1 << shift));
+  }
+
+  a = test_pattern;
+  a &= (~(uint32_t)1);
+
+  while ( a ) {
+    cout << countr_zero(a) << endl;
+    uint8_t shift =  countr_zero(a);
+    auto masked = test_pattern & HH_map<>::zero_above(shift);
+    cout << "test_masked :\t\t" << bitset<32>(masked) << endl;
+    a &= (~(uint32_t)(1 << shift));
+  }
+
+  cout << " ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----" << endl;
+
+  uint32_t b = 0b11101101111100110000101110111111;
+  cout << "test_taken  :\t\t" << bitset<32>(b) << endl;
+
+  uint64_t vb_probe_base[40];
+  uint64_t *vb_probe = &vb_probe_base[0];
+  for ( uint8_t i = 0; i < 32; i++ ) {
+    *vb_probe++ = (i+1);
+  }
+
+  uint64_t v_passed = (((uint64_t)0b1111) << 34) | (0b10101010101010101010101010101);
+  uint8_t hole = countr_one(b);
+  uint32_t hbit = (1 << hole);
+  a = test_pattern | hbit;
+  b = b | hbit;
+  // ----
+
+  cout << "test_patt(b):\t\t" << bitset<32>(b) << endl;
+  cout << "test_pattern:\t\t" << bitset<32>(test_pattern) << endl;
+  cout << "test_patt(a):\t\t" << bitset<32>(a) << endl;
+
+  //vb_probe->c_bits = a;
+  //vb_probe->taken_spots = b | hbit;
+  cout << "test_hole(a):\t\t" << bitset<32>(HH_map<>::zero_above(hole)) << endl;
+  a = a & HH_map<>::zero_above(hole);
+  cout << "test_patt(a):\t\t" << bitset<32>(a) << endl;
+  //
+  // unset the first bit (which indicates this position starts a bucket)
+  a = a & (~((uint32_t)0x1));
+  while ( a ) {
+    vb_probe = &vb_probe_base[0];
+    cout << "test_patt(a):\t\t" << bitset<32>(a) << endl;
+    auto offset = countr_zero(a);
+    a = a & (~((uint32_t)0x1 << offset));
+    vb_probe += offset;
+    swap(v_passed,*vb_probe);
+    cout << "test_patt(a):\t\t" << bitset<32>(a) << " ++ " << v_passed << endl;
+    //swap(time,vb_probe->taken_spots);  // when the element is not a bucket head, this is time... 
+  }
+  //
+  cout << "v_passed: " << bitset<64>(v_passed) << endl;
+  vb_probe = &vb_probe_base[0];
+  for ( uint8_t i = 0; i < 32; i++ ) {
+    cout << "state(" << (int)i << "): " << *vb_probe++ << endl;
+  }
+}
+
+
 /*
 const uint32_t DOUBLE_COUNT_MASK_BASE = 0xFF;  // up to (256-1)
 const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE<<16);
@@ -1869,6 +1953,8 @@ int main(int argc, char **argv) {
 
 
     test_some_bit_patterns();
+
+    //test_zero_above();
 
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
