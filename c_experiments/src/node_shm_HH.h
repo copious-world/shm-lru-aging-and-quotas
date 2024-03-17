@@ -1121,8 +1121,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 		}
 
-		// ----
 
+		bool short_list_old_entry([[maybe_unused]] uint64_t loaded_value,[[maybe_unused]] uint32_t store_time) {
+			return false;
+		}
+
+		// ----
 
 		void  wait_notification_restore() {
 #ifndef __APPLE__
@@ -1152,6 +1156,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
+		/**
+		 * value_restore_runner
+		*/
 		void value_restore_runner(void) {
 			hh_element *hash_ref = nullptr;
 			uint32_t h_bucket = 0;
@@ -1169,22 +1176,29 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 					auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
 					//
 					uint32_t store_time = 1000; // now
-					bool quick_put_ok = pop_until_oldest(hash_ref, loaded_value, store_time, buffer, end);
+					bool quick_put_ok = pop_until_oldest(hash_ref, loaded_value, store_time, buffer, end, h_bucket);
 					if ( quick_put_ok ) {
-						this->slice_unlock_counter(h_bucket,which_table,thread_id);
+						this->slice_unlock_counter(controller,which_table,thread_id);
 					} else {
-						bool put_ok = store_in_hash_bucket(controller, thread_id, hash_ref, loaded_value, buffer, end);
-						if ( put_ok ) {
-							this->slice_unlock_counter(h_bucket,which_table,thread_id);
-						} else {
-							this->slice_bucket_count_decr_unlock(h_bucket,which_table,thread_id);
+						//
+						this->slice_unlock_counter(controller,which_table,thread_id);
+						//
+						if ( short_list_old_entry(loaded_value, store_time) ) {
+							//
+							uint32_t el_key = (loaded_value & UINT32_MAX);
+							uint32_t offset_value = ((loaded_value >> HALF) & UINT32_MAX);
+							add_key_value(el_key,h_bucket, offset_value, thread_id);
 						}
+						//
 					}
 				}
 			}
 		}
 
 
+		/**
+		 * enqueue_restore
+		*/
 		void enqueue_restore(hh_element *hash_ref, uint32_t h_bucket, uint64_t loaded_value, uint8_t which_table, uint8_t thread_id, hh_element *buffer, hh_element *end) {
 			q_entry get_entry;
 			//
@@ -1199,7 +1213,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			_process_queue.push(get_entry);    // by ref
 		}
 
-
+		/**
+		 * dequeue_restore
+		*/
 		void dequeue_restore(hh_element **hash_ref_ref, uint32_t &h_bucket, uint64_t &loaded_value, uint8_t &which_table, uint8_t &thread_id, hh_element **buffer_ref, hh_element **end_ref) {
 			//
 			q_entry get_entry;
@@ -1220,7 +1236,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-	
+
+		/**
+		 * wakeup_value_restore
+		*/
 
 		void wakeup_value_restore(hh_element *hash_ref, uint32_t h_start, uint64_t loaded_value, uint8_t which_table, uint8_t thread_id, hh_element *buffer, hh_element *end) {
 			// this queue is jus between the calling thread and the service thread belonging to just this process..
@@ -1269,7 +1288,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				if ( tmp_value == 0 ) {
 					hash_ref->_kv.value = offset_value;
 					hash_ref->_kv.key = el_key;
-					SET( hash_ref->c_bits, 0);
+					SET( hash_ref->c_bits, 0);   // now set the usage bits
 					this->slice_bucket_count_incr_unlock(h_bucket,which_table,thread_id);
 				} else {
 					uint64_t loaded_value = (((uint64_t)tmp_value) << HALF) | tmp_key;
@@ -1558,12 +1577,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		//
-		uint32_t stamp_offset(uint32_t time,uint8_t offset) {
+		uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset) {
 			return time;
 		}
 
 		//
-		bool pop_until_oldest(hh_element *hash_ref, uint64_t &v_passed, uint32_t &time, hh_element *buffer, hh_element *end_buffer) {
+		bool pop_until_oldest(hh_element *hash_ref, uint64_t &v_passed, uint32_t &time, hh_element *buffer, hh_element *end_buffer,uint32_t &h_bucket) {
 			if ( v_passed == 0 ) return false;  // zero indicates empty...
 			//
 			hh_element *vb_probe = hash_ref;
@@ -1580,9 +1599,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			// unset the first bit (which indicates this position starts a bucket)
 			a = a & (~((uint32_t)0x1));
+			uint32_t offset = 0;
 			while ( a ) {
 				vb_probe = hash_ref;
-				auto offset = countr_zero(a);
+				offset = countr_zero(a);
 				a = a & (~((uint32_t)0x1 << offset));
 				vb_probe += offset;
 				swap(v_passed,vb_probe->_V);
@@ -1602,25 +1622,25 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				// swapping with the current bucket oldest value.
 				auto min_probe = hash_ref;
 				auto base_probe = hash_ref;
-				uint32_t offset_ntx = 0;
+				uint32_t offset_nxt = 0;
 				while ( c ) {
 					vb_probe = hash_ref;
 					while ( c ) {
-						offset_ntx = countr_zero(c);
-						c = c & (~((uint32_t)0x1 << offset_ntx));
-						vb_probe += offset_ntx;
+						offset_nxt = countr_zero(c);
+						c = c & (~((uint32_t)0x1 << offset_nxt));
+						vb_probe += offset_nxt;
 						if ( vb_probe->c_bits & 0x1 ) break;
 					}
 					if ( c ) {
 						if ( popcount(vb_probe->c_bits) > 1 ) {
 							auto nxt = vb_probe->c_bits;
 							nxt = nxt & (~((uint32_t)0x1));
-							nxt = nxt & zero_above(32 - offset);
+							nxt = nxt & zero_above(32 - offset_nxt);
 							base_probe = vb_probe;
-							while ( ntx ) {
-								auto offset_ntx = countr_zero(ntx);
-								ntx = ntx & (~((uint32_t)0x1 << offset));
-								vb_probe += offset_ntx;
+							while ( nxt ) {
+								auto offset_nxt = countr_zero(nxt);
+								nxt = nxt & (~((uint32_t)0x1 << offset_nxt));
+								vb_probe += offset_nxt;
 								vb_probe = base_probe;
 								if ( !(vb_probe->c_bits & 0x1) ) {
 									if ( vb_probe->taken_spots < time ) {
@@ -1633,13 +1653,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				}
 				if ( min_probe != hash_ref ) {  // found a place in the bucket that can be moved...
 					swap(v_passed,vb_probe->_V);
-					time = stamp_offset(time,offset + offset_ntx);
+					time = stamp_offset(time,offset + offset_nxt);
 					swap(time,vb_probe->taken_spots);  // when the element is not a bucket head, this is time... 
-					base_probe->c_bits &= ~(0x1 << offset_ntx);  // turn off the bit
-					hash_ref->c_bits |= (0x1 << (offset + offset_ntx));
+					base_probe->c_bits &= ~(0x1 << offset_nxt);  // turn off the bit
+					hash_ref->c_bits |= (0x1 << (offset + offset_nxt));
 					// taken spots is black, so we don't reset values after this...
 				}
 				//
+				h_bucket += offset;
 				return false;  // this region has no free space...
 			} else {
 				//
@@ -1670,390 +1691,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			// the oldest element should now be free cell or at least (if it was something deleted) all the older values
 			// have been shifted. v_passed should be zero. 
 			return true;	// there are some free cells.
-		}
-
-
-		/**
-		 * quick_put
-		 * 	-- 
-		*/
-		bool quick_put(hh_element *hash_ref, uint64_t v_passed, uint32_t time, hh_element *buffer, hh_element *end_buffer) {
-			if ( v_passed == 0 ) return false;  // zero indicates empty...
-			// search in the bucket
-			hh_element *vb_probe = hash_ref;
-			hh_element *vb_probe_limit = vb_probe + 32*(4);  // this is 128 positions... maybe
-			//
-			//
-			uint32_t a = vb_probe->c_bits;
-			if ( a == UINT32_MAX ) {
-				return false;
-			}
-			uint32_t b = vb_probe->taken_spots;
-			//
-			if ( popcount(b) < 32 ) {	// This means there is a free space within the bucket
-				if ( (a == 0) && !(b & 0x1) ) { // a very common special case... i.e. the primary hash bucket is empty
-					return 0;			// use this bucket for the first time.
-				} else {				// 
-					uint8_t hole = countr_zero(b);
-					vb_probe += hole;
-					if ( vb_probe > end_buffer ) {
-						vb_probe = buffer + (vb_probe - end_buffer);
-					}
-					//
-					vb_probe->c_bits = (hole << 1) & (~((uint32_t)(0x1)));
-					vb_probe->taken_spots = time;
-					vb_probe->_V = v_passed;
-					//
-					return true;
-				}
-			}
-			//
-			return false;
-		}
-
-/*
-
-typedef struct HH_element {
-	uint32_t			taken_spots;
-	uint32_t			c_bits;   // control bit mask
-	union {
-		key_value		_kv;
-		uint64_t		_V;
-	};
-} hh_element;
-
-*/
-
-		// store_in_hash_bucket
-		// Given a hash and a value, find a place for storing this pair
-		// (If the buffer is nearly full, this can take considerable time)
-		// Attempt to keep things organized in buckets, indexed by the hash module the number of elements
-		//
-		bool store_in_hash_bucket(atomic<uint32_t> *controller, uint8_t thread_id, hh_element *hash_ref, uint64_t v_passed, hh_element *buffer, hh_element *end_buffer) {
-			//
-			if ( v_passed == 0 ) return(false);  // zero indicates empty...
-			//
-			hh_element *v_ref = hash_ref;
-			hh_element *v_swap = nullptr;
-			hh_element *v_swap_bits = nullptr;
-			//
-			// v_ref comes back locked on the first free (also uncontended) hole.
-			// This lock is basically the CAS for the position (Kelly 2018). A hole will be bipassed 
-			// if it is owned by another processess/thread.
-			uint32_t D = _circular_first_empty_from_ref(buffer, end_buffer, &v_ref, &controller, thread_id);  // a distance starting from h (if wrapped, then past N)
-			if ( D == UINT32_MAX ) return(false); // the positions in the entire buffer are full.
-
-			// If we got to here, v_ref is now pointing at an empty spot (increasing mod N from h_start), first one found
-			// v_ref has been claimed
-
-			//
-			// if the hole is father way from h_start than the neighborhood... then hopscotch
-			//
-			v_swap = v_ref;
-			while ( D >= NEIGHBORHOOD ) { // D is how far. If (D + h_start) > N, v_ref will be < hash_ref ... (v_ref < hash_ref)
-				//
-				// find something closer to hash_ref and can be traded with the hole
-				// (since the hole will be in the neighborhood of something closer.)
-				// We imagine that the hole is in the tail end of a neighborhood, and swapping will
-				// keep it in the neighborhood but closer to the hash_ref.
-				uint32_t j = _hop_scotch_refs(&v_swap, buffer, end_buffer);   // j is the hole location in the neighborhood (for bits)
-				if ( j == 0 ) return(false); // could not find anything that could move. (Frozen at this point..)
-
-				// At this point, v_swap points to a hash bucket/value that provides a useful bitmask (nice neighborhood)
-				// But, v_swap itself may not point to the actual position to swap...
-				// So, advance the pointer to the first spot that the hash v_swap location owns (in the neighborly sense).
-				// Then swap with that position.
-
-				// found a position that can be moved... (offset from h <= d closer to the neighborhood)
-				v_swap_bits = v_swap;
-				//
-				bool chk = false;
-				do  { chk = check_2lock(thread_id,v_swap_bits,v_ref); } while ( !chk && !hopeless_2lock(controller,thread_id,v_swap_bits,v_ref) ); //
-				if ( hopeless_2lock(controller,thread_id,v_swap_bits,v_ref) ) {
-					free_lock(controller,thread_id,v_ref);
-					++v_ref;
-					D += _circular_first_empty_from_ref(buffer, end_buffer, &v_ref, &controller, thread_id);
-					v_swap = v_ref;
-					continue;
-				}
-				//
-				uint32_t i = 0;
-				v_swap = _succ_H_ref(v_swap,i);				// i < j is the swap position in the neighborhood (for bits)
-				if ( v_swap == nullptr ) return false;
-				v_swap = el_check_end(v_swap,buffer,end_buffer);
-				_swapper(v_swap_bits,v_swap,v_ref,i,j); // take care of the bits as well...
-				//
-				free_lock(controller,thread_id,v_swap_bits);
-				free_lock(controller,thread_id,v_ref);
-				//
-				if ( v_swap > hash_ref ) {
-					D = (v_swap - hash_ref);
-				} else {
-					D = (end_buffer - hash_ref) + (v_swap - buffer);
-				}
-				v_ref = v_swap;   // where the hole is now
-			}
-
-			//
-			v_swap->_V = v_passed;
-			SET(hash_ref->c_bits,D);
-
-			free_lock(controller,thread_id,v_swap);
-			free_lock(controller,thread_id,v_ref);
-
-			return(true);
-		}
-
-
-
-		void _reset_bits(uint32_t &bits,uint32_t i, uint32_t j) {
-			UNSET(bits, i);
-			SET(bits, j);
-		}
-
-
-
-		void _swapper(hh_element *v_swap_base,hh_element *v_swap,hh_element *v_ref,uint32_t i, uint32_t j) {
-			v_ref->_V = v_swap->_V;
-			v_swap->_V = 0;
-			_reset_bits(v_swap_base->c_bits,i,j);
-		}
-
-
-		// ----
-
-		bool check_lock(atomic<uint32_t> *controller, [[maybe_unused]] uint8_t thread_id, [[maybe_unused]] hh_element *v) {
-			auto controls = controller->load();
-			bool busy_now = (controls & HOLD_BIT_SHIFT);
-			if ( !busy_now ) {
-				if ( controls & SHARED_BIT_SET ) {
-					
-				}
-				return true;
-			}
-			return false;
-		}
-
-
-		bool check_2lock(atomic<uint32_t> *controller, uint8_t thread_id,[[maybe_unused]] hh_element *v1,[[maybe_unused]] hh_element *v2) {
-			return true;
-		}
-
-		bool hopeless_2lock(atomic<uint32_t> *controller, uint8_t thread_id,[[maybe_unused]] hh_element *v1,[[maybe_unused]] hh_element *v2) {
-			return false;
-		}
-
-		void free_lock(atomic<uint32_t> *controller, uint8_t thread_id,[[maybe_unused]] hh_element *v) {
-		}
-
-
-		/**
-		 *  _probe -- search for a free space within a bucket
-		 * 		h : the bucket starts at h (an offset in _region_V)
-		 * 
-		 *  zero in the value buffer means no entry, because values do not start at zero for the offsets 
-		 *  (free list header is at zero if not allocated list)
-		 * 
-		 * `_probe` wraps around search before h (bucket index) returns the larger value N + j if the wrap returns a position
-		 * 
-		 * @returns {uint32_t} distance of the bucket from h
-		*/
-		uint32_t _circular_first_empty_from_ref(hh_element *buffer, hh_element *end_buffer, hh_element **h_ref_ref, atomic<uint32_t> **controller_ref, uint8_t thread_id) {   // value probe ... looking for zero
-			// // 
-			// search in the bucket
-			hh_element *h_ref = *h_ref_ref;
-			hh_element *vb_probe = h_ref;
-			auto controller = *controller_ref;
-			//
-			while ( vb_probe < end_buffer ) { // search forward to the end of the array (all the way even it its millions.)
-				uint64_t V = vb_probe->_V;
-				if ( V == 0 ) {
-					if ( check_lock(controller,thread_id,vb_probe) ) {
-						*h_ref_ref = vb_probe;
-						*controller_ref = controller;
-						uint32_t dist_from_h = (uint32_t)(vb_probe - h_ref);
-						return dist_from_h;			// look no further
-					}
-				}
-				vb_probe++; controller++;
-			}
-			// WRAP CIRCULAR BUFFER
-			// look for anything starting at the beginning of the segment
-			// wrap... start searching from the start of all data...
-			vb_probe = buffer;
-			controller = (atomic<uint32_t> *)(_region_C);
-			while ( vb_probe < h_ref ) {
-				uint64_t V = vb_probe->_V;
-				if ( V == 0 ) {
-					if ( check_lock(controller,thread_id,vb_probe) ) {
-						uint32_t N = this->_max_n;
-						*h_ref_ref = vb_probe;
-						*controller_ref = controller;
-						uint32_t dist_from_h = N + (uint32_t)(vb_probe - h_ref);	// (vb_end - h_ref) + (vb_probe - v_buffer) -> (vb_end  - v_buffer + vb_probe - h_ref)
-						return dist_from_h;	// look no further (notice quasi modular addition)
-					}
-				}
-				vb_probe++; controller++;
-			}
-			// BUFFER FULL
-			return UINT32_MAX;  // this will be taken care of by a modulus in the caller
-		}
-
-
-
-		/**
-		 *  _circular_blocks_first_empty_from_ref
-		 *  _probe -- search for a free space within a bucket
-		 * 		h : the bucket starts at h (an offset in _region_V)
-		 * 
-		 *  zero in the value buffer means no entry, because values do not start at zero for the offsets 
-		 *  (free list header is at zero if not allocated list)
-		 * 
-		 * `_probe` wraps around search before h (bucket index) returns the larger value N + j if the wrap returns a position
-		 * 
-		 * @returns {uint32_t} distance of the bucket from h
-		*/
-		uint32_t _circular_blocks_first_empty_from_ref(hh_element *buffer, hh_element *end_buffer, hh_element **h_ref_ref, atomic<uint32_t> **controller_ref, uint8_t thread_id) {   // value probe ... looking for zero
-			// // 
-			// search in the bucket
-			hh_element *h_ref = *h_ref_ref;
-			hh_element *vb_probe = h_ref;
-			hh_element *vb_probe_limit = vb_probe + 32*(4);  // this is 128 positions... maybe
-			//
-			auto controller = *controller_ref;
-			//
-			uint32_t a = vb_probe->c_bits;
-			if ( a == UINT32_MAX ) {
-				return UINT32_MAX;
-			}
-			uint32_t b = vb_probe->taken_spots;
-			uint8_t hole = 0;
-			uint32_t dist_from_h = 0;
-			//
-			if ( popcount(b) < 32 ) {	// This means there is a free space within the bucket
-				if ( (a == 0) && !(b & 0x1) ) { // a very common special case... i.e. the primary hash bucket is empty
-					return 0;			// use this bucket for the first time.
-				} else {				// 
-					hole = countr_zero(b);
-					*h_ref_ref = vb_probe + hole;
-					*controller_ref = controller + hole;
-					return hole;			// look no further
-				}
-			}
-
-			// failing a hole in the first window, look at the next bucket center and see if there is something 
-			// farther out..
-			auto offset_check = (a ^ b);
-			auto offset = countr_zero(offset_check);
-			hh_element *vb_probe_base = vb_probe;
-			vb_probe = vb_probe_base + offset;
-			offset_check = offset_check & (~(1 << offset));
-			dist_from_h = offset;
-			//
-			uint16_t advance = 0;
-			while ( (vb_probe < vb_probe_limit) && (vb_probe < end_buffer) ) { // search forward to the end of the array (all the way even it its millions.)
-				//
-				uint32_t b = vb_probe->taken_spots;
-				if ( popcount(b) < 32 ) {
-					hole = countr_zero(b);
-					*h_ref_ref = vb_probe + hole;
-					*controller_ref = controller + hole;
-					return dist_from_h + hole;			// look no further
-				}
-				//
-				offset = countr_zero(offset_check);
-				auto up_offset = countr_zero(offset_check);
-				if ( up_offset >= 32 ) {
-					advance += offset;
-					a = vb_probe->c_bits;
-					offset_check = (a ^ b);
-					offset = countr_zero(offset_check);
-				} else offset = up_offset;
-				vb_probe = vb_probe_base + offset;
-				offset_check = offset_check & (~(1 << offset));
-				dist_from_h = offset + advance;
-				//
-			}
-
-			// WRAP CIRCULAR BUFFER
-			// look for anything starting at the beginning of the segment
-			// wrap... start searching from the start of all data...
-			if ( vb_probe < vb_probe_limit ) {
-				vb_probe_limit = buffer + (vb_probe_limit - end_buffer);
-				vb_probe = buffer + (vb_probe  - end_buffer);
-				while ( (vb_probe < vb_probe_limit) && (vb_probe < h_ref) ) { // search forward to the end of the array (all the way even it its millions.)
-					//
-					uint32_t b = vb_probe->taken_spots;
-					if ( popcount(b) < 32 ) {
-						hole = countr_zero(b);
-						*h_ref_ref = vb_probe + hole;
-						*controller_ref = controller + hole;
-						return dist_from_h + hole;			// look no further
-					}
-					//
-					auto up_offset = countr_zero(offset_check);
-					if ( up_offset >= 32 ) {
-						advance += offset;
-						a = vb_probe->c_bits;
-						offset_check = (a ^ b);
-						offset = countr_zero(offset_check);
-					} else offset = up_offset;
-					vb_probe = vb_probe_base + offset;
-					offset_check = offset_check & (~(1 << offset));
-					dist_from_h = offset + advance;
-					//
-				}
-			}
-
-			// BUFFER FULL
-			return UINT32_MAX;  // this will be taken care of by a modulus in the caller
-		}
-
-
-
-
-		/**
-		 * Look at one bit pattern after another from distance `d` shifted 'down' to h by K (as close as possible).
-		 * Loosen the restriction on the distance of the new buffer until K (the max) away from h is reached.
-		 * If something within K (for swapping) can be found return it, otherwise 0 (indicates frozen)
-		 * 
-		 * If h_d is empty, no one stored a value with this bucket as the anchor of an neighborhood.
-		 * 
-		 * Don't forget that all the positions up to v_swap_original are in use, and belong to some 
-		 * bucket or other. If te c_bits of a position are zero, then the position is owned by another one.
-		 * The hop-scotch tries to get as close to the original hash bucke as possible. So, it starts as
-		 * close to the beginning of the buffer as it can. That is, it goes the length of a bucket less than
-		 * its position to check to see if the position owns the bucket it is in and if it has enough position
-		 * to make swapping possible. The position a full neighborhood away will may own just a few positions 
-		 * for swapping. But, in order to get a big a hop as possible, the positions closer to the hole (from probing)
-		 * need to have more positions for swapping (or else the number of hops may become quite large).
-		*/
-
-		uint32_t _hop_scotch_refs(hh_element **v_swap_ref, hh_element *buffer, hh_element *end) {  // return an index
-			uint32_t K = NEIGHBORHOOD;
-			//
-			hh_element *v_swap = *v_swap_ref;
-			hh_element *v_swap_original = v_swap;
-			v_swap -= K;
-			if ( v_swap < buffer ) {
-				v_swap = end - (buffer - v_swap);
-			}
-			for ( uint32_t i = (K - 1); i > 0; --i ) {
-				v_swap++;
-				v_swap = el_check_end(v_swap,buffer,end);
-				uint32_t H = v_swap->c_bits; // CONTENTION
-				// if H == 0, then the position does not own the contents of the position.
-				//
-				if ( (H != 0) && (((uint32_t)countr_zero(H)) < i) ) {
-					*v_swap_ref = v_swap;
-					if ( v_swap > v_swap_original ) {
-						return (v_swap - v_swap_original);  // where the hole is in the neighborhood
-					} else {
-						return (end - v_swap_original) + (v_swap - buffer);  // where the hole is in the neighborhood
-					}
-				}
-			}
-			return 0;
 		}
 
 
