@@ -364,6 +364,30 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+		static constexpr uint32_t zero_levels[32] { ~(0xFFFFFFFF << 1), ~(0xFFFFFFFF << 2), ~(0xFFFFFFFF << 3), ~(0xFFFFFFFF << 4),
+				~(0xFFFFFFFF << 5), ~(0xFFFFFFFF << 6), ~(0xFFFFFFFF << 7), ~(0xFFFFFFFF << 8), ~(0xFFFFFFFF << 9), ~(0xFFFFFFFF << 10),
+				~(0xFFFFFFFF << 11),~(0xFFFFFFFF << 12),~(0xFFFFFFFF << 13),~(0xFFFFFFFF << 14),~(0xFFFFFFFF << 15),
+				~(0xFFFFFFFF << 16),~(0xFFFFFFFF << 17),~(0xFFFFFFFF << 18),~(0xFFFFFFFF << 19),~(0xFFFFFFFF << 20),
+				~(0xFFFFFFFF << 21),~(0xFFFFFFFF << 22),~(0xFFFFFFFF << 23),~(0xFFFFFFFF << 24),~(0xFFFFFFFF << 25),
+				~(0xFFFFFFFF << 26),~(0xFFFFFFFF << 27),~(0xFFFFFFFF << 28),~(0xFFFFFFFF << 29),~(0xFFFFFFFF << 30),
+				~(0xFFFFFFFF << 31), 0xFFFFFFFF
+				};
+		
+		//
+		static uint32_t zero_above(uint8_t hole) {
+			if ( hole >= 31 ) {
+				return  0xFFFFFFFF;
+			}
+			return zero_levels[hole];
+		}
+
+		//
+		uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset) {
+			return time;
+		}
+
+		
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		// THREAD CONTROL
@@ -1265,72 +1289,77 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			// The process will lock a mutex for just those two threads for the tier that has been called upon. 
 			// The mutex will lock more globally. It will not interfere with other processes requesting a conversation 
 			// with the threads, just current process threads at the curren tier.
-
+			//
+			auto N = this->_max_n;
+			uint32_t h_start = h_bucket % N;  // scale the hash .. make sure it indexes the array...
 			//
 			HHash *T = _T0;
 			hh_element *buffer	= _region_HV_0;
 			hh_element *end	= _region_HV_0_end;
 			uint8_t which_table = 0;
-
 			//
 			uint64_t loaded_key = UINT64_MAX;
 			atomic<uint32_t> *controller = nullptr;
-			if ( (offset_value != 0) && wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,&T,&buffer,&end,which_table) ) {
+			if ( (offset_value != 0) && wait_if_unlock_bucket_counts(&controller,thread_id,h_start,&T,&buffer,&end,which_table) ) {
 				//
-				auto N = this->_max_n;
-				uint32_t h_start = h_bucket % N;  // scale the hash .. make sure it indexes the array...
 				hh_element *hash_ref = (hh_element *)(buffer) + h_start;  //  hash_ref aleady locked (by counter)
 				//
-				uint32_t tmp_value = hash_ref->_kv.value;
-				uint32_t tmp_key = hash_ref->_kv.key;
 				uint32_t tmp_c_bits = hash_ref->c_bits;
-
-				if ( tmp_value == 0 ) {
+				uint32_t tmp_value = hash_ref->_kv.value;
+				//
+				if ( !(tmp_c_bits & 0x1) && (tmp_value == 0) ) {  // empty bucket
 					hash_ref->_kv.value = offset_value;
 					hash_ref->_kv.key = el_key;
 					SET( hash_ref->c_bits, 0);   // now set the usage bits
-					this->slice_bucket_count_incr_unlock(h_bucket,which_table,thread_id);
-				} else {
-					uint64_t loaded_value = (((uint64_t)tmp_value) << HALF) | tmp_key;
-					if ( tmp_c_bits != 0 ) {  // don't touch c_bits (restore will)
-						hash_ref->_kv.value = offset_value;
-						hash_ref->_kv.key = el_key;
-						wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, thread_id, buffer, end);
-					} else {
-						// pull this value out of the other bucket.
-						uint8_t k = 0;
-						while ( (--hash_ref > buffer) && (++k < NEIGHBORHOOD) ) {
-							uint32_t H = hash_ref->c_bits;
-							if ( H != 0 ) {
-								if ( GET(H, k) ) {
-									this->slice_unlock_counter(controller,which_table,thread_id);
-									h_bucket -= k;
-									while (!wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,&T,&buffer,&end,which_table));
-									wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, thread_id, buffer, end);
-									k = NEIGHBORHOOD;
-									break;
-								}
-							}
-						}
-						if ( k <  NEIGHBORHOOD ) {
-							hash_ref = end;
-							while ( (--hash_ref > buffer) && (++k < NEIGHBORHOOD) ) {
-								uint32_t H = hash_ref->c_bits;
-								if ( H != 0 ) {
-									if ( GET(H, k) ) {
-										this->slice_unlock_counter(controller,which_table,thread_id);
-										h_bucket -= k;
-										while (!wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,&T,&buffer,&end,which_table));
-										wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, thread_id, buffer, end);
-										k = NEIGHBORHOOD;
-										break;
-									}
-								}
-							}
+					hh_element *base_ref = hash_ref;
+					uint32_t c = 1;
+					for ( uint8_t i = 1; i < NEIGHBORHOOD; i++ ) {
+						hash_ref++;
+						if ( hash_ref->_kv.value != 0 ) {
+							SET(c,i);
+						} else if ( hash_ref->c_bits & 0x1 ) {
+							c |= (hash_ref->taken_spots << i);
+							break;
 						}
 					}
+					base_ref->taken_spots = c; 
+					// also set the bit in prior buckets....
+					place_back_token_spots(hash_ref, 0);
+					this->slice_bucket_count_incr_unlock(h_start,which_table,thread_id);
+				} else {
+					//	save the old value
+					uint32_t tmp_key = hash_ref->_kv.key;
+					uint64_t loaded_value = (((uint64_t)tmp_value) << HALF) | tmp_key;
+					hash_ref->_kv.value = offset_value;  // put in the new values
+					hash_ref->_kv.key = el_key;
+					if ( tmp_c_bits & 0x1 ) {  // don't touch c_bits (restore will)
+						// usurp the position of the current bucket head,
+						// then put the bucket head back into the bucket (allowing another thread to do the work)
+						wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, thread_id, buffer, end);
+					} else {
+						uint32_t c = 1;
+						for ( uint8_t i = 1; i < NEIGHBORHOOD; i++ ) {
+							hash_ref++;
+							if ( hash_ref->_kv.value != 0 ) {
+								SET(c,i);
+							} else if ( hash_ref->c_bits & 0x1 ) {
+								c |= (hash_ref->taken_spots << i);
+								break;
+							}
+						}
+						base_ref->taken_spots = c;
+						//
+						// pull this value out of the bucket head (do a remove)
+						uint8_t k = 0xFF & (tmp_c_bits >> 1);  // have stored the offsets to the bucket head
+						h_start = (h_start > k) ? (h_start - k) : (N + h_start - k);
+						hash_ref = buffer + h_start;
+						UNSET(hash_ref->c_bits,k);   // the element has be usurped...
+						this->slice_unlock_counter(controller,which_table,thread_id);
+						// hash the saved value back into its bucket if possible.
+						while ( !wait_if_unlock_bucket_counts(&controller,thread_id,h_start,&T,&buffer,&end,which_table) );
+						wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, thread_id, buffer, end);
+					}
 				}
-
 				//
 				loaded_key = (((uint64_t)el_key) << HALF) | h_bucket; // LOADED
 				loaded_key = stamp_key(loaded_key,which_table);
@@ -1521,21 +1550,22 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		//  // caller will decrement count
 		//
 		uint32_t del_ref(uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end) {
-			hh_element *next = buffer + h_bucket; 
+			hh_element *base = buffer + h_bucket;
+			hh_element *next = base;
+			removal_taken_spots(next);
 			next = el_check_end(next,buffer,end);
-			uint32_t i = 0;
-			next = _succ_H_ref(next,i);  // i by ref
-			while ( next != nullptr ) {
+			uint32_t offset = 0;
+			auto c = next->c_bits;
+			while ( c ) {
+				next = base;
+				offset = countr_zero(c);
+				c = c & (~((uint32_t)0x1 << offset));
+				next += offset;
 				next = el_check_end(next,buffer,end);
 				if ( el_key == next->_kv.key ) {
-					auto H = next->c_bits;
-					if ( (next->_kv.value == 0) || !GET(H, i) ) return UINT32_MAX;
-					next->_V = 0;
-					UNSET(H,i);
-					next->c_bits = H;
-					return i;
+					removal_taken_spots(next);
+					return offset;
 				}
-				next = _succ_H_ref(next,++i);  // i by ref
 			}
 			return UINT32_MAX;
 		}
@@ -1558,34 +1588,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		*/
 	public:
 
-		static constexpr uint32_t zero_levels[32] { ~(0xFFFFFFFF << 1), ~(0xFFFFFFFF << 2), ~(0xFFFFFFFF << 3), ~(0xFFFFFFFF << 4),
-				~(0xFFFFFFFF << 5), ~(0xFFFFFFFF << 6), ~(0xFFFFFFFF << 7), ~(0xFFFFFFFF << 8), ~(0xFFFFFFFF << 9), ~(0xFFFFFFFF << 10),
-				~(0xFFFFFFFF << 11),~(0xFFFFFFFF << 12),~(0xFFFFFFFF << 13),~(0xFFFFFFFF << 14),~(0xFFFFFFFF << 15),
-				~(0xFFFFFFFF << 16),~(0xFFFFFFFF << 17),~(0xFFFFFFFF << 18),~(0xFFFFFFFF << 19),~(0xFFFFFFFF << 20),
-				~(0xFFFFFFFF << 21),~(0xFFFFFFFF << 22),~(0xFFFFFFFF << 23),~(0xFFFFFFFF << 24),~(0xFFFFFFFF << 25),
-				~(0xFFFFFFFF << 26),~(0xFFFFFFFF << 27),~(0xFFFFFFFF << 28),~(0xFFFFFFFF << 29),~(0xFFFFFFFF << 30),
-				~(0xFFFFFFFF << 31), 0xFFFFFFFF
-				};
-		
-		//
-		static uint32_t zero_above(uint8_t hole) {
-			if ( hole >= 31 ) {
-				return  0xFFFFFFFF;
-			}
-			return zero_levels[hole];
-		}
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		//
-		uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset) {
-			return time;
-		}
-
-
-
-		void place_token_spots(hh_element *hash_ref, uint32_t hole, uint32_t b, uint32_t c) {
+		/**
+		 * place_token_spots
+		*/
+		void place_token_spots(hh_element *hash_ref, uint32_t hole, uint32_t c) {
 			hh_element *vb_probe = hash_ref;
-			uint32_t hbit = (1 << hole);
 			//
 			c = c & zero_above(hole);
 			while ( c ) {
@@ -1593,14 +1603,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				auto offset = countr_zero(c);
 				c = c & (~((uint32_t)0x1 << offset));
 				vb_probe += offset;
-				vb_probe->taken_spots = b | (1 << (hole - offset));   // the bit is not as far out
+				vb_probe->taken_spots |= (1 << (hole - offset));   // the bit is not as far out
 			}
 			//
 			uint8_t how_far_back = 1;
 			vb_probe = hash_ref - how_far_back;
-			while ( how_far_back < 32 ) {
+			while ( how_far_back < NEIGHBORHOOD ) {
 				if ( vb_probe->c_bits & 0x1 ) {
-					vb_probe->taken_spots = b | (1 << (hole + offset));   // the bit is not as far out
+					vb_probe->taken_spots |= (1 << (hole + offset));   // the bit is not as far out
 					how_far_back++;
 				} else {
 					auto dist = (vb_probe->c_bits >> 1);
@@ -1611,18 +1621,72 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		void removal_taken_spots(hh_element *hash_ref,uint32_t hole) {
+		void place_back_token_spots(hh_element *hash_ref, uint32_t hole) {
 			hh_element *vb_probe = hash_ref;
+			uint8_t how_far_back = 1;
+			vb_probe = hash_ref - how_far_back;
+			while ( how_far_back < NEIGHBORHOOD ) {
+				if ( vb_probe->c_bits & 0x1 ) {
+					vb_probe->taken_spots |= (1 << (hole + offset));   // the bit is not as far out
+					how_far_back++;
+				} else {
+					auto dist = (vb_probe->c_bits >> 1);
+					how_far_back += dist;
+				}
+				vb_probe = hash_ref - how_far_back;
+			}
+		}
+
+
+		/**
+		 * removal_taken_spots
+		*/
+		void removal_taken_spots(hh_element *hash_ref) {
 			//
-			uint32_t a = vb_probe->c_bits; // membership mask
-			uint32_t b = vb_probe->taken_spots;
+			uint32_t a = hash_ref->c_bits; // membership mask
+			uint32_t b = hash_ref->taken_spots;
 			//
-			uint8_t hole = countr_one(b);
-			uint32_t hbit = (1 << hole);
-			uint32_t hbit_mask = ~hbit;
-			a = a & hbit_mask;
-			vb_probe->c_bits = a;
-			vb_probe->taken_spots = b & hbit_mask;
+			uint8_t hole = (a & 0x1) ? 0 : (hash_ref->c_bits >> 1);
+			//
+			hh_element *vb_probe = hash_ref;
+			hh_element *vb_prev = hash_ref;
+
+			auto c = a;
+			uint32_t offset = 0;
+			if ( hole == 0 ) {
+				UNSET(c,0);
+				if ( c ) { // get next
+					vb_probe = hash_ref;
+					offset = countr_zero(c);
+					c = c & (~((uint32_t)0x1 << offset));
+					vb_probe += offset;
+					swap(vb_prev->_V,vb_probe->_V);
+					vb_prev = vb_probe;
+				}
+			} else {
+				vb_prev += hole;
+			}
+
+			while ( c ) {
+				vb_probe = hash_ref;
+				auto offset = countr_zero(c);
+				c = c & (~((uint32_t)0x1 << offset));
+				vb_probe += offset;
+				//
+				swap(vb_prev->_V,vb_probe->_V);
+				swap(vb_prev->taken_spots,vb_probe->taken_spots);  // when the element is not a bucket head, this is time...
+				vb_prev = vb_probe;
+			}
+
+			vb_probe->c_bits = 0;
+			vb_probe->taken_spots = 0;
+			vb_probe->_V = 0;
+
+			UNSET(a,offset);
+			UNSET(b,offset);
+
+			hash_ref->c_bits = a;
+			hash_ref->taken_spots = b;
 			//
 			uint32_t c = a ^ b;
 			c = c & zero_above(hole);
@@ -1631,14 +1695,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				auto offset = countr_zero(c);
 				c = c & (~((uint32_t)0x1 << offset));
 				vb_probe += offset;
-				vb_probe->taken_spots = b & (~((uint32_t)0x1 << (hole - offset)));   // the bit is not as far out
+				vb_probe->taken_spots &= (~((uint32_t)0x1 << (hole - offset)));   // the bit is not as far out
 			}
 			//
 			uint8_t how_far_back = 1;
 			vb_probe = hash_ref - how_far_back;
-			while ( how_far_back < 32 ) {
+			while ( how_far_back < NEIGHBORHOOD ) {
 				if ( vb_probe->c_bits & 0x1 ) {
-					vb_probe->taken_spots = b & (~((uint32_t)0x1 << (hole + offset)));  // the bit is not as far out
+					vb_probe->taken_spots &= (~((uint32_t)0x1 << (hole + offset)));  // the bit is not as far out
 					how_far_back++;
 				} else {
 					auto dist = (vb_probe->c_bits >> 1);
@@ -1649,7 +1713,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		//
+		/**
+		 * pop_until_oldest
+		*/
 		bool pop_until_oldest(hh_element *hash_ref, uint64_t &v_passed, uint32_t &time, hh_element *buffer, hh_element *end_buffer,uint32_t &h_bucket) {
 			if ( v_passed == 0 ) return false;  // zero indicates empty...
 			//
@@ -1731,7 +1797,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				h_bucket += offset;
 				return false;  // this region has no free space...
 			} else {
-				place_token_spots(hash_ref, hole, b, c);
+				place_token_spots(hash_ref, hole, c);
 			}
 
 			// the oldest element should now be free cell or at least (if it was something deleted) all the older values
@@ -1740,8 +1806,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-
-		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 	public:
