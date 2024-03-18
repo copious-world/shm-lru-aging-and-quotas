@@ -1581,6 +1581,74 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			return time;
 		}
 
+
+
+		void place_token_spots(hh_element *hash_ref, uint32_t hole, uint32_t b, uint32_t c) {
+			hh_element *vb_probe = hash_ref;
+			uint32_t hbit = (1 << hole);
+			//
+			c = c & zero_above(hole);
+			while ( c ) {
+				vb_probe = hash_ref;
+				auto offset = countr_zero(c);
+				c = c & (~((uint32_t)0x1 << offset));
+				vb_probe += offset;
+				vb_probe->taken_spots = b | (1 << (hole - offset));   // the bit is not as far out
+			}
+			//
+			uint8_t how_far_back = 1;
+			vb_probe = hash_ref - how_far_back;
+			while ( how_far_back < 32 ) {
+				if ( vb_probe->c_bits & 0x1 ) {
+					vb_probe->taken_spots = b | (1 << (hole + offset));   // the bit is not as far out
+					how_far_back++;
+				} else {
+					auto dist = (vb_probe->c_bits >> 1);
+					how_far_back += dist;
+				}
+				vb_probe = hash_ref - how_far_back;
+			}
+		}
+
+
+		void removal_taken_spots(hh_element *hash_ref,uint32_t hole) {
+			hh_element *vb_probe = hash_ref;
+			//
+			uint32_t a = vb_probe->c_bits; // membership mask
+			uint32_t b = vb_probe->taken_spots;
+			//
+			uint8_t hole = countr_one(b);
+			uint32_t hbit = (1 << hole);
+			uint32_t hbit_mask = ~hbit;
+			a = a & hbit_mask;
+			vb_probe->c_bits = a;
+			vb_probe->taken_spots = b & hbit_mask;
+			//
+			uint32_t c = a ^ b;
+			c = c & zero_above(hole);
+			while ( c ) {
+				vb_probe = hash_ref;
+				auto offset = countr_zero(c);
+				c = c & (~((uint32_t)0x1 << offset));
+				vb_probe += offset;
+				vb_probe->taken_spots = b & (~((uint32_t)0x1 << (hole - offset)));   // the bit is not as far out
+			}
+			//
+			uint8_t how_far_back = 1;
+			vb_probe = hash_ref - how_far_back;
+			while ( how_far_back < 32 ) {
+				if ( vb_probe->c_bits & 0x1 ) {
+					vb_probe->taken_spots = b & (~((uint32_t)0x1 << (hole + offset)));  // the bit is not as far out
+					how_far_back++;
+				} else {
+					auto dist = (vb_probe->c_bits >> 1);
+					how_far_back += dist;
+				}
+				vb_probe = hash_ref - how_far_back;
+			}
+		}
+
+
 		//
 		bool pop_until_oldest(hh_element *hash_ref, uint64_t &v_passed, uint32_t &time, hh_element *buffer, hh_element *end_buffer,uint32_t &h_bucket) {
 			if ( v_passed == 0 ) return false;  // zero indicates empty...
@@ -1663,29 +1731,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				h_bucket += offset;
 				return false;  // this region has no free space...
 			} else {
-				//
-				c = c & zero_above(hole);
-				while ( c ) {
-					vb_probe = hash_ref;
-					auto offset = countr_zero(c);
-					c = c & (~((uint32_t)0x1 << offset));
-					vb_probe += offset;
-					vb_probe->taken_spots = b | (hbit - offset);   // the bit is not as far out
-				}
-				//
-				uint8_t how_far_back = 1;
-				vb_probe = hash_ref - how_far_back;
-				while ( how_far_back < 32 ) {
-					if ( vb_probe->c_bits & 0x1 ) {
-						vb_probe->taken_spots = b | (hbit + offset);   // the bit is not as far out
-						how_far_back++;
-					} else {
-						auto dist = (vb_probe->c_bits >> 1);
-						how_far_back += dist;
-					}
-					vb_probe = hash_ref - how_far_back;
-				}
-				//
+				place_token_spots(hash_ref, hole, b, c);
 			}
 
 			// the oldest element should now be free cell or at least (if it was something deleted) all the older values
