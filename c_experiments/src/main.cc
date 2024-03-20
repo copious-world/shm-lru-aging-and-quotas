@@ -36,7 +36,7 @@
 #include <sys/ipc.h>
 
 
-static constexpr bool noisy_test = false;
+static constexpr bool noisy_test = true;
 static constexpr uint8_t THREAD_COUNT = 64;
 
 using namespace std;
@@ -1881,6 +1881,154 @@ const uint64_t HH_SELECT_BIT_MASK64 = (~HH_SELECT_BIT64);
 */
 
 
+
+void test_hh_map_methods(void) {
+
+  int status = 0;
+
+  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  g_ssm_catostrophy_handler = ssm;
+
+  uint32_t max_obj_size = 128;
+
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+  uint8_t num_threads = THREAD_COUNT;
+  uint32_t num_procs = num_threads;
+
+  cout << "test_hh_map_methods: # els: " << els_per_tier << endl;
+
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+
+
+  key_t hh_key = hh_keys.front();
+  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
+  uint32_t seg_sz = ssm->get_size(hh_key);
+  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
+
+  if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
+
+  //
+  try {
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
+    cout << test_hh->ok() << endl;
+
+    //
+    // uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
+    // // uint32_t r_seg_sz = ssm->get_size(randoms_key);
+    // //
+    // test_hh->set_random_bits(r_region);
+    // //
+
+
+    hh_element test_buffer[128];
+    memset(test_buffer,0,sizeof(hh_element)*128);
+
+    hh_element *hash_ref = &test_buffer[64];
+    hh_element *buffer = test_buffer;
+    hh_element *end = test_buffer + 128;
+    //
+    uint32_t hole = 0;
+    //
+    hh_element *prev_a = hash_ref - 2;
+    prev_a->c_bits = (3 << 1);
+    hh_element *prev_b = hash_ref - 5;
+    prev_b->c_bits = 0b01001;
+    prev_b->taken_spots = 0b01001;
+    //
+    hash_ref->c_bits = 1;
+    hash_ref->taken_spots = 1;
+    //
+    auto a = prev_b->c_bits;
+    uint8_t offset = get_b_offset_update(a);
+
+    cout << (int)(offset) << " :: " << bitset<32>(a) << endl;
+    offset = get_b_offset_update(a);
+    cout << (int)(offset) << " :: " << bitset<32>(a) <<  " :: " <<  bitset<32>(1 << offset) << endl;
+
+    test_hh->place_back_taken_spots(hash_ref,hole,buffer,end);
+
+    cout << "----" << endl;
+
+    for ( int i = 0; i < 8; i++ ) {
+      cout << "(" << i + 58   <<  ")" << bitset<32>(prev_b->c_bits) << "  " << bitset<32>(prev_b->taken_spots) << endl;
+      prev_b++;
+    }
+    cout << "--- t2 ---" << endl;
+
+    prev_b = prev_a - (prev_a->c_bits >> 1);
+    cout << bitset<32>(prev_b->c_bits) << "  " << bitset<32>(prev_b->taken_spots) << endl;
+
+    auto c = prev_b->c_bits & ~(0x1);
+    offset = countr_zero(c);
+
+    prev_a = prev_b + offset;
+    cout << bitset<32>(prev_a->c_bits) << "  " << bitset<32>(prev_a->taken_spots) << endl;
+
+
+    cout << "--- t3 ---" << endl;
+    c = prev_b->c_bits;
+    while ( c ) {
+      offset = get_b_offset_update(c);
+      prev_a = prev_b + offset;
+      cout << bitset<32>(prev_a->c_bits) << "  " << bitset<32>(prev_a->taken_spots) << endl;
+    }
+
+    cout << "--- t3 -- p2 ---" << endl;
+    c = prev_b->taken_spots;
+    while ( c ) {
+      offset = get_b_offset_update(c);
+      prev_a = prev_b + offset;
+      cout << bitset<32>(prev_a->c_bits) << "  " << bitset<32>(prev_a->taken_spots) << endl;
+    }
+
+    cout << "--- t4 -- + ---" << endl;
+
+
+    test_hh->remove_back_taken_spots(hash_ref,hole,buffer,end);
+    for ( int i = 0; i < 8; i++ ) {
+      cout << "(" << i + 58   <<  ")" << bitset<32>(prev_b->c_bits) << "  " << bitset<32>(prev_b->taken_spots) << endl;
+      prev_b++;
+    }
+
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
+
+
+
+
+
 /**
 #include <signal.h>
 #include <stdlib.h>
@@ -1944,15 +2092,12 @@ int main(int argc, char **argv) {
     //test_lru_creation_and_initialization();
     //
     // test_hh_map_operation_initialization_linearization_many_buckets();
+    // test_hh_map_operation_initialization_linearization_small_noisy();
+    // test_method_checks();
+    // test_sleep_methods();
+    // test_some_bit_patterns();
 
-    //test_hh_map_operation_initialization_linearization_small_noisy();
-
-    //test_method_checks();
-
-    //test_sleep_methods();
-
-
-    test_some_bit_patterns();
+    test_hh_map_methods();
 
     //test_zero_above();
 
