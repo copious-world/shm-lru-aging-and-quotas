@@ -2028,6 +2028,115 @@ void test_hh_map_methods(void) {
 
 
 
+void test_hh_map_methods2(void) {
+
+  int status = 0;
+
+  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  g_ssm_catostrophy_handler = ssm;
+
+  uint32_t max_obj_size = 128;
+
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+  uint8_t num_threads = THREAD_COUNT;
+  uint32_t num_procs = num_threads;
+
+  cout << "test_hh_map_methods2: # els: " << els_per_tier << endl;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+  //
+  key_t hh_key = hh_keys.front();
+  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
+  uint32_t seg_sz = ssm->get_size(hh_key);
+
+  try {
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
+    cout << test_hh->ok() << endl;
+
+    hh_element test_buffer[128];
+    memset(test_buffer,0,sizeof(hh_element)*128);
+
+    hh_element *hash_ref = &test_buffer[64];
+    hh_element *buffer = test_buffer;
+    hh_element *end = test_buffer + 128;
+    //
+    uint32_t hole = 0;
+    //
+    hh_element *prev_a = hash_ref - 2;
+    prev_a->c_bits = (3 << 1);
+    hh_element *prev_b = hash_ref - 5;
+    prev_b->c_bits = 0b01001;
+    prev_b->taken_spots = 0b01000010000101001;  
+    //                       1000010010101001;
+    //
+    hh_element *next_a = hash_ref + 6;
+    hh_element *next_a_a = hash_ref + 11;
+
+    next_a->c_bits =  0b01;
+    next_a->taken_spots =  0b0100001;
+
+    next_a_a->c_bits =  0b01;
+    next_a_a->taken_spots =  0b01;
+    //
+    hash_ref->c_bits = 1;
+    hash_ref->taken_spots = 0b010000100001;
+    //
+    auto a = prev_b->c_bits;
+    uint8_t offset = get_b_offset_update(a);
+
+    cout << (int)(offset) << " :: " << bitset<32>(a) << endl;
+    offset = get_b_offset_update(a);
+    cout << (int)(offset) << " :: " << bitset<32>(a) <<  " :: " <<  bitset<32>(1 << offset) << endl;
+
+
+    hh_element *vb_probe = hash_ref;
+    a = vb_probe->c_bits; // membership mask
+    uint32_t b = vb_probe->taken_spots;
+    //
+    auto c = a ^ b;
+    hole = 2;
+    test_hh->place_taken_spots(hash_ref,hole,c,buffer,end);
+
+    cout << "----" << endl;
+
+    for ( int i = 0; i < 12; i++ ) {
+      cout << "(" << i + 58   <<  ")" << bitset<32>(prev_b->c_bits) << "  " << bitset<32>(prev_b->taken_spots) << endl;
+      prev_b++;
+    }
+
+
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
 
 /**
 #include <signal.h>
@@ -2097,7 +2206,7 @@ int main(int argc, char **argv) {
     // test_sleep_methods();
     // test_some_bit_patterns();
 
-    test_hh_map_methods();
+    test_hh_map_methods2();
 
     //test_zero_above();
 

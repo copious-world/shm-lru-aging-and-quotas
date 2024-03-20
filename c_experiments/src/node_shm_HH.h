@@ -1774,6 +1774,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			// now the oldest element in this bucket is in hand and may be stored if interleaved buckets don't
 			// preempt it.
+			a = hash_ref->c_bits;
 			uint32_t c = a ^ b;
 
 			// d contains bucket starts.. offset to those to update the occupancy vector if they come between the 
