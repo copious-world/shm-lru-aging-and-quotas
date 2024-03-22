@@ -1322,21 +1322,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				uint32_t tmp_value = hash_ref->_kv.value;
 				//
 				if ( !(tmp_c_bits & 0x1) && (tmp_value == 0) ) {  // empty bucket
-					hash_ref->_kv.value = offset_value;
-					hash_ref->_kv.key = el_key;
-					SET( hash_ref->c_bits, 0);   // now set the usage bits
-					hh_element *base_ref = hash_ref;
-					uint32_t c = 1;
-					for ( uint8_t i = 1; i < NEIGHBORHOOD; i++ ) {
-						hash_ref++;
-						if ( hash_ref->_kv.value != 0 ) {
-							SET(c,i);
-						} else if ( hash_ref->c_bits & 0x1 ) {
-							c |= (hash_ref->taken_spots << i);
-							break;
-						}
-					}
-					base_ref->taken_spots = c; 
+					// put the value into the current bucket and forward
+					place_in_bucket_at_base(hash_ref,offset_value,el_key); 
 					// also set the bit in prior buckets....
 					place_back_taken_spots(hash_ref, 0, buffer, end);
 					this->slice_bucket_count_incr_unlock(h_start,which_table,thread_id);
@@ -1607,6 +1594,25 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+
+		void place_in_bucket_at_base(hh_element *hash_ref,uint32_t value,uint32_t el_key) {
+			hash_ref->_kv.value = value;
+			hash_ref->_kv.key = el_key;
+			SET( hash_ref->c_bits, 0);   // now set the usage bits
+			hh_element *base_ref = hash_ref;
+			uint32_t c = 1;
+			for ( uint8_t i = 1; i < NEIGHBORHOOD; i++ ) {
+				hash_ref++;
+				if ( hash_ref->c_bits & 0x1 ) {
+					c |= (hash_ref->taken_spots << i);
+					break;
+				} else if ( hash_ref->c_bits != 0 ) {
+					SET(c,i);
+				}
+			}
+			base_ref->taken_spots = c; 
+		}
+
 		/**
 		 * place_taken_spots
 		*/
@@ -1616,7 +1622,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			c = c & zero_above(hole);
 			while ( c ) {
 				vb_probe = hash_ref;
-				uint8_t offset = get_b_offset_update(c);				
+				uint8_t offset = get_b_offset_update(c);			
 				vb_probe += offset;
 				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
 				vb_probe->taken_spots |= (1 << (hole - offset));   // the bit is not as far out
@@ -1740,6 +1746,53 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
+		void pop_oldest_full_bucket(hh_element *hash_ref,uint32_t c,uint64_t &v_passed,uint32_t &time,uint32_t offset,hh_element *buffer, hh_element *end_buffer) {
+			//
+			uint32_t offset_nxt = 0;
+			auto min_probe = hash_ref;
+			auto base_probe = hash_ref;
+			auto vb_probe = hash_ref;
+			//
+			while ( c ) {
+				// look for a bucket within range that may give up a position
+				while ( c ) {
+					offset_nxt = get_b_offset_update(c);
+					vb_probe += offset_nxt;
+					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+					if ( vb_probe->c_bits & 0x1 ) break;
+				}
+				if ( c ) {		// landed on a bucket (now what about it)
+					if ( popcount(vb_probe->c_bits) > 1 ) {
+						auto mem_nxt = vb_probe->c_bits;		// nxt is the membership of this bucket that has been found
+						mem_nxt = mem_nxt & (~((uint32_t)0x1));
+						mem_nxt = mem_nxt & zero_above(32 - offset_nxt);  // don't look beyond the window of our base hash bucket
+						base_probe = vb_probe;
+						while ( mem_nxt ) {			// same as while c
+							vb_probe = base_probe;
+							auto offset_nxt = get_b_offset_update(mem_nxt);
+							vb_probe += offset_nxt;
+							vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+							if ( !(vb_probe->c_bits & 0x1) ) {				// willing to sacrafice something older
+								if ( vb_probe->taken_spots < time ) {
+									min_probe = vb_probe;
+								}
+							}
+						}
+					}
+				}
+				vb_probe = hash_ref;
+			}
+			if ( min_probe != hash_ref ) {  // found a place in the bucket that can be moved...
+				swap(v_passed,vb_probe->_V);
+				time = stamp_offset(time,offset + offset_nxt);
+				swap(time,vb_probe->taken_spots);  // when the element is not a bucket head, this is time... 
+				base_probe->c_bits &= ~(0x1 << offset_nxt);  // turn off the bit
+				hash_ref->c_bits |= (0x1 << (offset + offset_nxt));
+				// taken spots is black, so we don't reset values after this...
+			}
+		}
+
+
 		/**
 		 * pop_until_oldest
 		*/
@@ -1753,13 +1806,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint8_t hole = countr_one(b);
 			uint32_t hbit = (1 << hole);
 			a = a | hbit;
-			b =  b | hbit;
+			b = b | hbit;
 			vb_probe->c_bits = a;
 			vb_probe->taken_spots = b;
 			//
 			a = a & zero_above(hole);
 			//
-			// unset the first bit (which indicates this position starts a bucket)
+			// unset the first bit of the indexing bits (which indicates this position starts a bucket)
 			a = a & (~((uint32_t)0x1));
 			uint32_t offset = 0;
 			while ( a ) {
@@ -1783,49 +1836,14 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			if ( b == UINT32_MAX ) {  // v_passed can't be zero. Instead it is the oldest of the (maybe) full bucket.
 				// however, other buckets are stored interleaved. These buckets have not been examined for maybe 
 				// swapping with the current bucket oldest value.
-				auto min_probe = hash_ref;
-				auto base_probe = hash_ref;
-				uint32_t offset_nxt = 0;
-				while ( c ) {
-					vb_probe = hash_ref;  // look for a bucket within range that may give up a position
-					while ( c ) {
-						offset_nxt = get_b_offset_update(c);
-						vb_probe += offset_nxt;
-						vb_probe = el_check_end_wrap(vb_probe,buffer,end);
-						if ( vb_probe->c_bits & 0x1 ) break;
-					}
-					if ( c ) {		// landed on a bucket (now what about it)
-						if ( popcount(vb_probe->c_bits) > 1 ) {
-							auto mem_nxt = vb_probe->c_bits;		// nxt is the membership of this bucket that has been found
-							mem_nxt = mem_nxt & (~((uint32_t)0x1));
-							mem_nxt = mem_nxt & zero_above(32 - offset_nxt);  // don't look beyond the window of our base hash bucket
-							base_probe = vb_probe;
-							while ( mem_nxt ) {			// same as while c
-								vb_probe = base_probe;
-								auto offset_nxt = get_b_offset_update(mem_nxt);
-								vb_probe += offset_nxt;
-								vb_probe = el_check_end_wrap(vb_probe,buffer,end);
-								if ( !(vb_probe->c_bits & 0x1) ) {				// willing to sacrafice something older
-									if ( vb_probe->taken_spots < time ) {
-										min_probe = vb_probe;
-									}
-								}
-							}
-						}
-					}
-				}
-				if ( min_probe != hash_ref ) {  // found a place in the bucket that can be moved...
-					swap(v_passed,vb_probe->_V);
-					time = stamp_offset(time,offset + offset_nxt);
-					swap(time,vb_probe->taken_spots);  // when the element is not a bucket head, this is time... 
-					base_probe->c_bits &= ~(0x1 << offset_nxt);  // turn off the bit
-					hash_ref->c_bits |= (0x1 << (offset + offset_nxt));
-					// taken spots is black, so we don't reset values after this...
-				}
+				pop_oldest_full_bucket(hash_ref,c,v_passed,time,offset,buffer,end_buffer);
 				//
-				h_bucket += offset;
+				//h_bucket += offset;
 				return false;  // this region has no free space...
 			} else {
+				vb_probe = hash_ref + hole;
+				vb_probe->c_bits = (hole << 1);
+				vb_probe->taken_spots = time;
 				place_taken_spots(hash_ref, hole, c, buffer, end_buffer);
 			}
 
