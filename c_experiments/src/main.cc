@@ -2315,7 +2315,7 @@ void test_hh_map_methods3(void) {
   uint8_t num_threads = THREAD_COUNT;
   uint32_t num_procs = num_threads;
 
-  cout << "test_hh_map_methods2: # els: " << els_per_tier << endl;
+  cout << "test_hh_map_methods3: # els: " << els_per_tier << endl;
 
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -2346,84 +2346,144 @@ void test_hh_map_methods3(void) {
     hh_element test_buffer[128];
     memset(test_buffer,0,sizeof(hh_element)*128);
 
+    hh_element test_buffer_copy[128];
+    memset(test_buffer_copy,0,sizeof(hh_element)*128);
+
     hh_element *hash_ref = &test_buffer[64];
     hh_element *buffer = test_buffer;
     hh_element *end = test_buffer + 128;
     //
     uint32_t hole = 0;
+    uint32_t counter = 0xFFFD;
+
+
+    hash_ref->c_bits = 0b11010101111100111101010111110011;
+    hash_ref->taken_spots = 0xFFFFFFFF;
+    //                         0b11010101111100111101010111110011;
+    (hash_ref + 2)->c_bits = 0b10000010100000110000101010000011;
+    (hash_ref + 2)->taken_spots = 0xFFFFFFFF;
+
+
+    uint64_t B = 0b11010101111100111101010111110011;
+    uint64_t C = 0b10000010100000110000101010000011;
+    uint64_t VV = C;
+    VV = B | (VV << 2);
+    VV &= UINT32_MAX;
+
+    uint32_t c = (uint32_t)VV;
+    uint8_t offset = countr_one(c);
+
+    (hash_ref + offset)->c_bits = 1;
+    (hash_ref + offset)->taken_spots = 0xFFFFFFFF;
+
+    cout << bitset<32>(c) << "  "  << (int)offset  << endl;
+
+    VV = VV | (1 << offset);
+    VV &= UINT32_MAX;
+    c = (uint32_t)VV;
+
+    offset = countr_one(c);
+    cout << bitset<32>(c) << "  "  << (int)offset  << endl;
+
+
+    hh_element *tmp = hash_ref;
+    c = hash_ref->c_bits;
+    offset = 0;
+    while ( c ) {
+      c = c & ~(0x1 << offset);
+      offset = countr_zero(c);
+      tmp = hash_ref + offset;
+      tmp->c_bits = offset << 1;
+      tmp->taken_spots = (counter-- << 18) | (1 << 16);
+    }
+
+
+    c = (hash_ref + 2)->c_bits;
+    offset = 0;
+    while ( c ) {
+      c = c & ~(0x1 << offset);
+      offset = countr_zero(c);
+      tmp = (hash_ref + 2) + offset;
+      tmp->c_bits = offset << 1;
+      tmp->taken_spots = (counter-- << 18) | (1 << 16);
+    }
+
+
+    memcpy(test_buffer_copy,test_buffer,sizeof(hh_element)*128);
+
+    tmp = hash_ref - 1;
+    for ( int i = 0; i < 36; i++ ) {
+      uint32_t backref = 0;
+      if ( !(tmp->c_bits & 1) ) {
+        backref = (tmp->c_bits >> 1);
+      }
+      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp->c_bits) << " :: " << bitset<32>(tmp->taken_spots) <<  " :: " << backref << endl;
+      tmp++;
+    }
+
+
+    uint64_t v_passed = 20;
+    uint32_t time = 0xEDCABEEE;
+
+    auto a = hash_ref->c_bits;
+    auto b = hash_ref->taken_spots;
+		c = a ^ b;
+
+    offset = 0;
+    hh_element *vb_probe = nullptr;
+    hole = 32;
     //
-    uint32_t counter = 0xFF;
+    offset = test_hh->inner_bucket_time_swaps(hash_ref,hole,v_passed,time, buffer, end);
 
-    hh_element *prev_b = hash_ref - 5;
-    prev_b->c_bits = 1;
-    prev_b->taken_spots = 1;
-
-    auto a = prev_b->c_bits;
-    auto b = prev_b->taken_spots;
+    cout << "before pop_oldest_full_bucket: " <<  bitset<32>(c) << endl;
+    cout << "before pop_oldest_full_bucket: " << (int)offset << endl;
+    cout << "before pop_oldest_full_bucket: " << time << endl;
 
 
-    cout << "1(" << (unsigned int)(prev_b - &test_buffer[0]) <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
+    tmp = hash_ref - 1;
+    for ( int i = 0; i < 36; i++ ) {
+      uint32_t backref = 0;
+      if ( !(tmp->c_bits & 1) ) {
+        backref = (tmp->c_bits >> 1);
+      }
+      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp->c_bits) << " :: " << bitset<32>(tmp->taken_spots) <<  " :: " << backref << endl;
+      tmp++;
+    }
 
-    hole = 3;
-    hh_element *vb_probe = prev_b + hole;
-    vb_probe->c_bits = (hole << 1);
-    vb_probe->taken_spots = (counter++ << 16);
+    hh_element *tmp2 = &test_buffer_copy[64];
 
+    cout << "------------- ------------- ------------- ------------- ------------- ------------- -------------" << endl;
 
-    //
-    uint32_t hbit = (1 << hole);
-    a = a | hbit;
-    b =  b | hbit;
-    prev_b->c_bits = a;
-    prev_b->taken_spots = b;
-    // //
-    //
-    auto c = a ^ b;
-    cout << bitset<32>(a) << endl;
-    cout << bitset<32>(b) << endl;
-    cout << bitset<32>(c) << endl;
-    test_hh->place_taken_spots(prev_b,hole,c,buffer,end);
+    tmp = hash_ref - 1;
+    tmp2--;
+    for ( int i = 0; i < 36; i++ ) {
+      uint32_t backref = 0;
+      if ( !(tmp->c_bits & 1) ) {
+        backref = (tmp->c_bits >> 1);
+      }
+      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp->c_bits) << " :: "  << std::hex << tmp->taken_spots <<  " :: " << std::dec << backref << endl;
+      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp2->c_bits) << " :: " << std::hex << tmp2->taken_spots <<  " :: " << std::dec << backref << endl;
+      cout << "---" << endl;
+      tmp++;
+      tmp2++;
+    }
 
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    test_hh->pop_oldest_full_bucket(hash_ref, c, v_passed, time, offset, buffer, end);
 
-    cout << "2(" << (unsigned int)(prev_b - &test_buffer[0]) <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
-
-
-    hash_ref->c_bits = 1;
-    hash_ref->taken_spots = 1;
-    a = 1;
-    b = 1;
-    //
-    c = a ^ b;
-    cout << bitset<32>(a) << endl;
-    cout << bitset<32>(b) << endl;
-    cout << bitset<32>(c) << endl;
-
-
-    hole = 0;
-
-    test_hh->place_taken_spots(hash_ref,hole,c,buffer,end);
-    cout << "3(" << (unsigned int)(prev_b - &test_buffer[0]) <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
-    cout << "3(" << (unsigned int)(hash_ref - &test_buffer[0]) <<  ")\t" << bitset<32>(hash_ref->c_bits) << " :: " << bitset<32>(hash_ref->taken_spots) << endl;
-
-    cout << "CHECK offset and update" << endl;
-    auto w = prev_b->taken_spots;
-    cout <<  bitset<32>(w) << endl;
-    auto w_offset = get_b_offset_update(w);
-    cout << "1. w_offset: " << (int)w_offset << " " <<  bitset<32>(w) << endl;
-    cout << bitset<32>((prev_b + w_offset)->taken_spots) << endl;
-    cout << bitset<32>((prev_b + w_offset)->c_bits) << endl;
-
-    w_offset = get_b_offset_update(w);
-    cout << "2. w_offset: " << (int)w_offset << " " <<  bitset<32>(w) << endl;
-    cout << bitset<32>((prev_b + w_offset)->taken_spots) << endl;
-    cout << bitset<32>((prev_b + w_offset)->c_bits) << endl;
-
-    w_offset = get_b_offset_update(w);
-    cout << "3. w_offset: " << (int)w_offset << " " <<  bitset<32>(w) << endl;
-    cout << bitset<32>((prev_b + w_offset)->taken_spots) << endl;
-    cout << bitset<32>((prev_b + w_offset)->c_bits) << endl;
-
+    tmp = hash_ref - 1;
+    tmp2 = &test_buffer_copy[64];
+    tmp2--;
+    for ( int i = 0; i < 36; i++ ) {
+      uint32_t backref = 0;
+      if ( !(tmp->c_bits & 1) ) {
+        backref = (tmp->c_bits >> 1);
+      }
+      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp->c_bits) << " :: "  << std::hex << tmp->taken_spots <<  " :: " << std::dec << backref << endl;
+      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp2->c_bits) << " :: " << std::hex << tmp2->taken_spots <<  " :: " << std::dec << backref << endl;
+      cout << "---" << endl;
+      tmp++;
+      tmp2++;
+    }
 
     cout << endl << endl;
 
@@ -2507,7 +2567,8 @@ int main(int argc, char **argv) {
     // test_sleep_methods();
     // test_some_bit_patterns();
 
-    test_hh_map_methods2();
+    //test_hh_map_methods2();
+    test_hh_map_methods3();
 
     //test_zero_above();
 
