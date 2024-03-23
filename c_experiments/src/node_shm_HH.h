@@ -1196,7 +1196,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		/**
-		 * value_restore_runner
+		 * value_restore_runner   --- a thread method...
 		*/
 		void value_restore_runner(void) {
 			hh_element *hash_ref = nullptr;
@@ -1654,6 +1654,34 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
+
+
+
+		void remove_membership_spots(hh_element *hash_base,hh_element *vb_prev,uint32_t c, hh_element *buffer, hh_element *end) {
+			while ( c ) {
+				hh_element *vb_probe = hash_base;
+				auto offset = get_b_offset_update(c);
+				vb_probe += offset;
+				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+				//
+				swap(vb_prev->_V,vb_probe->_V);
+				swap(vb_prev->taken_spots,vb_probe->taken_spots);  // when the element is not a bucket head, this is time...
+				vb_prev = vb_probe;
+			}
+		}
+
+		void remove_bucket_taken_spots(hh_element *hash_base,uint8_t nxt_loc,uint32_t a,uint32_t b, hh_element *buffer, hh_element *end) {
+			auto c = a ^ b;   // now look at the bits within the range of the current bucket indicating holdings of other buckets.
+			c = c & zero_above(nxt_loc);
+			while ( c ) {
+				hh_element *vb_probe = hash_base;
+				auto offset = get_b_offset_update(c);
+				vb_probe += offset;
+				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+				vb_probe->taken_spots &= (~((uint32_t)0x1 << (nxt_loc - offset)));   // the bit is not as far out
+			}
+		}
+
 		/**
 		 * remove_back_taken_spots
 		*/
@@ -1662,7 +1690,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			hh_element *vb_probe = hash_ref;
 			uint8_t how_far_back = 1;
 			while ( how_far_back < NEIGHBORHOOD ) {
-				vb_probe = (hash_ref - how_far_back);
+				hh_element *vb_probe = (hash_ref - how_far_back);
 				vb_probe = el_check_beg_wrap(vb_probe,buffer,end);
 				if ( vb_probe->c_bits & 0x1 ) {
 					vb_probe->taken_spots &= (~((uint32_t)0x1 << (hole + how_far_back)));  // the bit is not as far out
@@ -1692,7 +1720,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			hh_element *vb_probe = nullptr;
 			hh_element *vb_prev = hash_ref;
 
-			auto c = a;
+			auto c = a;   // use c as temporary
 			uint32_t offset = 0;
 			if ( nxt_loc == 0 ) {  // if so, the bucket base is being replaced.
 				UNSET(c,0); // ignore the first position
@@ -1709,16 +1737,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				vb_prev = el_check_end_wrap(vb_prev,buffer,end);
 			}
 
-			while ( c ) {
-				vb_probe = hash_ref;
-				auto offset = get_b_offset_update(c);
-				vb_probe += offset;
-				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
-				//
-				swap(vb_prev->_V,vb_probe->_V);
-				swap(vb_prev->taken_spots,vb_probe->taken_spots);  // when the element is not a bucket head, this is time...
-				vb_prev = vb_probe;
-			}
+			remove_membership_spots(hash_base,vb_prev,c,buffer,end);
 
 			// vb_probe should now point to the last position of the bucket, and it can be cleared...
 			vb_probe->c_bits = 0;
@@ -1730,19 +1749,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			UNSET(a,offset);
 			UNSET(b,offset);
 
-			hash_ref->c_bits = a;
-			hash_ref->taken_spots = b;
-			//
-			c = a ^ b;   // now look at the bits indicating holdings of other buckets.
-			c = c & zero_above(nxt_loc);
-			while ( c ) {
-				vb_probe = hash_ref;
-				auto offset = get_b_offset_update(c);
-				vb_probe += offset;
-				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
-				vb_probe->taken_spots &= (~((uint32_t)0x1 << (nxt_loc - offset)));   // the bit is not as far out
-			}
-			//
+			hash_base->c_bits = a;
+			hash_base->taken_spots = b;  
+			// now look at the bits within the range of the current bucket indicating holdings of other buckets.
+			remove_bucket_taken_spots(hash_base,nxt_loc,a,b,buffer,end);
+			// look for bits preceding the current bucket
 			remove_back_taken_spots(hash_base, nxt_loc, buffer, end);
 		}
 
@@ -1754,7 +1765,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			auto base_probe = hash_ref;
 			auto vb_probe = hash_ref;
 			//
-cout << "pop_oldest_full_bucket: c = " << bitset<32>(c) << endl;
+// cout << "pop_oldest_full_bucket: c = " << bitset<32>(c) << endl;
 			while ( c ) {
 				// look for a bucket within range that may give up a position
 				while ( c ) {
@@ -1764,16 +1775,16 @@ cout << "pop_oldest_full_bucket: c = " << bitset<32>(c) << endl;
 					if ( vb_probe->c_bits & 0x1 ) break;
 					vb_probe = hash_ref;
 				}
-cout << "pop_oldest_full_bucket: c = " << bitset<32>(c) << endl;
+// cout << "pop_oldest_full_bucket: c = " << bitset<32>(c) << endl;
 
 				if ( c ) {		// landed on a bucket (now what about it)
 					if ( popcount(vb_probe->c_bits) > 1 ) {
 						auto mem_nxt = vb_probe->c_bits;		// nxt is the membership of this bucket that has been found
-cout << "pop_oldest_full_bucket: mem_nxt = " << bitset<32>(mem_nxt) << endl;
+// cout << "pop_oldest_full_bucket: mem_nxt = " << bitset<32>(mem_nxt) << endl;
 
 						mem_nxt = mem_nxt & (~((uint32_t)0x1));
 						mem_nxt = mem_nxt & zero_above(32 - offset_nxt);  // don't look beyond the window of our base hash bucket
-cout << "pop_oldest_full_bucket: mem_nxt(2) = " << bitset<32>(mem_nxt) << endl;
+// cout << "pop_oldest_full_bucket: mem_nxt(2) = " << bitset<32>(mem_nxt) << endl;
 						base_probe = vb_probe;
 						while ( mem_nxt ) {			// same as while c
 							vb_probe = base_probe;
@@ -1791,8 +1802,7 @@ cout << "pop_oldest_full_bucket: mem_nxt(2) = " << bitset<32>(mem_nxt) << endl;
 				vb_probe = hash_ref;
 			}
 			if ( min_probe != hash_ref ) {  // found a place in the bucket that can be moved...
-
-cout << "min_probe: " << (int)(min_probe->c_bits >> 1) << " -- " << std::hex << min_probe->taken_spots << std::dec << endl;
+// cout << "min_probe: " << (int)(min_probe->c_bits >> 1) << " -- " << std::hex << min_probe->taken_spots << std::dec << endl;
 				swap(v_passed,vb_probe->_V);
 				time = stamp_offset(time,offset + offset_nxt);
 				swap(time,vb_probe->taken_spots);  // when the element is not a bucket head, this is time... 
