@@ -1561,7 +1561,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			next = el_check_end_wrap(next,buffer,end);
 			auto c = next->c_bits;
-			while ( c ) {
+			while ( c ) {			// search for the bucket member that matches the key
 				next = base;
 				uint8_t offset = get_b_offset_update(c);				
 				next += offset;
@@ -1657,17 +1657,22 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
-		void remove_membership_spots(hh_element *hash_base,hh_element *vb_prev,uint32_t c, hh_element *buffer, hh_element *end) {
+		hh_element * remove_membership_spots(hh_element *hash_base,hh_element *vb_nxt,uint32_t c, hh_element *buffer, hh_element *end) {
 			while ( c ) {
 				hh_element *vb_probe = hash_base;
 				auto offset = get_b_offset_update(c);
-				vb_probe += offset;
-				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
-				//
-				swap(vb_prev->_V,vb_probe->_V);
-				swap(vb_prev->taken_spots,vb_probe->taken_spots);  // when the element is not a bucket head, this is time...
-				vb_prev = vb_probe;
+				if ( c ) {
+					vb_probe += offset;
+					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+					//
+					swap(vb_nxt->_V,vb_probe->_V);
+					swap(vb_nxt->taken_spots,vb_probe->taken_spots);  // when the element is not a bucket head, this is time...
+					vb_nxt = vb_probe;
+				} else {
+					return vb_nxt;
+				}
 			}
+			return nullptr;
 		}
 
 		void remove_bucket_taken_spots(hh_element *hash_base,uint8_t nxt_loc,uint32_t a,uint32_t b, hh_element *buffer, hh_element *end) {
@@ -1711,47 +1716,35 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint32_t a = hash_base->c_bits; // membership mask
 			uint32_t b = hash_base->taken_spots;
 			//
-			uint8_t nxt_loc = 0;
-
-			if ( hash_base != hash_ref ) {
-				nxt_loc = (hash_ref->c_bits >> 1);  // hash ref is a member
-			}
-			//
-			hh_element *vb_probe = nullptr;
-			hh_element *vb_prev = hash_ref;
+			hh_element *vb_last = nullptr;
 
 			auto c = a;   // use c as temporary
-			uint32_t offset = 0;
-			if ( nxt_loc == 0 ) {  // if so, the bucket base is being replaced.
-				UNSET(c,0); // ignore the first position
-				if ( c ) { // get next (unless there isn't one)
-					vb_probe = hash_ref;
-					offset = get_b_offset_update(c);
-					vb_probe += offset;
-					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
-					swap(vb_prev->_V,vb_probe->_V);  // swap just the value part (the usage bits will not change until the end)
-					vb_prev = vb_probe;
-				}
-			} else {
-				vb_prev += nxt_loc;
-				vb_prev = el_check_end_wrap(vb_prev,buffer,end);
+			//
+			if ( hash_base != hash_ref ) {  // if so, the bucket base is being replaced.
+				uint32_t offset = (hash_ref - hash_base);
+				c = c & ~zero_above(offset);
 			}
-
-			remove_membership_spots(hash_base,vb_prev,c,buffer,end);
+			//
+			vb_last = remove_membership_spots(hash_base,hash_ref,c,buffer,end);
+			if ( vb_last == nullptr ) return;
 
 			// vb_probe should now point to the last position of the bucket, and it can be cleared...
-			vb_probe->c_bits = 0;
-			vb_probe->taken_spots = 0;
-			vb_probe->_V = 0;
+			vb_last->c_bits = 0;
+			vb_last->taken_spots = 0;
+			vb_last->_V = 0;
+
+			uint8_t nxt_loc = (vb_last - hash_base);   // the spot that actually cleared...
 
 			// recall, a and b are from the base
 			// clear the bits for the element being removed
-			UNSET(a,offset);
-			UNSET(b,offset);
-
+			UNSET(a,nxt_loc);
+			UNSET(b,nxt_loc);
 			hash_base->c_bits = a;
-			hash_base->taken_spots = b;  
+			hash_base->taken_spots = b;
+
+			// OTHER buckets
 			// now look at the bits within the range of the current bucket indicating holdings of other buckets.
+			// these buckets are ahead of the base, but behind the cleared position...
 			remove_bucket_taken_spots(hash_base,nxt_loc,a,b,buffer,end);
 			// look for bits preceding the current bucket
 			remove_back_taken_spots(hash_base, nxt_loc, buffer, end);
@@ -1847,8 +1840,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			uint8_t hole = countr_one(b);
 			uint32_t hbit = (1 << hole);
-			a = a | hbit;
-			b = b | hbit;
+			if ( hbit < 32 ) {   // if all the spots are already taken, no need to reserve it.
+				a = a | hbit;
+				b = b | hbit;
+			}
 			hash_ref->c_bits = a;
 			hash_ref->taken_spots = b;
 			//
@@ -1857,7 +1852,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			// now the oldest element in this bucket is in hand and may be stored if interleaved buckets don't
 			// preempt it.
 			a = hash_ref->c_bits;
-			uint32_t c = a ^ b;
+			uint32_t c = ( hbit < 32 ) ? (a ^ b) : ~a;
 
 			// d contains bucket starts.. offset to those to update the occupancy vector if they come between the 
 			// hash bucket and the hole.

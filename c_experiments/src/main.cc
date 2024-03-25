@@ -2376,6 +2376,9 @@ void test_hh_map_methods3(void) {
     (hash_ref + offset)->c_bits = 1;
     (hash_ref + offset)->taken_spots = 0xFFFFFFFF;
 
+
+    cout <<  "COUNTR ONE FFFFFFFF: " << countr_one((hash_ref + offset)->taken_spots) << endl;
+
     cout << bitset<32>(c) << "  "  << (int)offset  << endl;
 
     VV = VV | (1 << offset);
@@ -2430,7 +2433,6 @@ void test_hh_map_methods3(void) {
 		c = a ^ b;
 
     offset = 0;
-    hh_element *vb_probe = nullptr;
     hole = 32;
     //
     offset = test_hh->inner_bucket_time_swaps(hash_ref,hole,v_passed,time, buffer, end);
@@ -2569,8 +2571,6 @@ int main(int argc, char **argv) {
 
     //test_hh_map_methods2();
     test_hh_map_methods3();
-
-    // 4298720034
 
     //test_zero_above();
 
