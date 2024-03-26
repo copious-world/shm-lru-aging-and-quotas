@@ -2470,6 +2470,8 @@ void test_hh_map_methods3(void) {
       tmp2++;
     }
 
+    cout << " a^b "  << " -- " << bitset<32>(c) <<  " offset: " << (int)(offset) << endl;
+
     test_hh->pop_oldest_full_bucket(hash_ref, c, v_passed, time, offset, buffer, end);
 
     tmp = hash_ref - 1;
@@ -2488,6 +2490,14 @@ void test_hh_map_methods3(void) {
     }
 
     cout << endl << endl;
+
+
+    cout << "NOW REMOVING THINGS" << endl;
+
+    cout << "hash ref: " << bitset<32>(hash_ref->c_bits) << " " << bitset<32>(hash_ref->taken_spots)  << endl;
+
+
+    
 
 
   } catch ( const char *err ) {
