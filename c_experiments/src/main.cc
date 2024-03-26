@@ -2359,7 +2359,7 @@ void test_hh_map_methods3(void) {
 
     hash_ref->c_bits = 0b11010101111100111101010111110011;
     hash_ref->taken_spots = 0xFFFFFFFF;
-    //                         0b11010101111100111101010111110011;
+    //                       0b--11010101111100111101010111110011;
     (hash_ref + 2)->c_bits = 0b10000010100000110000101010000011;
     (hash_ref + 2)->taken_spots = 0xFFFFFFFF;
 

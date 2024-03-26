@@ -1807,6 +1807,7 @@ cout << "pop_oldest_full_bucket: mem_nxt = " << bitset<32>(mem_nxt) << endl;
 						if ( offset_nxt < offset ) {
 							mem_nxt = mem_nxt & ones_above(offset - offset_nxt);  // don't look beyond the window of our base hash bucket
 						}
+						mem_nxt = mem_nxt & zero_above(32 - offset_nxt); // don't look outside the window
 
 cout << "pop_oldest_full_bucket: mem_nxt(2) = " << bitset<32>(mem_nxt) << endl;
 						while ( mem_nxt ) {			// same as while c
