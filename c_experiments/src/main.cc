@@ -2357,36 +2357,51 @@ void test_hh_map_methods3(void) {
     uint32_t counter = 0xFFFD;
 
 
-    hash_ref->c_bits = 0b11010101111100111101010111110011;
+    uint8_t test_base_offset = 3;
+
+    /* test 3 */
+    hash_ref->c_bits = 0b00010101111100111101010111110111;
     hash_ref->taken_spots = 0xFFFFFFFF;
-    //                       0b--11010101111100111101010111110011;
-    (hash_ref + 2)->c_bits = 0b10000010100000110000101010000011;
-    (hash_ref + 2)->taken_spots = 0xFFFFFFFF;
+    //   
+    auto tester = (hash_ref + test_base_offset);  
+    tester->c_bits = ~(hash_ref->c_bits >> test_base_offset);
+    tester->taken_spots = 0xFFFFFFFF;
+
+    cout << "hash ref and test base: " << bitset<32>(hash_ref->c_bits) << " :: " << endl;
+    cout << "hash ref and test base: " << bitset<32>(tester->c_bits  << test_base_offset) << " :: " << endl;
+    cout << "hash ref and test base: " << bitset<32>(tester->c_bits) << " :: " << endl;
+
+    auto q = hash_ref->c_bits;
+    auto r = tester->c_bits;
+    cout << "hash ref and test base: " << bitset<32>((r << test_base_offset) & q) << " :: " <<  bitset<32>((r << test_base_offset) | q) << endl;
 
 
-    uint64_t B = 0b11010101111100111101010111110011;
-    uint64_t C = 0b10000010100000110000101010000011;
+    uint64_t B = hash_ref->c_bits;
+    uint64_t C = tester->c_bits;
     uint64_t VV = C;
-    VV = B | (VV << 2);
+    VV = B | (VV << test_base_offset);
     VV &= UINT32_MAX;
 
     uint32_t c = (uint32_t)VV;
     uint8_t offset = countr_one(c);
 
-    (hash_ref + offset)->c_bits = 1;
-    (hash_ref + offset)->taken_spots = 0xFFFFFFFF;
+    if ( offset < 32 ) {
+      //
+      (hash_ref + offset)->c_bits = 1;
+      (hash_ref + offset)->taken_spots = 0xFFFFFFFF;
 
+      cout <<  "COUNTR ONE FFFFFFFF: " << countr_one((hash_ref + offset)->taken_spots) << endl;
 
-    cout <<  "COUNTR ONE FFFFFFFF: " << countr_one((hash_ref + offset)->taken_spots) << endl;
+      cout << bitset<32>(c) << "  "  << (int)offset  << endl;
 
-    cout << bitset<32>(c) << "  "  << (int)offset  << endl;
+      VV = VV | (1 << offset);
+      VV &= UINT32_MAX;
+      c = (uint32_t)VV;
 
-    VV = VV | (1 << offset);
-    VV &= UINT32_MAX;
-    c = (uint32_t)VV;
-
-    offset = countr_one(c);
-    cout << bitset<32>(c) << "  "  << (int)offset  << endl;
+      offset = countr_one(c);
+      cout << bitset<32>(c) << "  "  << (int)offset  << endl;
+      //
+    }
 
 
     hh_element *tmp = hash_ref;
@@ -2401,12 +2416,12 @@ void test_hh_map_methods3(void) {
     }
 
 
-    c = (hash_ref + 2)->c_bits;
+    c = (hash_ref + test_base_offset)->c_bits;
     offset = 0;
     while ( c ) {
       c = c & ~(0x1 << offset);
       offset = countr_zero(c);
-      tmp = (hash_ref + 2) + offset;
+      tmp = (hash_ref + test_base_offset) + offset;
       tmp->c_bits = offset << 1;
       tmp->taken_spots = (counter-- << 18) | (1 << 16);
     }
@@ -2439,7 +2454,7 @@ void test_hh_map_methods3(void) {
 
     cout << "before pop_oldest_full_bucket: " <<  bitset<32>(c) << endl;
     cout << "before pop_oldest_full_bucket: " << (int)offset << endl;
-    cout << "before pop_oldest_full_bucket: " << time << endl;
+    cout << "before pop_oldest_full_bucket: " << std::hex << time << std::dec << endl;
 
 
     tmp = hash_ref - 1;
@@ -2488,6 +2503,7 @@ void test_hh_map_methods3(void) {
       tmp++;
       tmp2++;
     }
+    
 
     cout << endl << endl;
 

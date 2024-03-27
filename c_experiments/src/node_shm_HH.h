@@ -1780,36 +1780,33 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		void pop_oldest_full_bucket(hh_element *hash_base,uint32_t c,uint64_t &v_passed,uint32_t &time,uint32_t offset,hh_element *buffer, hh_element *end) {
 			//
 			uint32_t min_base_offset = 0;
-			uint32_t offset_nxt = 0;
+			uint32_t offset_nxt_base = 0;
 			auto min_probe = hash_base;
 			auto min_base = hash_base;
 			auto base_probe = hash_base;
 			//
-cout << "pop_oldest_full_bucket: c = " << bitset<32>(c) << endl;
 			while ( c ) {
 				base_probe = hash_base;
 				// look for a bucket within range that may give up a position
 				while ( c ) {
-					offset_nxt = get_b_offset_update(c);
+					auto offset_nxt = get_b_offset_update(c);
 					base_probe += offset_nxt;
 					base_probe = el_check_end_wrap(base_probe,buffer,end);
-					if ( base_probe->c_bits & 0x1 ) break;
+					if ( base_probe->c_bits & 0x1 ) {
+						offset_nxt_base = offset_nxt;
+						break;
+					}
 					base_probe = hash_base;
 				}
-cout << "pop_oldest_full_bucket: c = " << bitset<32>(c) << endl;
-
 				if ( c ) {		// landed on a bucket (now what about it)
 					if ( popcount(base_probe->c_bits) > 1 ) {
+						//
 						auto mem_nxt = base_probe->c_bits;		// nxt is the membership of this bucket that has been found
-cout << "pop_oldest_full_bucket: mem_nxt = " << bitset<32>(mem_nxt) << endl;
-
 						mem_nxt = mem_nxt & (~((uint32_t)0x1));   // the interleaved bucket does not give up its base...
-						if ( offset_nxt < offset ) {
-							mem_nxt = mem_nxt & ones_above(offset - offset_nxt);  // don't look beyond the window of our base hash bucket
+						if ( offset_nxt_base < offset ) {
+							mem_nxt = mem_nxt & ones_above(offset - offset_nxt_base);  // don't look beyond the window of our base hash bucket
 						}
-						mem_nxt = mem_nxt & zero_above(32 - offset_nxt); // don't look outside the window
-
-cout << "pop_oldest_full_bucket: mem_nxt(2) = " << bitset<32>(mem_nxt) << endl;
+						mem_nxt = mem_nxt & zero_above((NEIGHBORHOOD-1) - offset_nxt_base); // don't look outside the window
 						while ( mem_nxt ) {			// same as while c
 							auto vb_probe = base_probe;
 							auto offset_min = get_b_offset_update(mem_nxt);
@@ -1825,13 +1822,12 @@ cout << "pop_oldest_full_bucket: mem_nxt(2) = " << bitset<32>(mem_nxt) << endl;
 				}
 			}
 			if ( min_base != hash_base ) {  // found a place in the bucket that can be moved...
- cout << "min_probe: " << (int)(min_probe->c_bits >> 1) << " -- " << std::hex << min_probe->taken_spots << std::dec << endl;
 				min_probe->_V = v_passed;
-				min_probe->c_bits = (min_base_offset + offset_nxt) << 1;
-				time = stamp_offset(time,(min_base_offset + offset_nxt));  // offset is now
+				min_probe->c_bits = (min_base_offset + offset_nxt_base) << 1;
+				time = stamp_offset(time,(min_base_offset + offset_nxt_base));  // offset is now
 				min_probe->taken_spots = time;  // when the element is not a bucket head, this is time... 
 				min_base->c_bits &= ~(0x1 << min_base_offset);  // turn off the bit
-				hash_base->c_bits |= (0x1 << (min_base_offset + offset_nxt));
+				hash_base->c_bits |= (0x1 << (min_base_offset + offset_nxt_base));
 				// taken spots is black, so we don't reset values after this...
 			}
 		}
