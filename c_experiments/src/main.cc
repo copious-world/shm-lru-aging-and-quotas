@@ -2294,6 +2294,13 @@ void test_hh_map_methods2(void) {
 
 
 
+void print_values_elems(hh_element *elems,uint8_t N,uint8_t start_at = 0) {
+  for ( int i = 0; i < N; i++ ) {
+    cout << "p values: " << elems->_V << " .. (" << (start_at + i) << ")" << endl;
+    elems++;
+  }
+}
+
 
 
 void test_hh_map_methods3(void) {
@@ -2503,6 +2510,13 @@ void test_hh_map_methods3(void) {
       tmp++;
       tmp2++;
     }
+
+    tmp = buffer;
+    uint8_t k = 1;
+    while ( tmp < end ) {
+      tmp->_V = k++;
+      tmp++;
+    }
     
 
     cout << endl << endl;
@@ -2511,9 +2525,76 @@ void test_hh_map_methods3(void) {
     cout << "NOW REMOVING THINGS" << endl;
 
     cout << "hash ref: " << bitset<32>(hash_ref->c_bits) << " " << bitset<32>(hash_ref->taken_spots)  << endl;
+    //
+    {
+      auto hash_base = hash_ref;
+
+      print_values_elems(hash_base,32,64);
+
+      uint32_t a = hash_base->c_bits; // membership mask
+      uint8_t nxt = countr_one(a);
+      cout << "prev_ref: " << (hash_base+nxt)->_V << " " <<  bitset<32>((hash_base+nxt)->c_bits) <<  " nxt: " << (int)nxt  << endl;
+      nxt--;
+      hash_ref += nxt;
+      cout << "hash_ref: " << hash_ref->_V << " " <<  bitset<32>(hash_ref->c_bits) <<  " nxt: " << (int)nxt  << endl;
+      uint32_t b = hash_base->taken_spots;
+      //
+      hh_element *vb_last = nullptr;
+
+      auto c = a;   // use c as temporary
+      cout << bitset<32>(c) << endl;
+      //
+      if ( hash_base != hash_ref ) {  // if so, the bucket base is being replaced.
+        uint32_t offset = (hash_ref - hash_base);
+        cout << "offset: " << offset << endl;
+        c = c & test_hh->ones_above(offset);
+      }
+      cout << bitset<32>(c) << endl;
+      //
+      a = hash_base->c_bits; // membership mask
+      cout << bitset<32>(a) << " " << bitset<32>(b) <<  endl;
+      vb_last = test_hh->shift_membership_spots(hash_base,hash_ref,c,buffer,end);
+      a = hash_base->c_bits; // membership mask
+      b = hash_base->taken_spots;
+      cout << bitset<32>(a) << " " << bitset<32>(b) <<  endl;
+      if ( vb_last == nullptr ) {
+        cout << "REMOVALS: " << "got a null pointer" << endl;
+      } else {
+        cout << "VB LAST: " << vb_last->_V << " " <<  bitset<32>(vb_last->c_bits) << endl;
+      }
+      print_values_elems(hash_base,32,64);
+
+			uint8_t nxt_loc = (vb_last - hash_base);   // the spot that actually cleared...
+
+      cout << "nxt_loc LAST: " << (int)(nxt_loc) << " " <<  (int)(vb_last->c_bits >> 1) << endl;
+
+      //
+			// vb_probe should now point to the last position of the bucket, and it can be cleared...
+			vb_last->c_bits = 0;
+			vb_last->taken_spots = 0;
+			vb_last->_V = 0;
 
 
-    
+			// recall, a and b are from the base
+			// clear the bits for the element being removed
+			UNSET(a,nxt_loc);
+			UNSET(b,nxt_loc);
+			hash_base->c_bits = a;
+			hash_base->taken_spots = b;
+      
+      
+      cout << "BEFORE remove bucket: " <<  bitset<32>(a) << " " <<  bitset<32>(b) << endl;
+
+			c = a ^ b;   // now look at the bits within the range of the current bucket indicating holdings of other buckets.
+
+      cout << "BEFORE remove bucket: " <<  bitset<32>(c) << endl;
+			c = c & test_hh->zero_above(nxt_loc);
+
+      cout << "BEFORE remove bucket: " <<  bitset<32>(c) << endl;
+
+      test_hh->remove_bucket_taken_spots(hash_base,nxt_loc,a,b,buffer,end);
+
+    }
 
 
   } catch ( const char *err ) {

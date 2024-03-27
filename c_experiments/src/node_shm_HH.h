@@ -1673,42 +1673,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			}
 		}
 
-		/**
-		 * remove_membership_spots
-		*/
-		hh_element * remove_membership_spots(hh_element *hash_base,hh_element *vb_nxt,uint32_t c, hh_element *buffer, hh_element *end) {
-			while ( c ) {
-				hh_element *vb_probe = hash_base;
-				auto offset = get_b_offset_update(c);
-				if ( c ) {
-					vb_probe += offset;
-					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
-					//
-					swap(vb_nxt->_V,vb_probe->_V);
-					// not that the c_bits are note copied... for members, it is the offset to the base, while the base stores the memebership bit pattern
-					swap(vb_nxt->taken_spots,vb_probe->taken_spots);  // when the element is not a bucket head, this is time...
-					vb_nxt = vb_probe;
-				} else {
-					return vb_nxt;
-				}
-			}
-			return nullptr;
-		}
-
-		/**
-		 * remove_bucket_taken_spots
-		*/
-		void remove_bucket_taken_spots(hh_element *hash_base,uint8_t nxt_loc,uint32_t a,uint32_t b, hh_element *buffer, hh_element *end) {
-			auto c = a ^ b;   // now look at the bits within the range of the current bucket indicating holdings of other buckets.
-			c = c & zero_above(nxt_loc);
-			while ( c ) {
-				hh_element *vb_probe = hash_base;
-				auto offset = get_b_offset_update(c);
-				vb_probe += offset;
-				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
-				vb_probe->taken_spots &= (~((uint32_t)0x1 << (nxt_loc - offset)));   // the bit is not as far out
-			}
-		}
 
 		/**
 		 * remove_back_taken_spots
@@ -1731,6 +1695,52 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		/**
+		 * shift_membership_spots
+		*/
+		hh_element *shift_membership_spots(hh_element *hash_base,hh_element *vb_nxt,uint32_t c, hh_element *buffer, hh_element *end) {
+cout << bitset<32>(c) << "  ---- " << (int)(vb_nxt - hash_base) << endl;
+			while ( c ) {
+				hh_element *vb_probe = hash_base;
+				auto offset = get_b_offset_update(c);
+
+				cout << bitset<32>(c) << " " << (int)offset << endl;
+
+				if ( c ) {
+					vb_probe += offset;
+					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+					//
+cout << "VALUES vb_nxt: " << vb_nxt->_V << " vb_probe: " << vb_probe->_V << endl;
+					swap(vb_nxt->_V,vb_probe->_V);
+					
+					// not that the c_bits are note copied... for members, it is the offset to the base, while the base stores the memebership bit pattern
+					swap(vb_nxt->taken_spots,vb_probe->taken_spots);  // when the element is not a bucket head, this is time...
+					vb_nxt = vb_probe;
+				} else {
+					return vb_nxt;
+				}
+			}
+			return nullptr;
+		}
+
+		/**
+		 * remove_bucket_taken_spots
+		*/
+		void remove_bucket_taken_spots(hh_element *hash_base,uint8_t nxt_loc,uint32_t a,uint32_t b, hh_element *buffer, hh_element *end) {
+			auto c = a ^ b;   // now look at the bits within the range of the current bucket indicating holdings of other buckets.
+			c = c & zero_above(nxt_loc);  // buckets after the removed location do not see the location; so, don't process them
+			while ( c ) {
+				hh_element *vb_probe = hash_base;
+				auto offset = get_b_offset_update(c);
+				vb_probe += offset;
+				if ( vb_probe->c_bits & 0x1 ) {
+					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+					vb_probe->taken_spots &= (~((uint32_t)0x1 << (nxt_loc - offset)));   // the bit is not as far out
+				}
+			}
+		}
+
+
+		/**
 		 * removal_taken_spots
 		*/
 		void removal_taken_spots(hh_element *hash_base,hh_element *hash_ref,hh_element *buffer, hh_element *end) {
@@ -1747,7 +1757,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				c = c & ones_above(offset);
 			}
 			//
-			vb_last = remove_membership_spots(hash_base,hash_ref,c,buffer,end);
+			vb_last = shift_membership_spots(hash_base,hash_ref,c,buffer,end);
 			if ( vb_last == nullptr ) return;
 
 			// vb_probe should now point to the last position of the bucket, and it can be cleared...
