@@ -1657,19 +1657,35 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * place_back_taken_spots
 		*/
 
-		void place_back_taken_spots(hh_element *hash_ref, uint32_t hole, hh_element *buffer, hh_element *end) {
-			hh_element *vb_probe = hash_ref;
-			uint8_t how_far_back = 1;
-			while ( how_far_back < NEIGHBORHOOD ) {
-				vb_probe = (hash_ref - how_far_back);
-				vb_probe = el_check_beg_wrap(vb_probe,buffer,end);
+		void place_back_taken_spots(hh_element *hash_base, uint32_t dist_base, hh_element *buffer, hh_element *end) {
+			//
+			auto last_view = (NEIGHBORHOOD - 1 - dist_base);
+			hh_element *vb_probe = hash_base - last_view;
+			vb_probe = el_check_beg_wrap(vb_probe,buffer,end);
+			uint8_t k = NEIGHBORHOOD - 1;
+			uint32_t c = 0;
+			while ( vb_probe != hash_base ) {
 				if ( vb_probe->c_bits & 0x1 ) {
-					vb_probe->taken_spots |= (1 << (hole + how_far_back));   // the bit is not as far out
-					how_far_back++;
-				} else if ( vb_probe->c_bits != 0 ) {
-					auto dist = (vb_probe->c_bits >> 1);
-					how_far_back += dist;
-				} else how_far_back++;
+					vb_probe->taken_spots |= ((uint32_t)0x1 << k);  // the bit is not as far out
+					c = vb_probe->c_bits;
+					break;
+				}
+				vb_probe++; k--;
+				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+			}
+			//
+			c = ~c & zero_above(last_view - (NEIGHBORHOOD - 1 - k)); // these are not the members of the first found bucket, necessarily in range of hole.
+			c = c & vb_probe->taken_spots;
+			//
+			while ( c ) {
+				auto base_probe = vb_probe;
+				auto offset_nxt = get_b_offset_update(c);
+				base_probe += offset_nxt;
+				base_probe = el_check_end_wrap(base_probe,buffer,end);
+				if ( base_probe->c_bits & 0x1 ) {
+					base_probe->taken_spots |= ((uint32_t)0x1 << k);  // the bit is not as far out
+					c = c & ~(base_probe->c_bits);  // no need to look at base probe members anymore ... remaining bits are other buckets
+				}
 			}
 		}
 
@@ -1678,18 +1694,35 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * remove_back_taken_spots
 		*/
 
-		void remove_back_taken_spots(hh_element *hash_ref, uint32_t hole, hh_element *buffer, hh_element *end) {
-			uint8_t how_far_back = 1;
-			while ( how_far_back < NEIGHBORHOOD ) {
-				hh_element *vb_probe = (hash_ref - how_far_back);
-				vb_probe = el_check_beg_wrap(vb_probe,buffer,end);
+		void remove_back_taken_spots(hh_element *hash_base, uint32_t dist_base, hh_element *buffer, hh_element *end) {
+			//
+			auto last_view = (NEIGHBORHOOD - 1 - dist_base);
+			hh_element *vb_probe = hash_base - last_view;
+			vb_probe = el_check_beg_wrap(vb_probe,buffer,end);
+			uint8_t k = NEIGHBORHOOD - 1;
+			uint32_t c = 0;
+			while ( vb_probe != hash_base ) {
 				if ( vb_probe->c_bits & 0x1 ) {
-					vb_probe->taken_spots &= (~((uint32_t)0x1 << (hole + how_far_back)));  // the bit is not as far out
-					how_far_back++;
-				} else if ( vb_probe->c_bits != 0 ) {
-					auto dist = (vb_probe->c_bits >> 1);
-					how_far_back += dist;
-				} else how_far_back++;
+					vb_probe->taken_spots &= (~((uint32_t)0x1 << k));  // the bit is not as far out
+					c = vb_probe->c_bits;
+					break;
+				}
+				vb_probe++; k--;
+				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+			}
+			//
+			c = ~c & zero_above(last_view - (NEIGHBORHOOD - 1 - k)); // these are not the members of the first found bucket, necessarily in range of hole.
+			c = c & vb_probe->taken_spots;
+			//
+			while ( c ) {
+				auto base_probe = vb_probe;
+				auto offset_nxt = get_b_offset_update(c);
+				base_probe += offset_nxt;
+				base_probe = el_check_end_wrap(base_probe,buffer,end);
+				if ( base_probe->c_bits & 0x1 ) {
+					base_probe->taken_spots &= (~((uint32_t)0x1 << (k - offset_nxt)));  // the bit is not as far out
+					c = c & ~(base_probe->c_bits);  // no need to look at base probe members anymore ... remaining bits are other buckets
+				}
 			}
 		}
 
