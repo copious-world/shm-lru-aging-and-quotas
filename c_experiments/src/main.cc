@@ -1774,7 +1774,7 @@ void test_some_bit_patterns(void) {
 void test_zero_above(void) {
   //
   for ( uint8_t i = 0; i < 32; i ++ ) {
-    cout << "test_zero_above:\t" << bitset<32>(HH_map<>::zero_levels[i]) << endl;
+    cout << "test_zero_above:\t" << bitset<32>(zero_levels[i]) << endl;
   }
 
   uint32_t test_pattern =  1  | (1 << 4) | (1 << 7) | (1 << 11) | (1 << 16) | (1 << 17) | (1 << 20) | (1 << 21) | (1 << 22) | 
@@ -1788,7 +1788,7 @@ void test_zero_above(void) {
   while ( a ) {
     cout << countr_zero(a) << endl;
     uint8_t shift =  countr_zero(a);
-    auto masked = a & HH_map<>::zero_above(shift);
+    auto masked = a & zero_above(shift);
     cout << "test_mask   :\t\t" << bitset<32>(masked) << endl;
     a &= (~(uint32_t)(1 << shift));
   }
@@ -1799,7 +1799,7 @@ void test_zero_above(void) {
   while ( a ) {
     cout << countr_zero(a) << endl;
     uint8_t shift =  countr_zero(a);
-    auto masked = test_pattern & HH_map<>::zero_above(shift);
+    auto masked = test_pattern & zero_above(shift);
     cout << "test_masked :\t\t" << bitset<32>(masked) << endl;
     a &= (~(uint32_t)(1 << shift));
   }
@@ -1828,8 +1828,8 @@ void test_zero_above(void) {
 
   //vb_probe->c_bits = a;
   //vb_probe->taken_spots = b | hbit;
-  cout << "test_hole(a):\t\t" << bitset<32>(HH_map<>::zero_above(hole)) << endl;
-  a = a & HH_map<>::zero_above(hole);
+  cout << "test_hole(a):\t\t" << bitset<32>(zero_above(hole)) << endl;
+  a = a & zero_above(hole);
   cout << "test_patt(a):\t\t" << bitset<32>(a) << endl;
   //
   // unset the first bit (which indicates this position starts a bucket)
@@ -2547,7 +2547,7 @@ void test_hh_map_methods3(void) {
       if ( hash_base != hash_ref ) {  // if so, the bucket base is being replaced.
         uint32_t offset = (hash_ref - hash_base);
         cout << "offset: " << offset << endl;
-        c = c & test_hh->ones_above(offset);
+        c = c & ones_above(offset);
       }
       cout << bitset<32>(c) << endl;
       //
@@ -2588,7 +2588,7 @@ void test_hh_map_methods3(void) {
 			c = a ^ b;   // now look at the bits within the range of the current bucket indicating holdings of other buckets.
 
       cout << "BEFORE remove bucket: " <<  bitset<32>(c) << endl;
-			c = c & test_hh->zero_above(nxt_loc);
+			c = c & zero_above(nxt_loc);
 
       cout << "BEFORE remove bucket: " <<  bitset<32>(c) << endl;
 
@@ -2604,6 +2604,202 @@ void test_hh_map_methods3(void) {
   //
   pair<uint16_t,size_t> p = ssm->detach_all(true);
   cout << p.first << ", " << p.second << endl;
+
+}
+
+
+
+
+void test_some_bit_patterns_2(void) {   //  ----  ----  ----  ----  ----  ----  ----
+  //
+  uint32_t buffer[128];
+  memset(buffer,0xFF,128*sizeof(uint32_t));
+
+  const auto NEIGHBORHOOD = 32;
+
+  uint8_t dist_base = 31;
+  while ( dist_base ) {
+    cout << " DISTANCE TO BASE IS: " << dist_base << endl;
+    uint32_t last_view = (NEIGHBORHOOD - 1 - dist_base);
+    //
+    uint32_t c = 1 << 31;
+    cout << bitset<32>(c) << " last_view = " <<  last_view << endl;
+
+    if ( last_view > 0 ) {
+      uint32_t *base = &buffer[64];
+      uint32_t *viewer = base - last_view;
+      while ( viewer != base ) {
+        auto cbit = dist_base + last_view;
+        cout << " cbit = " << cbit << " dist_base = " << (int)dist_base << " last_view = " << last_view << endl;
+        auto vbits = *viewer;
+        vbits = vbits & ~((uint32_t)0x1 << cbit);
+        *viewer++ = vbits;
+        last_view--;
+      }
+      // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+      uint32_t *reporter = &buffer[32];
+
+      base++;
+      while ( reporter < base ) {
+        cout << bitset<32>(*reporter) << endl;
+        reporter++;
+      }
+      // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    }
+    dist_base--;
+    cout << endl;
+  }
+}
+
+
+/*
+    std::random_device rd;  // a seed source for the random number engine
+    std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
+    std::uniform_int_distribution<uint32_t> ud(0, num_elements-1);
+    //
+    for ( uint32_t j =  0; j < 15000; j++ ) {
+      if ( sg_share_test_hh ) {
+        uint32_t h_bucket = ud(gen_v);
+*/
+
+
+
+void test_some_bit_patterns_3(void) {   //  ----  ----  ----  ----  ----  ----  ----
+  //
+
+  const auto NEIGHBORHOOD = 32;
+
+  std::random_device rd;  // a seed source for the random number engine
+  std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
+  std::uniform_int_distribution<uint32_t> ud(1, 31);
+
+
+  std::uniform_int_distribution<uint32_t> ud_wide(1, UINT32_MAX/3);
+
+  //
+  uint32_t buffer[128];
+  uint32_t cbits[128];
+  memset(buffer,0xFF,128*sizeof(uint32_t));
+  memset(cbits,0,128*sizeof(uint32_t));
+
+
+  for ( int j = 0; j < 5; j++ ) {
+    uint32_t h_bucket = ud(gen);
+    cbits[64 - h_bucket] = 1;
+  }
+
+  uint32_t cbit_gen = ud_wide(gen);
+  uint32_t cbit_update = cbit_gen;
+  uint32_t cbit_accumulate = cbit_gen;
+  uint32_t prev_pos = 0;
+  for ( int j = 32; j < 64; j++ ) {
+    if ( cbits[j] == 1 ) {
+      cbits[j] |= cbit_update;
+      if ( prev_pos > 0 ) {
+        uint32_t shft = (j - prev_pos);
+        cbit_accumulate = cbit_accumulate << shft;
+      }
+      //
+      cbit_accumulate |= cbits[j];
+      cbit_gen = ud_wide(gen);
+      cbit_update = cbit_gen & ~cbit_accumulate;
+      prev_pos = j;
+    }
+  }
+
+  cout << "cbit_accumulate: " << bitset<32>(cbit_accumulate) << endl;
+
+  cbit_accumulate = 0;
+  prev_pos = 0;
+  for ( int j = 32; j < 64; j++ ) {
+    if ( cbits[j]  & 0x1 ) {
+      auto stored_bits = cbits[j];
+      if ( prev_pos > 0 ) {
+        uint32_t shft = (j - prev_pos);
+        cbit_accumulate <<= shft;
+      }
+      cbit_accumulate |= stored_bits;
+      cout << "cbits: " << j << " :: " << bitset<32>(stored_bits) << endl;
+      prev_pos = j;
+    }
+  }
+
+  cout << "cbit_accumulate: " << bitset<32>(cbit_accumulate) << endl;
+
+
+  // 01011111011111110110110011100001
+  // 01011111011111110110110011100001
+  // 01111110111110011100001001100101
+
+  uint8_t dist_base = 31;
+  uint8_t g = NEIGHBORHOOD - 1;
+  while ( dist_base ) {
+    //
+    cout << " DISTANCE TO BASE IS: " << dist_base << endl;
+    uint32_t last_view = (g - dist_base);
+    //
+    uint32_t c = 1 << g;
+    cout << bitset<32>(c) << " last_view = " <<  last_view << endl;
+
+    if ( last_view > 0 ) {
+      uint32_t *base = &buffer[64];
+      uint32_t *cbits_base = &cbits[64];
+      //
+      uint32_t *viewer = base - last_view;
+      uint32_t *cbts_v = cbits_base - last_view;
+      uint8_t k = g;      ///  (dist_base + last_view) :: dist_base + (g - dist_base) ::= dist_base + (NEIGHBORHOOD - 1) - dist_base ::= (NEIGHBORHOOD - 1) ::= g
+      while ( viewer != base ) {
+        cout << " base - viewer:  " << (base - viewer) << endl;
+        //
+        if ( *cbts_v & 0x1 ) {
+          cout << " cbit = " << k << " dist_base = " << (int)dist_base << " last_view = " << last_view << endl;
+          auto vbits = *viewer;
+          vbits = vbits & ~((uint32_t)0x1 << k);
+          *viewer = vbits;
+          c = *cbts_v;
+          break;
+        }
+        viewer++; k--; cbts_v++;
+      }
+      // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+      cout << "c = "  << bitset<32>(c) << endl;
+      c = ~c & zero_above(last_view - (g - k)); // these are not the members of the first found bucket, necessarily in range of hole.
+      cout << "c = "  << bitset<32>(c) << "  *viewer= " << bitset<32>(*viewer) << endl;
+      c = c & *viewer;   // taken bits
+      cout << "c = "  << bitset<32>(c) << endl;
+
+      while ( c ) {
+        auto base_probe = viewer;
+        auto base_cbts = cbts_v;
+        auto offset_nxt = get_b_offset_update(c);
+        base_probe += offset_nxt;
+        base_cbts += offset_nxt;
+        if ( *base_cbts & 0x1 ) {
+          auto j = k;
+          j -= offset_nxt;
+          *base_probe = *base_probe & ~((uint32_t)0x1 << j);  // the bit is not as far out
+          cout << "members nxt :: c = "  << bitset<32>(c) << "  ~(*base_cbts): " <<  bitset<32>(~(*base_cbts)) << " : " << (int)j << " : " << (int)k << " : " << (int)offset_nxt << endl;
+          c = c & ~(*base_cbts);  // no need to look at base probe members anymore ... remaining bits are other buckets
+          cout << "members nxt :: c = "  << bitset<32>(c) << endl;
+        }
+        cout << "members :: c = "  << bitset<32>(c) << endl;
+      }
+
+
+      uint32_t *reporter = &buffer[32];
+
+      base++;
+      while ( reporter < base ) {
+        cout << bitset<32>(*reporter) << endl;
+        reporter++;
+      }
+      // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+    }
+    dist_base--;
+    cout << endl;
+  }
+
 
 }
 
@@ -2676,8 +2872,12 @@ int main(int argc, char **argv) {
     // test_sleep_methods();
     // test_some_bit_patterns();
 
-    //test_hh_map_methods2();
-    test_hh_map_methods3();
+    //test_hh_map_methods2();      
+    //test_hh_map_methods3(); 
+
+    // test_some_bit_patterns_2();  // auto last_view = (NEIGHBORHOOD - 1 - dist_base);
+
+    test_some_bit_patterns_3();
 
     //test_zero_above();
 
