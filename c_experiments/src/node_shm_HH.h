@@ -1312,6 +1312,32 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		/**
+		 * usurp_member_position 
+		*/
+
+
+		uint8_t usurp_membership_position(hh_element *hash_ref, uint32_t c_bits,hh_element *buffer,hh_element *end) {
+			uint8_t k = 0xFF & (c_bits >> 1);  // have stored the offsets to the bucket head
+			hh_element *base_ref = hash_ref - k;  // the base that owns the spot
+			base_ref = el_check_beg_wrap(base_ref,buffer,end);
+			UNSET(base_ref->c_bits,k);   // the element has been usurped...
+			//
+			uint32_t c = 1 | (base_ref->taken_spots >> k);   // start with as much of the taken spots from the original base as possible
+			hash_ref = base_ref + (k + 1);
+			for ( uint8_t i = (k + 1); i < NEIGHBORHOOD; i++, hash_ref++ ) {
+				if ( hash_ref->c_bits & 0x1 ) { // if there is another bucket, use its record of taken spots
+					c |= (hash_ref->taken_spots << i); // this is the record, but shift it....
+					break;
+				} else if ( hash_ref->_kv.value != 0 ) {  // set the bit as taken
+					SET(c,i);
+				}
+			}
+			base_ref->taken_spots = c;
+			return k;
+		}
+
+
+		/**
 		 * add_key_value
 		 * 
 		*/
@@ -1355,34 +1381,24 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 					//	save the old value
 					uint32_t tmp_key = hash_ref->_kv.key;
 					uint64_t loaded_value = (((uint64_t)tmp_value) << HALF) | tmp_key;
+					// new values
 					hash_ref->_kv.value = offset_value;  // put in the new values
 					hash_ref->_kv.key = el_key;
+					//
 					if ( tmp_c_bits & 0x1 ) {  // don't touch c_bits (restore will)
 						// usurp the position of the current bucket head,
 						// then put the bucket head back into the bucket (allowing another thread to do the work)
 						wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, thread_id, buffer, end);
-					} else {
-						uint32_t c = 1;
-						hh_element *base_ref = hash_ref;
-						for ( uint8_t i = 1; i < NEIGHBORHOOD; i++ ) {
-							hash_ref++;
-							if ( hash_ref->_kv.value != 0 ) {
-								SET(c,i);
-							} else if ( hash_ref->c_bits & 0x1 ) {
-								c |= (hash_ref->taken_spots << i);
-								break;
-							}
-						}
-						base_ref->taken_spots = c;
-						//
+					} else {   // usurp the position from a bucket that has this position as a member..
 						// pull this value out of the bucket head (do a remove)
-						uint8_t k = 0xFF & (tmp_c_bits >> 1);  // have stored the offsets to the bucket head
-						h_start = (h_start > k) ? (h_start - k) : (N + h_start - k);
-						hash_ref = buffer + h_start;
-						UNSET(hash_ref->c_bits,k);   // the element has be usurped...
+						uint8_t k = usurp_membership_position(hash_ref,tmp_c_bits,buffer,end);
+						//
 						this->slice_unlock_counter(controller,which_table,thread_id);
 						// hash the saved value back into its bucket if possible.
-						while ( !wait_if_unlock_bucket_counts(&controller,thread_id,h_start,&T,&buffer,&end,which_table) );
+						h_start = (h_start > k) ? (h_start - k) : (N - k + h_start);
+						// try to put the element back...
+						while (!wait_if_unlock_bucket_counts(&controller,thread_id,h_start,&T,&buffer,&end,which_table));
+						hash_ref = (hh_element *)(buffer) + h_start;
 						wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, thread_id, buffer, end);
 					}
 				}
@@ -1598,21 +1614,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		/**
-		 * pop_until_oldest
-		 * 
-		 * v_passed is gauranteed to be newer than all the remaining values...
-		 * v_passed is gauranteed to be the displaced value from the bucket head position (hash_ref)
-		 * 
-		 * hash_ref is gauraneed to be the group leader, the first bit is set and 
-		 * a newer element is already stored; so, this will skip the first element and 
-		 * move everything until the end... 
-		 * 
-		 * Look at all the set bits of membership...
-		 * 
-		 * This is certainly slower than doing something random, but information can be gained along the way.
-		 * 
-		*/
 	public:
 
 
@@ -1791,7 +1792,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			}
 		}
 
-
 		/**
 		 * removal_taken_spots
 		*/
@@ -1836,9 +1836,46 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		/**
+		 * seek_next_base
+		*/
+		hh_element *seek_next_base(hh_element *base_probe, uint32_t &c, uint32_t &offset_nxt_base, hh_element *buffer, hh_element *end) {
+			hh_element *hash_base = base_probe;
+			while ( c ) {
+				auto offset_nxt = get_b_offset_update(c);
+				base_probe += offset_nxt;
+				base_probe = el_check_end_wrap(base_probe,buffer,end);
+				if ( base_probe->c_bits & 0x1 ) {
+					offset_nxt_base = offset_nxt;
+					return base_probe;
+				}
+				base_probe = hash_base;
+			}
+			return base_probe;
+		}
+
+		/**
+		 * seek_min_member
+		*/
+		void seek_min_member(hh_element **min_probe_ref, hh_element **min_base_ref, uint32_t &min_base_offset, hh_element *base_probe,uint32_t &c, uint32_t time, hh_element *buffer, hh_element *end) {
+			//
+			while ( c ) {			// same as while c
+				auto vb_probe = base_probe;
+				auto offset_min = get_b_offset_update(c);
+				vb_probe += offset_min;
+				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+				if ( vb_probe->taken_spots < time ) {
+					*min_probe_ref = vb_probe;
+					*min_base_ref = base_probe;
+					min_base_offset = offset_min;
+				}
+			}
+			//
+		}
+
+
+		/**
 		 * pop_oldest_full_bucket
 		*/
-
 		void pop_oldest_full_bucket(hh_element *hash_base,uint32_t c,uint64_t &v_passed,uint32_t &time,uint32_t offset,hh_element *buffer, hh_element *end) {
 			//
 			uint32_t min_base_offset = 0;
@@ -1848,18 +1885,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			auto base_probe = hash_base;
 			//
 			while ( c ) {
-				base_probe = hash_base;
+				//
+				base_probe = seek_next_base(hash_base, c, offset_nxt_base, buffer, end);
 				// look for a bucket within range that may give up a position
-				while ( c ) {
-					auto offset_nxt = get_b_offset_update(c);
-					base_probe += offset_nxt;
-					base_probe = el_check_end_wrap(base_probe,buffer,end);
-					if ( base_probe->c_bits & 0x1 ) {
-						offset_nxt_base = offset_nxt;
-						break;
-					}
-					base_probe = hash_base;
-				}
 				if ( c ) {		// landed on a bucket (now what about it)
 					if ( popcount(base_probe->c_bits) > 1 ) {
 						//
@@ -1869,21 +1897,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 							mem_nxt = mem_nxt & ones_above(offset - offset_nxt_base);  // don't look beyond the window of our base hash bucket
 						}
 						mem_nxt = mem_nxt & zero_above((NEIGHBORHOOD-1) - offset_nxt_base); // don't look outside the window
-						while ( mem_nxt ) {			// same as while c
-							auto vb_probe = base_probe;
-							auto offset_min = get_b_offset_update(mem_nxt);
-							vb_probe += offset_min;
-							vb_probe = el_check_end_wrap(vb_probe,buffer,end);
-							if ( vb_probe->taken_spots < time ) {
-								min_probe = vb_probe;
-								min_base = base_probe;
-								min_base_offset = offset_min;
-							}
-						}
+						seek_min_member(&min_probe,&min_base,min_base_offset,base_probe, mem_nxt, time, buffer, end);
 					}
 				}
 			}
 			if ( min_base != hash_base ) {  // found a place in the bucket that can be moved...
+				//
 				min_probe->_V = v_passed;
 				min_probe->c_bits = (min_base_offset + offset_nxt_base) << 1;
 				time = stamp_offset(time,(min_base_offset + offset_nxt_base));  // offset is now
@@ -1923,7 +1942,20 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		/**
 		 * pop_until_oldest
+		 * 
+		 * v_passed is gauranteed to be newer than all the remaining values...
+		 * v_passed is gauranteed to be the displaced value from the bucket head position (hash_ref)
+		 * 
+		 * hash_ref is gauraneed to be the group leader, the first bit is set and 
+		 * a newer element is already stored; so, this will skip the first element and 
+		 * move everything until the end... 
+		 * 
+		 * Look at all the set bits of membership...
+		 * 
+		 * This is certainly slower than doing something random, but information can be gained along the way.
+		 * 
 		*/
+
 		bool pop_until_oldest(hh_element *hash_base, uint64_t &v_passed, uint32_t &time, hh_element *buffer, hh_element *end_buffer,uint32_t &h_bucket) {
 			if ( v_passed == 0 ) return false;  // zero indicates empty...
 			//

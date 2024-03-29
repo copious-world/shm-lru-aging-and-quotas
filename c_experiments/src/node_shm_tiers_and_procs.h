@@ -22,10 +22,8 @@ using namespace std::chrono;
  * element data is stored. 
 */
 
-
 // messages_reserved is an area to store pointers to the messages that will be read.
 // duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
-
 
 template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_FACTOR = 3>
 class TierAndProcManager : public LRU_Consts {
