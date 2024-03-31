@@ -178,9 +178,29 @@ static uint32_t ones_above(uint8_t hole) {
 
 
 
+static inline hh_element *el_check_end(hh_element *ptr, hh_element *buffer, hh_element *end) {
+	if ( ptr >= end ) return buffer;
+	return ptr;
+}
+
+
+static inline hh_element *el_check_beg_wrap(hh_element *ptr, hh_element *buffer, hh_element *end) {
+	if ( ptr < buffer ) return (end - buffer + ptr);
+	return ptr;
+}
+
+
+static inline hh_element *el_check_end_wrap(hh_element *ptr, hh_element *buffer, hh_element *end) {
+	if ( ptr >= end ) {
+		uint32_t diff = (ptr - end);
+		return buffer + diff;
+	}
+	return ptr;
+}
+
 
 //
-inline uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset) {
+static inline uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset) {
 	return time;
 }
 
@@ -394,26 +414,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			return false;
 		}
 
-
-		inline hh_element *el_check_end(hh_element *ptr, hh_element *buffer, hh_element *end) {
-			if ( ptr >= end ) return buffer;
-			return ptr;
-		}
-
-
-		inline hh_element *el_check_beg_wrap(hh_element *ptr, hh_element *buffer, hh_element *end) {
-			if ( ptr < buffer ) return (end - buffer + ptr);
-			return ptr;
-		}
-
-
-		inline hh_element *el_check_end_wrap(hh_element *ptr, hh_element *buffer, hh_element *end) {
-			if ( ptr >= end ) {
-				uint32_t diff = (ptr - end);
-				return buffer + diff;
-			}
-			return ptr;
-		}
 
 
 		// 4*(this->_bits.size() + 4*sizeof(uint32_t))
@@ -1313,6 +1313,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		/**
 		 * usurp_member_position 
+		 * 
+		 * 
+		 * 
+		 * c_bits - the c_bits field from hash_ref
 		*/
 
 
@@ -1366,31 +1370,35 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			atomic<uint32_t> *controller = nullptr;
 			if ( (offset_value != 0) && wait_if_unlock_bucket_counts(&controller,thread_id,h_start,&T,&buffer,&end,which_table) ) {
 				//
-				hh_element *hash_ref = (hh_element *)(buffer) + h_start;  //  hash_ref aleady locked (by counter)
+				// hash_base -- for the base of the bucket
+				hh_element *hash_base = (hh_element *)(buffer) + h_start;  //  hash_base aleady locked (by counter)
 				//
-				uint32_t tmp_c_bits = hash_ref->c_bits;
-				uint32_t tmp_value = hash_ref->_kv.value;
+				uint32_t tmp_c_bits = hash_base->c_bits;
+				uint32_t tmp_value = hash_base->_kv.value;
 				//
-				if ( !(tmp_c_bits & 0x1) && (tmp_value == 0) ) {  // empty bucket
+				if ( !(tmp_c_bits & 0x1) && (tmp_value == 0) ) {  // empty bucket  (this is a new base)
 					// put the value into the current bucket and forward
-					place_in_bucket_at_base(hash_ref,offset_value,el_key); 
+					place_in_bucket_at_base(hash_base,offset_value,el_key); 
 					// also set the bit in prior buckets....
-					place_back_taken_spots(hash_ref, 0, buffer, end);
+					place_back_taken_spots(hash_base, 0, buffer, end);
 					this->slice_bucket_count_incr_unlock(h_start,which_table,thread_id);
 				} else {
 					//	save the old value
-					uint32_t tmp_key = hash_ref->_kv.key;
+					uint32_t tmp_key = hash_base->_kv.key;
 					uint64_t loaded_value = (((uint64_t)tmp_value) << HALF) | tmp_key;
 					// new values
-					hash_ref->_kv.value = offset_value;  // put in the new values
-					hash_ref->_kv.key = el_key;
+					hash_base->_kv.value = offset_value;  // put in the new values
+					hash_base->_kv.key = el_key;
 					//
-					if ( tmp_c_bits & 0x1 ) {  // don't touch c_bits (restore will)
+					if ( tmp_c_bits & 0x1 ) {  // (this is actually a base) don't touch c_bits (restore will)
+						// this base is for the new elements bucket where it belongs as a member.
 						// usurp the position of the current bucket head,
 						// then put the bucket head back into the bucket (allowing another thread to do the work)
-						wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, thread_id, buffer, end);
-					} else {   // usurp the position from a bucket that has this position as a member..
+						wakeup_value_restore(hash_base, h_start, loaded_value, which_table, thread_id, buffer, end);
+					} else {   // NOT A base -- some other bucket controls this positions for the moment.
+						// usurp the position from a bucket that has this position as a member..
 						// pull this value out of the bucket head (do a remove)
+						hh_element *hash_ref = hash_base;   // will be optimized out .. just to point out that the element is not a base position
 						uint8_t k = usurp_membership_position(hash_ref,tmp_c_bits,buffer,end);
 						//
 						this->slice_unlock_counter(controller,which_table,thread_id);
@@ -1398,8 +1406,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 						h_start = (h_start > k) ? (h_start - k) : (N - k + h_start);
 						// try to put the element back...
 						while (!wait_if_unlock_bucket_counts(&controller,thread_id,h_start,&T,&buffer,&end,which_table));
-						hash_ref = (hh_element *)(buffer) + h_start;
-						wakeup_value_restore(hash_ref, h_start, loaded_value, which_table, thread_id, buffer, end);
+						hash_base = (hh_element *)(buffer) + h_start;
+						wakeup_value_restore(hash_base, h_start, loaded_value, which_table, thread_id, buffer, end);
 					}
 				}
 				//
@@ -1856,7 +1864,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		/**
 		 * seek_min_member
 		*/
-		void seek_min_member(hh_element **min_probe_ref, hh_element **min_base_ref, uint32_t &min_base_offset, hh_element *base_probe,uint32_t &c, uint32_t time, hh_element *buffer, hh_element *end) {
+		void seek_min_member(hh_element **min_probe_ref, hh_element **min_base_ref, uint32_t &min_base_offset, hh_element *base_probe, uint32_t time, uint32_t offset, uint32_t offset_nxt_base, hh_element *buffer, hh_element *end) {
+			auto c = base_probe->c_bits;		// nxt is the membership of this bucket that has been found
+			c = c & (~((uint32_t)0x1));   // the interleaved bucket does not give up its base...
+			if ( offset_nxt_base < offset ) {
+				c = c & ones_above(offset - offset_nxt_base);  // don't look beyond the window of our base hash bucket
+			}
+			c = c & zero_above((NEIGHBORHOOD-1) - offset_nxt_base); // don't look outside the window
 			//
 			while ( c ) {			// same as while c
 				auto vb_probe = base_probe;
@@ -1864,6 +1878,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				vb_probe += offset_min;
 				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
 				if ( vb_probe->taken_spots < time ) {
+					time = vb_probe->taken_spots;
 					*min_probe_ref = vb_probe;
 					*min_base_ref = base_probe;
 					min_base_offset = offset_min;
@@ -1890,14 +1905,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				// look for a bucket within range that may give up a position
 				if ( c ) {		// landed on a bucket (now what about it)
 					if ( popcount(base_probe->c_bits) > 1 ) {
-						//
-						auto mem_nxt = base_probe->c_bits;		// nxt is the membership of this bucket that has been found
-						mem_nxt = mem_nxt & (~((uint32_t)0x1));   // the interleaved bucket does not give up its base...
-						if ( offset_nxt_base < offset ) {
-							mem_nxt = mem_nxt & ones_above(offset - offset_nxt_base);  // don't look beyond the window of our base hash bucket
-						}
-						mem_nxt = mem_nxt & zero_above((NEIGHBORHOOD-1) - offset_nxt_base); // don't look outside the window
-						seek_min_member(&min_probe,&min_base,min_base_offset,base_probe, mem_nxt, time, buffer, end);
+						seek_min_member(&min_probe, &min_base, min_base_offset, base_probe, time, offset, offset_nxt_base, buffer, end);
 					}
 				}
 			}

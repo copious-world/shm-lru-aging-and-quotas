@@ -2664,11 +2664,94 @@ void test_some_bit_patterns_2(void) {   //  ----  ----  ----  ----  ----  ----  
 */
 
 
+const auto NEIGHBORHOOD = 32;
+
+
+uint8_t test_usurp_membership_position(hh_element *hash_ref, uint32_t c_bits, hh_element *buffer,hh_element *end) {
+  //
+  uint8_t k = 0xFF & (c_bits >> 1);  // have stored the offsets to the bucket head
+  cout << "test_usurp_membership_position: " << (int)k << endl;
+  //
+  hh_element *base_ref = (hash_ref - k);  // base_ref ... the base that owns the spot
+  cout << "test_usurp_membership_position: cbits =  " << bitset<32>(base_ref->c_bits) << endl;
+
+  base_ref = el_check_beg_wrap(base_ref,buffer,end);
+  UNSET(base_ref->c_bits,k);   // the element has been usurped...
+  cout << "test_usurp_membership_position: cbits =  " << bitset<32>(base_ref->c_bits) << endl;
+  //
+  uint32_t c = 1 | (base_ref->taken_spots >> k);   // start with as much of the taken spots from the original base as possible
+  //
+  cout << "test_usurp_membership_position(0): c =  " << bitset<32>(c) << endl;
+  auto hash_nxt = base_ref + (k + 1);
+  for ( uint8_t i = (k + 1); i < NEIGHBORHOOD; i++, hash_nxt++ ) {
+    if ( hash_nxt->c_bits & 0x1 ) { // if there is another bucket, use its record of taken spots
+      cout << "test_usurp_membership_position(1):  =  " << bitset<32>(hash_nxt->taken_spots << i) << " -> c_bits " << bitset<32>(hash_nxt->c_bits) << endl;
+      c |= (hash_nxt->taken_spots << i); // this is the record, but shift it....
+      cout << "test_usurp_membership_position(a): c =  " << bitset<32>(c) << endl;
+      break;
+    } else if ( hash_nxt->_kv.value != 0 ) {  // set the bit as taken
+      SET(c,i);
+      cout << "test_usurp_membership_position(b): c =  " << bitset<32>(c) << endl;
+    }
+  }
+  hash_ref->taken_spots = c;
+  cout << "test_usurp_membership_position(c): c =  " << bitset<32>(c) << endl;
+  return k;
+}
+
+
+
+hh_element *test_seek_next_base(hh_element *base_probe, uint32_t &c, uint32_t &offset_nxt_base, hh_element *buffer, hh_element *end) {
+  hh_element *hash_base = base_probe;
+  while ( c ) {
+    auto offset_nxt = get_b_offset_update(c);
+    base_probe += offset_nxt;
+    base_probe = el_check_end_wrap(base_probe,buffer,end);
+    if ( base_probe->c_bits & 0x1 ) {
+      offset_nxt_base = offset_nxt;
+      return base_probe;
+    }
+    base_probe = hash_base;
+  }
+  return base_probe;
+}
+
+
+
+void test_seek_min_member(hh_element **min_probe_ref, hh_element **min_base_ref, uint32_t &min_base_offset, hh_element *base_probe, uint32_t time, uint32_t offset, uint32_t offset_nxt_base, hh_element *buffer, hh_element *end) {
+  auto c = base_probe->c_bits;		// nxt is the membership of this bucket that has been found
+  c = c & (~((uint32_t)0x1));   // the interleaved bucket does not give up its base...
+  if ( offset_nxt_base < offset ) {
+    c = c & ones_above(offset - offset_nxt_base);  // don't look beyond the window of our base hash bucket
+  }
+  c = c & zero_above((NEIGHBORHOOD-1) - offset_nxt_base); // don't look outside the window
+  cout << "test_seek_min_member: c = " << bitset<32>(c) << endl;
+  //
+  while ( c ) {			// same as while c
+    auto vb_probe = base_probe;
+    auto offset_min = get_b_offset_update(c);
+    vb_probe += offset_min;
+    vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+
+cout << "test_seek_min_member: offset_min = " << (int)offset_min << " time .. " << vb_probe->taken_spots << " " << time << endl;
+
+    if ( vb_probe->taken_spots <= time ) {
+			time = vb_probe->taken_spots;
+      *min_probe_ref = vb_probe;
+      *min_base_ref = base_probe;
+      min_base_offset = offset_min;
+    }
+  
+cout << "----" << endl;
+
+  }
+}
+
+
+
 
 void test_some_bit_patterns_3(void) {   //  ----  ----  ----  ----  ----  ----  ----
   //
-
-  const auto NEIGHBORHOOD = 32;
 
   std::random_device rd;  // a seed source for the random number engine
   std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
@@ -2800,8 +2883,97 @@ void test_some_bit_patterns_3(void) {   //  ----  ----  ----  ----  ----  ----  
     cout << endl;
   }
 
+  {
+    hh_element test_hh_elements[128];
+    hh_element *buffer = test_hh_elements;
+    hh_element *end = &test_hh_elements[128];
+
+    hh_element *base_probe = &test_hh_elements[64];
+    hh_element *base_probe_2 = &test_hh_elements[66];
+
+    base_probe->c_bits = 1;
+    base_probe->_V = 1;
+
+    (base_probe + 1)->c_bits = 1 << 1;
+
+
+    base_probe_2->c_bits = 1;
+    base_probe_2->_V = 5;
+
+    uint32_t c = 0b1011;
+    uint32_t offset_nxt_base = 0;
+
+    cout << "test seek_next_base" << endl;
+
+    c = ~c;
+    base_probe_2 = test_seek_next_base(base_probe, c, offset_nxt_base, buffer, end);
+
+    cout << "offset_nxt_base = " << offset_nxt_base <<  " " << bitset<32>(c) <<  " "  << base_probe_2->_V << endl;
+
+    hh_element *min_probe = nullptr;
+    hh_element *min_base = nullptr;
+
+
+    uint32_t min_base_offset = 2;
+    uint32_t offset = 3;
+
+       base_probe->c_bits =   0b0001011;
+       base_probe_2->c_bits = 0b11101;
+  base_probe->taken_spots = 0b1111111;
+ base_probe_2->taken_spots = 0b00001111;
+
+    //
+    c = base_probe_2->c_bits;
+    uint32_t time = 200;
+    //
+    base_probe_2 = base_probe;
+    for ( int i = 0; i < 10; i++ ) {
+      base_probe_2++;
+      base_probe_2->taken_spots = --time;
+      base_probe_2->_V = 10*i;
+    }
+    base_probe_2 = &test_hh_elements[66];
+
+
+    time = 200 - 2;
+    //
+    test_seek_min_member(&min_probe, &min_base, min_base_offset, base_probe_2, time, offset, offset_nxt_base, buffer, end);
+    //
+    if ( min_probe != nullptr ) {
+      cout << bitset<32>(min_base->c_bits) << " " << bitset<32>(min_base->taken_spots) << endl;
+      cout << min_probe->_V  << " " << min_probe->taken_spots << endl;
+      cout << min_base_offset << endl;
+    }
+    //
+
+       base_probe->c_bits =   0b0001011;
+       base_probe_2->c_bits = 0b11101;
+      base_probe->taken_spots =   0b1111111;
+ base_probe_2->taken_spots = 0b1011111111;
+
+    auto hash_ref = base_probe + 1;
+    hash_ref->c_bits = (1 << 1);
+    auto c_bits = hash_ref->c_bits;
+
+    auto K = test_usurp_membership_position(hash_ref, c_bits,  buffer, end);
+
+    cout << (int)K << endl;
+    cout << "bitset<32>(0b1111111 | (0b1011111111 << 1))::  "<< bitset<32>((0b1111111 >> 1) | (0b1011111111 << 1)) << endl;
+  }
+
 
 }
+
+
+
+
+
+
+/*
+
+
+
+*/
 
 
 /**
