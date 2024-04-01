@@ -155,23 +155,17 @@ namespace node_shm {
 	/**
 	 * add hash key and value
 	 */
-	NAN_METHOD(set_el);
-
-
-	/**
-	 * get element at index
-	 */
-	NAN_METHOD(get_el);
+	NAN_METHOD(put);
 
 	/**
 	 * get element at index
 	 */
-	NAN_METHOD(get_el_hash);
+	NAN_METHOD(get);
 
 	/**
 	 * remove a key from the local hash table, don't examine the record deleted elsewhere
 	 */
-	NAN_METHOD(remove_key);
+	NAN_METHOD(del_key);
 	
 	/**
 	 * get_last_reason and reset to OK...
@@ -179,10 +173,6 @@ namespace node_shm {
 	
 	NAN_METHOD(get_last_reason);
 
-	/**
-	 *  reload_hash_map  -- clear and rebuild...
-	 */
-	NAN_METHOD(reload_hash_map);
 	NAN_METHOD(debug_dump_list);
 
 

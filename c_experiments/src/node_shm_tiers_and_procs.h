@@ -11,6 +11,64 @@ using namespace std;
 
 using namespace std::chrono;
 
+
+
+
+typedef struct R_ENTRY {
+	uint32_t 	process;
+	uint32_t	tier;
+	uint32_t 	h_bucket;
+	uint32_t	full_hash;
+} r_entry;
+
+
+
+template<uint16_t const ExpectedMax = 100>
+class RemovalEntryHolder {
+	//
+	public:
+		//
+		RemovalEntryHolder() {
+			_current = 0;
+			_last = 0;
+		}
+		virtual ~RemovalEntryHolder() {
+		}
+
+	public:
+
+		void 		pop(r_entry &entry) {
+			if ( _current == _last ) {
+				memset(&entry,0,sizeof(r_entry));
+				return;
+			}
+			entry = _entries[_current++];
+			if ( _current == ExpectedMax ) {
+				_current = 0;
+			}
+		}
+
+		void		push(r_entry &entry) {
+			_entries[_last++] = entry;
+			if ( _last == ExpectedMax ) _last = 0;
+		}
+
+		bool empty() {
+			return ( _current == _last);
+		}
+
+	public:
+
+		r_entry _entries[ExpectedMax];
+		uint16_t _current;
+		uint16_t _last;
+
+};
+
+
+
+
+
 #define MAX_BUCKET_FLUSH 12
 #define ONE_HOUR 	(60*60*1000)
 
@@ -234,8 +292,6 @@ class TierAndProcManager : public LRU_Consts {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-
-
 		// run_evictions
 
 		bool		run_evictions(LRU_cache *lru,uint32_t source_tier,uint32_t ready_msg_count) {
@@ -432,7 +488,8 @@ class TierAndProcManager : public LRU_Consts {
 									//	this is the first time the lru pairs the hash and offset.
 									// 	the lru calls upon the hash table to store the hash/offset pair...
 									//
-									if ( lru->store_in_hash(hash64,offset) != UINT64_MAX ) { // add to the hash table...
+									auto thread_id = lru->_thread_id;
+									if ( lru->store_in_hash(hash64,offset,thread_id) != UINT64_MAX ) { // add to the hash table...
 										write_offset_here[0] = offset;
 										//
 										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
@@ -502,7 +559,6 @@ class TierAndProcManager : public LRU_Consts {
 			if ( lru == nullptr ) {  // has not been initialized
 				return -1;
 			}
-
 			//
 			// particular atomics
 			atomic<COM_BUFFER_STATE> *read_marker =	this->get_read_marker();
@@ -564,6 +620,109 @@ class TierAndProcManager : public LRU_Consts {
 			return 0;
 		}
 
+
+		int get_method(uint32_t process, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t timestamp, uint32_t tier,[[maybe_unused]] void (delay_func)()) {
+			uint32_t write_offset = 0;
+			//
+			if ( tier == 0 ) {
+				LRU_cache *lru = access_tier(tier);
+				if ( lru != nullptr ) {
+					write_offset = lru->get_no_wait(hash_bucket,full_hash,process,timestamp);
+					if ( write_offset != UINT32_MAX ) {
+						char *stored_data = lru->data_location(write_offset);
+						if ( stored != nullptr ) {
+							memcpy(data,stored_data,sz);
+							return 0;
+						}
+					} else {
+						lru = from_time(timestamp);
+						if ( lru != nullptr ) {
+							write_offset = lru->get_no_wait(hash_bucket,full_hash,process,timestamp);
+							if ( write_offset != UINT32_MAX ) {
+								char *stored_data = lru->data_location(write_offset);
+								if ( stored != nullptr ) {
+									memcpy(data,stored_data,sz);
+									return 0;
+								}
+							}
+						}
+					}
+				}
+			}
+			//
+			return -1;
+		}
+
+
+
+
+		int del_action(uint32_t process,uint32_t hash_bucket, uint32_t full_hash,uint32_t tier) {
+			LRU_cache *lru = access_tier(tier);
+			if ( lru != nullptr ) {
+				write_offset = lru->get_no_wait(hash_bucket,full_hash,process);
+				if ( write_offset != UINT32_MAX ) {
+					char *stored_data = lru->data_location(write_offset);
+					if ( stored != nullptr ) {
+						LRU_element *le = (LRU_element *)(stored_data);
+						uint32_t timestamp = le->_when;
+						lru->remove_key(hash_bucket,full_hash,process,timestamp);
+						lru->return_to_free_mem(le);
+						return 0;
+					}
+				} else {
+					lru = from_time(timestamp);
+					if ( lru != nullptr ) {
+						write_offset = lru->get_no_wait(hash_bucket,full_hash,process,timestamp);
+						if ( write_offset != UINT32_MAX ) {
+							char *stored_data = lru->data_location(write_offset);
+							if ( stored != nullptr ) {
+								LRU_element *le = (LRU_element *)(stored_data);
+								uint32_t timestamp = le->_when;
+								lru->remove_key(hash_bucket,full_hash,process,timestamp);
+								lru->return_to_free_mem(le);
+								return 0;
+							}
+						}
+					}
+				}
+			}
+			return -1;
+		}
+
+
+		void removal_thread() {
+			while ( true ) {
+				wait_for_removal_notification();
+				while ( !_removal_work.empty() ) {
+					r_entry re;
+					if ( _removal_work.pop(re) ) {
+						uint32_t process = re.process;
+						uint32_t hash_bucket = re.h_bucket;
+						uint32_t full_hash = re.full_hash;
+						uint32_t tier = re.tier;
+						//
+						this->del_action(process,hash_bucket,full_hash,tier);
+					}
+				}
+			}
+		}
+
+
+		void wakeup_removal() {
+
+		}
+
+		int del_method(uint32_t process,uint32_t h_bucket, uint32_t full_hash,uint32_t tier) {
+			unsigned int size = record_size();
+			char buffer[size];
+			uint32_t timestamp = 0;
+			//
+			r_entry re = {process,tier,h_bucket,full_hash};
+			_removal_work.push(re);
+			wakeup_removal();
+		}
+
+
 	protected:
 
 		/**
@@ -619,7 +778,8 @@ class TierAndProcManager : public LRU_Consts {
 	protected:
 
 	//
-		atomic_flag 		*_readerAtomicFlag[MAX_TIERS];
+		atomic_flag 			*_readerAtomicFlag[MAX_TIERS];
+		RemovalEntryHolder<>	_removal_work;
 
 };
 

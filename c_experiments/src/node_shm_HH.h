@@ -127,6 +127,10 @@ class QueueEntryHolder {
 
 
 
+static inline bool seletor_bit_is_set(uint64_t hash64) {
+	return false;
+}
+
 
 
 inline uint8_t get_b_offset_update(uint32_t &c) {
@@ -1319,20 +1323,20 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * c_bits - the c_bits field from hash_ref
 		*/
 
-
 		uint8_t usurp_membership_position(hh_element *hash_ref, uint32_t c_bits,hh_element *buffer,hh_element *end) {
 			uint8_t k = 0xFF & (c_bits >> 1);  // have stored the offsets to the bucket head
-			hh_element *base_ref = hash_ref - k;  // the base that owns the spot
+			hh_element *base_ref = (hash_ref - k);  // base_ref ... the base that owns the spot
 			base_ref = el_check_beg_wrap(base_ref,buffer,end);
+
 			UNSET(base_ref->c_bits,k);   // the element has been usurped...
 			//
 			uint32_t c = 1 | (base_ref->taken_spots >> k);   // start with as much of the taken spots from the original base as possible
-			hash_ref = base_ref + (k + 1);
-			for ( uint8_t i = (k + 1); i < NEIGHBORHOOD; i++, hash_ref++ ) {
-				if ( hash_ref->c_bits & 0x1 ) { // if there is another bucket, use its record of taken spots
-					c |= (hash_ref->taken_spots << i); // this is the record, but shift it....
+			auto hash_nxt = base_ref + (k + 1);
+			for ( uint8_t i = (k + 1); i < NEIGHBORHOOD; i++, hash_nxt++ ) {
+				if ( hash_nxt->c_bits & 0x1 ) { // if there is another bucket, use its record of taken spots
+					c |= (hash_nxt->taken_spots << i); // this is the record, but shift it....
 					break;
-				} else if ( hash_ref->_kv.value != 0 ) {  // set the bit as taken
+				} else if ( hash_nxt->_kv.value != 0 ) {  // set the bit as taken
 					SET(c,i);
 				}
 			}
@@ -1427,6 +1431,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		/**
 		 * update
+		 * 
+		 * Note that for this method the element key contains the selector bit for the even/odd buffers.
+		 * The hash value and location must alread exist in the neighborhood of the hash bucket.
+		 * The value passed is being stored in the location for the key...
 		*/
 		uint64_t update(uint32_t h_bucket, uint32_t el_key, uint32_t v_value,uint8_t thread_id = 1) {
 			//
@@ -1900,7 +1908,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			auto base_probe = hash_base;
 			//
 			while ( c ) {
-				//
 				base_probe = seek_next_base(hash_base, c, offset_nxt_base, buffer, end);
 				// look for a bucket within range that may give up a position
 				if ( c ) {		// landed on a bucket (now what about it)

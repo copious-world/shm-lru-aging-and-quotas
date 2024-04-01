@@ -123,8 +123,6 @@ static inline void clear_for_copy(atomic<COM_BUFFER_STATE> *read_marker) {
 }
 
 
-
-
 static inline void indicate_error(atomic<COM_BUFFER_STATE> *read_marker) {
     auto p = read_marker;
     auto current_marker = p->load();

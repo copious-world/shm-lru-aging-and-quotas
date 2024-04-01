@@ -55,6 +55,12 @@ using namespace std::chrono;
 */
 
 
+/**
+ * The atomic stack is a fixed size memory allocation scheme. 
+ * The intention is that elements will be moved out by their age if the stack becomes full.
+ * 
+*/
+
 
 inline uint64_t epoch_ms(void) {
 	uint64_t ms;
@@ -364,12 +370,12 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * 
 		*/
 
-		uint32_t		filter_existence_check(com_or_offset **messages,com_or_offset **accesses,uint32_t ready_msg_count) {
+		uint32_t		filter_existence_check(com_or_offset **messages,com_or_offset **accesses,uint32_t ready_msg_count,uint8_t thread_id) {
 			uint32_t new_msgs_count = 0;
 			while ( --ready_msg_count >= 0 ) {
 				//
 				uint64_t hash = (uint64_t)(messages[ready_msg_count]->_cel->_hash);
-				uint32_t data_loc = _hmap->get(hash);
+				uint32_t data_loc = _hmap->get(hash,thread_id);
 				//
 				if ( data_loc != 0 ) {    // check if this message is already stored
 					messages[ready_msg_count]->_offset = data_loc;  // just putting in an offset... maybe something better
@@ -522,13 +528,13 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
-		void 			transfer_hashes(LRU_cache *next_tier,uint32_t req_count) {
+		void 			transfer_hashes(LRU_cache *next_tier,uint32_t req_count,uint8_t thread_id)  {
 			list<uint32_t> offsets_moving;
 			//uint32_t count_reclaimed_stamps = 
 			this->timeout_table_evictions(offsets_moving,req_count);
 			//
 			next_tier->claim_hashes(offsets_moving,this->start());
-			this->relinquish_hashes(offsets_moving);
+			this->relinquish_hashes(offsets_moving,thread_id);
 			//
 			uint32_t lb_timestamp = _timeout_table->least_time_key();
 			this->raise_lru_lb_time_bounds(lb_timestamp);
@@ -564,7 +570,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 					//
 					auto target_offset = *current++;
 
-					if ( this->store_in_hash(hash64,target_offset) != UINT64_MAX ) { // add to the hash table...
+					uint8_t thread_id = this->_thread_id;
+					if ( this->store_in_hash(hash64,target_offset,thread_id) != UINT64_MAX ) { // add to the hash table...
 						void *src = (void *)(lel + 1);
 						void *target = (void *)(start + (target_offset + sizeof(LRU_element)));
 						memcpy(target,src,_record_size);
@@ -578,14 +585,14 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
-		void			relinquish_hashes(list<uint32_t> &moving) {
+		void			relinquish_hashes(list<uint32_t> &moving,uint8_t thread_id = 1) {
 			//
 			uint8_t *start = this->start();
 			for ( auto offset : moving ) {   // offset of where it is going
 				LRU_element *el = (LRU_element *)(start + offset);
 				uint64_t hash64  = el->_hash;
 				this->return_to_free_mem(el);
-				this->_hmap->del(hash64);
+				this->_hmap->del(hash64,thread_id);
 			}
 			//
 		}
@@ -600,22 +607,27 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		// thread methods....
 
-		// local_evictor is notified to run as soon as the reserve line is passed or from time to time.
-		// There is not a huge requirement that it operates at super speed. But, it should start cleaning up space
-		// for small numbers of entries accessing and sorting small tails of the time buffer. 
-		// It may shift a portion of the time buffer by running compression. 
-		// All compressors must make sure to update the upper and lower time limits of a tier.
-		//
+		/**
+		 * local_evictor
+		 * 
+		 * local_evictor is notified to run as soon as the reserve line is passed or from time to time.
+		 * There is not a huge requirement that it operates at super speed. But, it should start cleaning up space
+		 * for small numbers of entries accessing and sorting small tails of the time buffer. 
+		 * It may shift a portion of the time buffer by running compression. 
+		 * All compressors must make sure to update the upper and lower time limits of a tier.
+		*/
+
 		void			local_evictor(void) {
 			//
 			do {
 #ifndef __APPLE__
 				_reserve_evictor->wait(std::memory_order_acquire);
 #endif
+				uint8_t thread_id = this->_thread_id;
 				if ( _Tier+1 < _max_tiers ) {
 					uint32_t req_count = _Procs;
 					LRU_cache *next_tier = this->_all_tiers[_Tier+1];
-					this->transfer_hashes(next_tier,req_count);
+					this->transfer_hashes(next_tier,req_count,thread_id);
 				} else {
 					// crisis mode...				elements will have to be discarded or sent to another machine
 					list<uint32_t> offsets_moving;
@@ -661,16 +673,22 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 	public:
 
 
-		uint64_t		store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
+		uint64_t		store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset,bool seletor_bit = false,uint8_t thread_id = 1) {
 			HMap_interface *T = this->_hmap;
-			uint64_t result = T->add_key_value(full_hash,hash_bucket,new_el_offset); //UINT64_MAX
+			uint64_t result = 0;
+			if ( seletor_bit ) {
+				result = T->add_key_value(full_hash,hash_bucket,new_el_offset,thread_id); //UINT64_MAX
+			} else {
+				T->update(hash_bucket,full_hash,new_el_offset,thread_id);
+			}
 			return result;
 		}
 
-		uint64_t		store_in_hash(uint64_t hash64, uint32_t new_el_offset) {
+		uint64_t		store_in_hash(uint64_t hash64, uint32_t new_el_offset,uint8_t thread_id = 1) {
 			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
 			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
-			return store_in_hash(full_hash,hash_bucket,new_el_offset);
+			bool seletor_bit = seletor_bit_is_set(hash64);
+			return store_in_hash(full_hash,hash_bucket,new_el_offset,seletor_bit,seletor_bit,thread_id);
 		}
 
 		uint8_t 		*data_location(uint32_t write_offset) {
@@ -680,6 +698,20 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			}
 			return nullptr;
 		}
+
+		uint32_t		get_no_wait(uint32_t h_bucket,uint32_t el_key,uint8_t thread_id) {
+			// can check on the limits of the timestamp if it is not zero
+			return _hmap->get(h_bucket,el_key,thread_id);
+		}
+
+
+		void 			remove_key(uint32_t h_bucket,uint32_t el_key,uint8_t thread_id,uint32_t timestamp) {
+			if ( _timeout_table->remove_entry(timestamp) ) {
+				uint64_t key = (((uint64_t)h_bucket) << HALF) | el_key;
+				_hmap->del(key,thread_id);
+			}
+		}
+
 
 
 	public:
@@ -701,6 +733,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		uint8_t							_Tier;
 		uint8_t							_reserve;
 		uint8_t							_max_tiers;
+		uint8_t							_thread_id;
 
 		uint32_t						_configured_tier_cooling;
 		double							_configured_shrinkage;

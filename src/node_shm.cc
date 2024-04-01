@@ -463,174 +463,6 @@ namespace node_shm {
 
 
 
-
-
-
-	// ----
-		// get el
-	// ----
-
-	NAN_METHOD(get_el)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		key_t index = Nan::To<uint32_t>(info[1]).FromJust();
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		
-		if ( lru_cache == nullptr ) {
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			char data[lru_cache->record_size()];
-			uint8_t rslt = lru_cache->get_el(index,data);
-			if ( rslt == 0 || rslt == 1 ) {
-				if ( rslt == 0 ) {
-					info.GetReturnValue().Set(New(data).ToLocalChecked());
-				} else {
-					string fix_data = strdup(data);
-					string prefix = "DELETED: ";
-					fix_data = prefix + fix_data;
-					memset(data,0,lru_cache->record_size());
-					memcpy(data,fix_data.c_str(),
-										min( fix_data.size(), (lru_cache->record_size() - 1)) );
-					info.GetReturnValue().Set(New(data).ToLocalChecked());
-				}
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-2));
-			}
-		}
-	}
-
-
-	// ----
-		// get el hash
-	// ----
-
-	NAN_METHOD(get_el_hash)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		uint32_t hash = Nan::To<uint32_t>(info[1]).FromJust();
-		uint32_t index = Nan::To<uint32_t>(info[2]).FromJust();
-		//
-		uint64_t hash64 = (((uint64_t)index << HALF) | (uint64_t)hash);
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		//
-//cout << "get h> " << hash << " i> " << index << " " << hash64 << endl;
-		//
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		if ( lru_cache == nullptr ) {
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			uint32_t index = lru_cache->check_for_hash(hash64);
-			if ( index == UINT32_MAX ) {
-				info.GetReturnValue().Set(Nan::New<Number>(-2));
-			} else {
-				char data[lru_cache->record_size()];
-				uint8_t rslt = lru_cache->get_el(index,data);
-				if ( rslt == 0 ) {
-					if ( rslt == 0 ) {
-						info.GetReturnValue().Set(New(data).ToLocalChecked());
-					}
-				} else {
-					info.GetReturnValue().Set(Nan::New<Number>(-2));
-				}
-			}
-		}
-	}
-
-
-	// ----
-		// del el
-	// ----
-
-	NAN_METHOD(del_key)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		uint32_t hash = Nan::To<uint32_t>(info[1]).FromJust();		// bucket index
-		uint32_t full_hash = Nan::To<uint32_t>(info[2]).FromJust();
-		uint64_t hash64 = (((uint64_t)full_hash << HALF) | (uint64_t)hash);
-		//
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		if ( lru_cache == nullptr ) {
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			uint32_t index = lru_cache->check_for_hash(hash64);
-			if ( index == UINT32_MAX ) {
-				info.GetReturnValue().Set(Nan::New<Number>(-2));
-			} else {
-				if ( lru_cache->del_el(index) ) {
-					info.GetReturnValue().Set(Nan::New<Boolean>(true));
-				} else {
-					info.GetReturnValue().Set(Nan::New<Number>(-2));
-				}
-			}
-
-		}
-	}
-
-
-	// ----
-		// remove key
-	// ----
-
-	NAN_METHOD(remove_key)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		uint32_t hash = Nan::To<uint32_t>(info[1]).FromJust();
-		uint32_t index = Nan::To<uint32_t>(info[2]).FromJust();
-		uint64_t hash64 = (((uint64_t)index << HALF) | (uint64_t)hash);
-		//
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		if ( lru_cache == nullptr ) {
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			lru_cache->remove_key(hash64);
-			info.GetReturnValue().Set(Nan::New<Boolean>(true));
-		}
-	}
-
-
-
-
-
 	NAN_METHOD(get_last_reason)  {
 		Nan::HandleScope scope;
 		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
@@ -650,31 +482,6 @@ namespace node_shm {
 		} else {
 			const char *reason = lru_cache->get_last_reason();
 			info.GetReturnValue().Set(New(reason).ToLocalChecked());
-		}
-	}
-
-
-
-	NAN_METHOD(reload_hash_map)  {
-		Nan::HandleScope scope;
-		key_t key = Nan::To<uint32_t>(info[0]).FromJust();
-		//
-
-		if ( g_segments_manager == nullptr ) {
-			info.GetReturnValue().Set(Nan::New<Number>(-1));
-			return;
-		}
-
-		LRU_cache *lru_cache = g_segments_manager->_seg_to_lrus[key];
-		if ( lru_cache == nullptr ) {
-			if ( g_segments_manager->check_key(key) ) {
-				info.GetReturnValue().Set(Nan::New<Boolean>(false));
-			} else {
-				info.GetReturnValue().Set(Nan::New<Number>(-1));
-			}
-		} else {
-			lru_cache->reload_hash_map();
-			info.GetReturnValue().Set(Nan::New<Boolean>(true));
 		}
 	}
 
@@ -730,7 +537,7 @@ namespace node_shm {
 
 		uint32_t timestamp = 0;
 		if ( updating ) {
-			timestamp = info[5]->Uint32Value();
+			timestamp =  Nan::To<uint32_t>(info[5]).FromJust();
 		}
 		//
 
@@ -739,14 +546,11 @@ namespace node_shm {
 			return;
 		}
 
-		//
-		uint32_t tier = 0;  // new elements go into the first tier ... later they may move...
-		LRU_cache *lru = g_tier_to_LRU[tier];   // this is being accessed in more than one place...
-
-		if ( lru == nullptr ) {  // has not been initialized
+		if ( g_tiers_procs == nullptr ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
 			return;
 		}
+
 		//
 		if ( g_segments_manager->_com_buffer == NULL ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -755,6 +559,7 @@ namespace node_shm {
 			//
 			if ( buffer && (size > 0) ) {
 				//
+				uint32_t tier = 0;   // the entry point from the application is the zero tier, yet this may change due to the timestamp
 				int status = g_tiers_procs->put_method(process, hash_bucket, full_hash, updating, buffer, size, timestamp, tier, allow_delay);
 				if ( status < -1 ) {
 					info.GetReturnValue().Set(Nan::New<Boolean>(false));
@@ -772,6 +577,92 @@ namespace node_shm {
 		}
 		info.GetReturnValue().Set(Nan::New<Boolean>(true));
 	}
+
+
+
+
+	// ----
+		// get 
+	// ----
+
+	NAN_METHOD(get)  {
+		Nan::HandleScope scope;
+		uint32_t process = Nan::To<uint32_t>(info[0]).FromJust();	// the process number
+		uint32_t hash_bucket = Nan::To<uint32_t>(info[1]).FromJust();
+		uint32_t full_hash = Nan::To<uint32_t>(info[2]).FromJust();
+		// selector
+		uint32_t timestamp =  Nan::To<uint32_t>(info[3]).FromJust();
+
+		if ( g_segments_manager == nullptr ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+
+		//
+		if ( g_tiers_procs == nullptr ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+		//
+		if ( g_segments_manager->_com_buffer == NULL ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		} else {
+			//
+			uint32_t tier = 0;   // the entry point from the application is the zero tier, yet this may change due to the timestamp
+			size_t rsz = g_tiers_procs->record_size();
+			char data[rsz];
+			//
+			int status = g_tiers_procs->get_method(process, hash_bucket, full_hash, data, rsz, timestamp, tier, allow_delay);
+			if ( status < -1 ) {
+				info.GetReturnValue().Set(Nan::New<Boolean>(false));
+				return;
+			}
+			if ( status == -1 ) {
+				info.GetReturnValue().Set(Nan::New<Number>(-1));
+				return;
+			}
+			//
+			info.GetReturnValue().Set(New(data).ToLocalChecked());
+		}
+
+	}
+
+
+
+
+	// ----
+		// del el
+	// ----
+
+	NAN_METHOD(del_key)  {
+		Nan::HandleScope scope;
+		//
+		uint32_t process = Nan::To<uint32_t>(info[0]).FromJust();	// the process number
+		uint32_t hash = Nan::To<uint32_t>(info[1]).FromJust();		// bucket index
+		uint32_t full_hash = Nan::To<uint32_t>(info[2]).FromJust();
+		// selector bit
+		//
+		if ( g_segments_manager == nullptr ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+		//
+		if ( g_tiers_procs == nullptr ) {
+			info.GetReturnValue().Set(Nan::New<Number>(-1));
+			return;
+		}
+		//
+		uint32_t tier = 0;   // the entry point from the application is the zero tier, yet this may change due to the timestamp
+		int status = g_tiers_procs->del_method(process,hash,full_hash,tier);
+		if ( status == 0 ) {
+			info.GetReturnValue().Set(Nan::New<Boolean>(true));
+		} else {
+			info.GetReturnValue().Set(Nan::New<Number>(-2));
+		}
+	}
+
+
 
 
 	// Init module
@@ -796,13 +687,12 @@ namespace node_shm {
 		Nan::SetMethod(target, "free_count", getFreeCount);
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-		Nan::SetMethod(target, "set_el", set_el);
-		Nan::SetMethod(target, "get_el_hash", get_el_hash);
-		Nan::SetMethod(target, "remove_key", remove_key);
+		Nan::SetMethod(target, "put", put);
+		Nan::SetMethod(target, "get", get);
+		Nan::SetMethod(target, "del_key", del_key);
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		Nan::SetMethod(target, "get_last_reason", get_last_reason);
-		Nan::SetMethod(target, "reload_hash_map", reload_hash_map);
 		//
 		Nan::SetMethod(target, "debug_dump_list", debug_dump_list);
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----	
