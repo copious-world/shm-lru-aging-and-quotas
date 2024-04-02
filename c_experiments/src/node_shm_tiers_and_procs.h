@@ -13,10 +13,9 @@ using namespace std::chrono;
 
 
 
-
 typedef struct R_ENTRY {
 	uint32_t 	process;
-	uint32_t	tier;
+	uint32_t	timestamp;
 	uint32_t 	h_bucket;
 	uint32_t	full_hash;
 } r_entry;
@@ -150,7 +149,7 @@ class TierAndProcManager : public LRU_Consts {
 			//
 			size_t tier_atomics_sz = NUM_ATOMIC_FLAG_OPS_PER_TIER*sizeof(atomic_flag *);  // ref to the atomic flag
 			size_t proc_tier_com_sz = sizeof(Com_element)*num_procs;
-			uint32_t predict = num_tiers*(tier_atomics_sz + proc_tier_com_sz);
+			uint32_t predict = num_tiers*(tier_atomics_sz*2 + proc_tier_com_sz);
 			//
 			return predict;
 		} 
@@ -173,6 +172,16 @@ class TierAndProcManager : public LRU_Consts {
 				atomic_flag *af = (atomic_flag *)_com_buffer;
 				for ( int i; i < _NTiers; i++ ) {
 					_readerAtomicFlag[i] = af;
+					af++;
+				}
+			}
+		}
+
+		void		set_removal_atomic_tags() {
+			if ( _com_buffer != nullptr ) {
+				atomic_flag *af = ((atomic_flag *)_com_buffer) + _NTiers;
+				for ( int i; i < _NTiers; i++ ) {
+					_removerAtomicFlag[i] = af;
 					af++;
 				}
 			}
@@ -294,6 +303,11 @@ class TierAndProcManager : public LRU_Consts {
 
 		// run_evictions
 
+		/**
+		 * run_evictions
+		 * 
+		*/
+
 		bool		run_evictions(LRU_cache *lru,uint32_t source_tier,uint32_t ready_msg_count) {
 			//
 			// lru - is a source tier
@@ -322,8 +336,104 @@ class TierAndProcManager : public LRU_Consts {
 
 		// Stop the process on a futex until notified...
 		void		wait_for_data_present_notification(uint8_t tier) {
+			_readerAtomicFlag[tier]->clear();
 			_readerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
 		}
+
+		/**
+		 * Waking up any thread that waits on input into the tier.
+		 * Any number of processes may place a message into a tier. 
+		 * If the tier is full, the reader has the job of kicking off the eviction process.
+		*/
+		bool		wake_up_write_handlers(uint32_t tier) {
+			_readerAtomicFlag[tier]->test_and_set();
+			_readerAtomicFlag[tier]->notify_all();
+			return true;
+		}
+
+		void 		wait_for_removal_notification(uint8_t tier) {
+			_removerAtomicFlag[tier]->clear();
+			_removerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
+		}
+		
+		bool 		wakeup_removal(uint32_t tier) {
+			_removerAtomicFlag[tier]->test_and_set();
+			_removerAtomicFlag[tier]->notify_all();
+			return true;
+		}
+
+
+		/**
+		 * launch_second_phase_threads
+		*/
+		void 		launch_second_phase_threads() {  // handle reads 
+			uint32_t P = _Procs;
+			uint32_t T = _NTiers;
+			for ( uint8_t i = 0; i < _NTiers; i++ ) {
+				auto secondary_runner = [&](uint8_t tier) {
+					uint32_t P = this->_Procs;
+					com_or_offset **messages_reserved = new com_or_offset *[P];
+					com_or_offset **duplicate_reserved = new com_or_offset *[P];
+					this->_thread_running[tier] = true;
+					while ( this->_thread_running[tier] ) {
+	            		this->second_phase_write_handler(second_phase_write_handler,P,messages_reserved,messages_reserved,tier);
+					}
+        		}
+				_tier_threads[i] = new thread(secondary_runner,i);
+				//
+				auto removal_runner = [&](uint8_t tier) {
+					this->_removals_running[tier] = true;
+					while ( this->_removals_running[tier] ) {
+						this->removal_thread(tier);
+					}
+				}
+				_tier_removal_threads[i] = new thread(removal_runner,(i + P));
+				//
+				LRU_cache *tier_lru = access_tier(i);
+				if ( lru != nullptr ) {
+					//
+					auto evictor_runner = [&](uint8_t tier,LRU_cache *lru) {
+						this->_evictors_running[tier] = true;
+						while ( this->_evictors_running[tier] ) {
+            				lru->local_evictor();
+						}
+        			}
+					//
+					_tier_evictor_threads[i] = new thread(evictor_runner,tier_lru);
+					//
+					// hash_table_value_restore_thread
+					auto restore_runner = [](LRU_cache *lru) {
+						this->_restores_running[tier] = true;
+						while ( this->_restores_running[tier] ) {
+	            			lru->hash_table_value_restore_thread();
+						}
+        			}
+					//
+					_tier_value_restore_for_hmap_threads[i] = new thread(restore_runner,tier_lru);
+					//
+				}
+			}
+		}
+
+
+		/**
+		 * 			shutdown_threads  -- a final action.. turns off all threads used by this application.
+		*/
+		void shutdown_threads() {
+			for ( uint8_t tier = 0; tier < this->_NTiers; tier++  ) {
+				this->_thread_running[tier] = false;
+				this->_removals_running[tier] = false;
+				this->_evictors_running[tier] = false;
+				this->_restores_running[tier] = false;
+			}
+			for ( uint8_t i = 0; i < this->_NTiers; i++  ) {
+				_tier_threads[i]->join();
+				_tier_removal_threads[i]->join();
+				_tier_evictor_threads[i]->join();
+				_tier_value_restore_for_hmap_threads[i]->join();
+			}
+		}
+
 
 
 		/**
@@ -514,28 +624,6 @@ class TierAndProcManager : public LRU_Consts {
 
 
 		/**
-		 * Waking up any thread that waits on input into the tier.
-		 * Any number of processes may place a message into a tier. 
-		 * If the tier is full, the reader has the job of kicking off the eviction process.
-		*/
-		bool		wake_up_write_handlers(uint32_t tier) {
-			_readerAtomicFlag[tier]->test_and_set();
-			_readerAtomicFlag[tier]->notify_all();
-			return true;
-		}
-
-		/**
-		 * 
-		*/
-		void 		launch_second_phase_threads() {  // handle reads 
-			//
-			// uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint8_t assigned_tier = 0
-			// second_phase_write_handler(uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint8_t assigned_tier = 0) 
-			//
-		}
-
-
-		/**
 		 *		put_method
 		 * 
 		 * Initiates the process by which the system find a place to write data. This method waits on the position to write data.
@@ -621,13 +709,30 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 
+
+		/**
+		 * get_method
+		 * 
+		 * Works on getting the value stored for the hash.
+		 * The LRU memory belonging to the tier has the value in its memory (free stack) region if it exists. 
+		 * If it can't be found immediately in the first tier, the process attempts to find the best tier to 
+		 * find the element based on the current state of timestamps.
+		 * 
+		 * The process only deals with contention for positions. The process would have to wait in some way to get the element
+		 * data. So, waiting on a thread may not be that fruitful even if the waiter is designed to yield time to other threads
+		 * closer to the client. Here, threads closer to the client might be servicing new requests that then land in an event queue
+		 * behind this lookup probe.
+		 * 
+		 * 
+		*/
+
 		int get_method(uint32_t process, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t timestamp, uint32_t tier,[[maybe_unused]] void (delay_func)()) {
 			uint32_t write_offset = 0;
 			//
 			if ( tier == 0 ) {
 				LRU_cache *lru = access_tier(tier);
 				if ( lru != nullptr ) {
-					write_offset = lru->get_no_wait(hash_bucket,full_hash,process,timestamp);
+					write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
 					if ( write_offset != UINT32_MAX ) {
 						char *stored_data = lru->data_location(write_offset);
 						if ( stored != nullptr ) {
@@ -637,7 +742,7 @@ class TierAndProcManager : public LRU_Consts {
 					} else {
 						lru = from_time(timestamp);
 						if ( lru != nullptr ) {
-							write_offset = lru->get_no_wait(hash_bucket,full_hash,process,timestamp);
+							write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
 							if ( write_offset != UINT32_MAX ) {
 								char *stored_data = lru->data_location(write_offset);
 								if ( stored != nullptr ) {
@@ -655,31 +760,57 @@ class TierAndProcManager : public LRU_Consts {
 
 
 
+		/**
+		 * del_method
+		 * 	A small group of methods. 
+		 * 	*	del_method -- the method called by the application, for leaving a key to remove from tables... (hit and run)
+		 * 	* 	removal_thread -- this is a thread main runtime. This thread waits to be notified for work in the removal queue.
+		 * 						There should be one thread for each tier, as in the case with writing
+		 * 	* 	del_action -- called by the removal thread - this method handles the logic of calling the LRU methods for removing all aspects of an object...
+		 * -- 
+		*/
 
-		int del_action(uint32_t process,uint32_t hash_bucket, uint32_t full_hash,uint32_t tier) {
+
+		/**
+		 * del_action
+		 * 
+		 * attempt to remove an element before it age out of the system. 
+		 * 
+		 * Performs the get operation, but does not copy the data.
+		 * 
+		*/
+
+		int del_action(uint32_t process,uint32_t hash_bucket, uint32_t full_hash, uint32_t timestamp, uint32_t tier) {
 			LRU_cache *lru = access_tier(tier);
 			if ( lru != nullptr ) {
-				write_offset = lru->get_no_wait(hash_bucket,full_hash,process);
+				auto write_offset = lru->getter(hash_bucket,full_hash,process);
 				if ( write_offset != UINT32_MAX ) {
 					char *stored_data = lru->data_location(write_offset);
 					if ( stored != nullptr ) {
-						LRU_element *le = (LRU_element *)(stored_data);
-						uint32_t timestamp = le->_when;
-						lru->remove_key(hash_bucket,full_hash,process,timestamp);
-						lru->return_to_free_mem(le);
+						uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
+						uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,new_el_offset,(uint8_t)process);
+						if ( loaded_key != UINT64_MAX ) {
+							LRU_element *le = (LRU_element *)(stored_data);
+							uint32_t found_timestamp = le->_when;
+							lru->return_to_free_mem(le);
+							lru->remove_key(hash_bucket,full_hash,process,found_timestamp);
+						}
 						return 0;
 					}
 				} else {
 					lru = from_time(timestamp);
 					if ( lru != nullptr ) {
-						write_offset = lru->get_no_wait(hash_bucket,full_hash,process,timestamp);
+						write_offset = lru->getter(hash_bucket,full_hash,process);
 						if ( write_offset != UINT32_MAX ) {
 							char *stored_data = lru->data_location(write_offset);
 							if ( stored != nullptr ) {
-								LRU_element *le = (LRU_element *)(stored_data);
-								uint32_t timestamp = le->_when;
-								lru->remove_key(hash_bucket,full_hash,process,timestamp);
-								lru->return_to_free_mem(le);
+								uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
+								uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,new_el_offset,(uint8_t)process);
+								if ( loaded_key != UINT64_MAX ) {
+									LRU_element *le = (LRU_element *)(stored_data);
+									lru->return_to_free_mem(le);
+									lru->remove_key(hash_bucket,full_hash,process,timestamp);
+								}
 								return 0;
 							}
 						}
@@ -690,36 +821,42 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 
-		void removal_thread() {
-			while ( true ) {
-				wait_for_removal_notification();
-				while ( !_removal_work.empty() ) {
-					r_entry re;
-					if ( _removal_work.pop(re) ) {
-						uint32_t process = re.process;
-						uint32_t hash_bucket = re.h_bucket;
-						uint32_t full_hash = re.full_hash;
-						uint32_t tier = re.tier;
-						//
-						this->del_action(process,hash_bucket,full_hash,tier);
-					}
+		/**
+		 * removal_thread
+		 * 
+		 * -- 
+		*/
+
+		void removal_thread(uint8_t tier) {
+			wait_for_removal_notification(tier);
+			while ( !_removal_work[tier].empty() ) {
+				r_entry re;
+				if ( _removal_work[tier].pop(re) ) {
+					uint32_t process = re.process;
+					uint32_t timestamp = re.timestamp;
+					uint32_t hash_bucket = re.h_bucket;
+					uint32_t full_hash = re.full_hash;
+					//
+					this->del_action(process,hash_bucket,full_hash,timestamp,tier);
 				}
 			}
 		}
 
 
-		void wakeup_removal() {
 
-		}
+		/**
+		 * del_method
+		 * 
+		 * -- 
+		*/
 
-		int del_method(uint32_t process,uint32_t h_bucket, uint32_t full_hash,uint32_t tier) {
+		int del_method(uint32_t process,uint32_t h_bucket, uint32_t full_hash,uint32_t timestamp,uint32_t tier) {
 			unsigned int size = record_size();
 			char buffer[size];
-			uint32_t timestamp = 0;
 			//
-			r_entry re = {process,tier,h_bucket,full_hash};
-			_removal_work.push(re);
-			wakeup_removal();
+			r_entry re = {process,timestamp,h_bucket,full_hash};
+			_removal_work[tier].push(re);
+			wakeup_removal(tier);
 		}
 
 
@@ -767,10 +904,22 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 	protected:
-
 		void					*_com_buffer;
 		LRU_cache 				*_tiers[MAX_TIERS];		// local process storage
 		Tier_time_bucket		_t_times[MAX_TIERS];	// shared mem storage
+		//
+		thread					*_tier_threads[MAX_TIERS];
+		bool					_thread_running[MAX_TIERS];
+		//
+		thread					*_tier_removal_threads[MAX_TIERS];
+		bool					_removals_running[MAX_TIERS];
+		//
+		thread					*_tier_evictor_threads[MAX_TIERS];
+		bool					_evictors_running[MAX_TIERS];
+		//
+		thread					*_tier_value_restore_for_hmap_threads[MAX_TIERS];
+		bool					_restores_running[MAX_TIERS];
+		//
 		uint16_t				_proc;					// calling proc index (assigned by configuration) (indicates offset in com buffer)
 		Com_element				*_owner_proc_area;
 		uint8_t					_reserve_size;
@@ -779,7 +928,8 @@ class TierAndProcManager : public LRU_Consts {
 
 	//
 		atomic_flag 			*_readerAtomicFlag[MAX_TIERS];
-		RemovalEntryHolder<>	_removal_work;
+		atomic_flag 			*_removerAtomicFlag[MAX_TIERS];
+		RemovalEntryHolder<>	_removal_work[MAX_TIERS];
 
 };
 

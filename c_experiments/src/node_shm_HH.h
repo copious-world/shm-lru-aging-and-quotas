@@ -220,7 +220,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// LRU_cache -- constructor
 		HH_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
 			_reason = "OK";
-			_restore_operational = true;
 			//
 			_region = region;
 			_endof_region = _region + seg_sz;
@@ -243,9 +242,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		virtual ~HH_map() {
-			_restore_operational = false;
-
-			// join threads here...
 		}
 
 
@@ -1233,32 +1229,31 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint8_t thread_id = 0;
 			hh_element *buffer = nullptr;
 			hh_element *end = nullptr;
-			while ( _restore_operational ) {
-				while ( is_restore_queue_empty() && _restore_operational ) wait_notification_restore();
-				if ( _restore_operational ) {
-					dequeue_restore(&hash_ref, h_bucket, loaded_value, which_table, thread_id, &buffer, &end);
-					// store... if here, it should be locked
-					uint32_t *controllers = _region_C;
-					auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			//
+			while ( is_restore_queue_empty() ) wait_notification_restore();
+			//
+			dequeue_restore(&hash_ref, h_bucket, loaded_value, which_table, thread_id, &buffer, &end);
+			// store... if here, it should be locked
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			//
+			uint32_t store_time = 1000; // now
+			bool quick_put_ok = pop_until_oldest(hash_ref, loaded_value, store_time, buffer, end, h_bucket);
+			if ( quick_put_ok ) {
+				this->slice_unlock_counter(controller,which_table,thread_id);
+			} else {
+				//
+				this->slice_unlock_counter(controller,which_table,thread_id);
+				//
+				if ( short_list_old_entry(loaded_value, store_time) ) {
 					//
-					uint32_t store_time = 1000; // now
-					bool quick_put_ok = pop_until_oldest(hash_ref, loaded_value, store_time, buffer, end, h_bucket);
-					if ( quick_put_ok ) {
-						this->slice_unlock_counter(controller,which_table,thread_id);
-					} else {
-						//
-						this->slice_unlock_counter(controller,which_table,thread_id);
-						//
-						if ( short_list_old_entry(loaded_value, store_time) ) {
-							//
-							uint32_t el_key = (loaded_value & UINT32_MAX);
-							uint32_t offset_value = ((loaded_value >> HALF) & UINT32_MAX);
-							add_key_value(el_key,h_bucket, offset_value, thread_id);
-						}
-						//
-					}
+					uint32_t el_key = (loaded_value & UINT32_MAX);
+					uint32_t offset_value = ((loaded_value >> HALF) & UINT32_MAX);
+					add_key_value(el_key,h_bucket, offset_value, thread_id);
 				}
+				//
 			}
+
 		}
 
 
@@ -2057,8 +2052,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// threads ...
 		proc_descr						*_process_table;						
 		proc_descr						*_end_procs;						
-
-		bool 							_restore_operational;
 
 		atomic_flag		 				*_random_gen_thread_lock;
 		atomic_flag		 				*_random_share_lock;

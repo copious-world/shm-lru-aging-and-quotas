@@ -338,6 +338,11 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
+		void hash_table_value_restore_thread(void) {  // a wrapper (parent must call a while loop... )
+			_hmap->value_restore_runner();
+		}
+
+
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		//
 
@@ -617,27 +622,25 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * All compressors must make sure to update the upper and lower time limits of a tier.
 		*/
 
-		void			local_evictor(void) {
+		void			local_evictor(void) {   // parent caller executes a while loop and determins if it is still running
 			//
-			do {
 #ifndef __APPLE__
-				_reserve_evictor->wait(std::memory_order_acquire);
+			_reserve_evictor->wait(std::memory_order_acquire);
 #endif
-				uint8_t thread_id = this->_thread_id;
-				if ( _Tier+1 < _max_tiers ) {
-					uint32_t req_count = _Procs;
-					LRU_cache *next_tier = this->_all_tiers[_Tier+1];
-					this->transfer_hashes(next_tier,req_count,thread_id);
-				} else {
-					// crisis mode...				elements will have to be discarded or sent to another machine
-					list<uint32_t> offsets_moving;
-					uint32_t count_reclaimed_stamps = this->timeout_table_evictions(offsets_moving,_Procs*3);
-					if ( count_reclaimed_stamps > 0 ) {
-						this->transfer_out_of_tier_to_remote(offsets_moving);   // also copy data...
-					}
+			uint8_t thread_id = this->_thread_id;
+			if ( _Tier+1 < _max_tiers ) {
+				uint32_t req_count = _Procs;
+				LRU_cache *next_tier = this->_all_tiers[_Tier+1];
+				this->transfer_hashes(next_tier,req_count,thread_id);
+			} else {
+				// crisis mode...				elements will have to be discarded or sent to another machine
+				list<uint32_t> offsets_moving;
+				uint32_t count_reclaimed_stamps = this->timeout_table_evictions(offsets_moving,_Procs*3);
+				if ( count_reclaimed_stamps > 0 ) {
+					this->transfer_out_of_tier_to_remote(offsets_moving);   // also copy data...
 				}
-				_reserve_evictor->clear();
-			} while (true);
+			}
+			_reserve_evictor->clear();
 			//
 		}
 
@@ -679,7 +682,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			if ( seletor_bit ) {
 				result = T->add_key_value(full_hash,hash_bucket,new_el_offset,thread_id); //UINT64_MAX
 			} else {
-				T->update(hash_bucket,full_hash,new_el_offset,thread_id);
+				result = T->update(hash_bucket,full_hash,new_el_offset,thread_id);
 			}
 			return result;
 		}
@@ -699,9 +702,16 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			return nullptr;
 		}
 
-		uint32_t		get_no_wait(uint32_t h_bucket,uint32_t el_key,uint8_t thread_id) {
+		uint32_t		getter(uint32_t h_bucket,uint32_t el_key,uint8_t thread_id) {
 			// can check on the limits of the timestamp if it is not zero
 			return _hmap->get(h_bucket,el_key,thread_id);
+		}
+
+
+		uint64_t		update_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset,uint8_t thread_id = 1) {
+			HMap_interface *T = this->_hmap;
+			uint64_t result = T->update(hash_bucket,full_hash,new_el_offset,thread_id);
+			return result;
 		}
 
 
@@ -711,6 +721,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				_hmap->del(key,thread_id);
 			}
 		}
+
+
+
 
 
 

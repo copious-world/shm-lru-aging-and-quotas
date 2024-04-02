@@ -642,6 +642,8 @@ namespace node_shm {
 		uint32_t hash = Nan::To<uint32_t>(info[1]).FromJust();		// bucket index
 		uint32_t full_hash = Nan::To<uint32_t>(info[2]).FromJust();
 		// selector bit
+		uint32_t timestamp =  Nan::To<uint32_t>(info[3]).FromJust();
+
 		//
 		if ( g_segments_manager == nullptr ) {
 			info.GetReturnValue().Set(Nan::New<Number>(-1));
@@ -654,7 +656,7 @@ namespace node_shm {
 		}
 		//
 		uint32_t tier = 0;   // the entry point from the application is the zero tier, yet this may change due to the timestamp
-		int status = g_tiers_procs->del_method(process,hash,full_hash,tier);
+		int status = g_tiers_procs->del_method(process,hash,full_hash,timestamp,tier);
 		if ( status == 0 ) {
 			info.GetReturnValue().Set(Nan::New<Boolean>(true));
 		} else {
