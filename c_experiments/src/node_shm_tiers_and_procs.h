@@ -12,6 +12,33 @@ using namespace std;
 using namespace std::chrono;
 
 
+/**
+ * 
+ * This module provides the entry points to API calls which provide access to storage operations 
+ * which might be performed in process or performed in separate threads. This module manages tiers of 
+ * storage of entries, where each tier manages data in a window of time determined by the least and maximum age of an entry.
+ * 
+ * The primary tier handles the most recently added or updated data. As data ages out of the primary tier, the data 
+ * will move to higher numbered tiers. Entry requests, keyed on the data hash,
+ * can be supplied with a time stamp, which may aid in the location of an entry. If the entry cannot be found in the primary 
+ * tier using its hash value, then it might be found in a higher number tier that includes the time stamp provided by the 
+ * caller. As an option, the request may direct the search methods to find an entry by its hash by looking through the tiers. 
+ * (Sequencing through tiers may be handed to a thread to offload longer searches from main service processes.)
+ * 
+ * The hash key is determined externally to the module, but the hash has some required charactisrics.
+ * 
+ * The 64 bit key stores a 32bit hash (xxhash or other) in the lower word.
+ * The 32 bits is a hash of the data being stored in th LRU cache. This hash
+ * maps to a hash bucket in the HH hash table.
+ * 
+ * The top 32 bits stores is a structured bit array. The top 1 bit will be
+ * the selector of the hash region where the key match will be found. The
+ * bottom 20 bits will be a hash bucket number (found my taking the modulus of the hash with with respect to the 
+ * maximum number of elements being stored in a tier.)
+ * 
+ * 
+*/
+
 
 typedef struct R_ENTRY {
 	uint32_t 	process;
@@ -68,16 +95,7 @@ class RemovalEntryHolder {
 
 
 
-#define MAX_BUCKET_FLUSH 12
 #define ONE_HOUR 	(60*60*1000)
-
-/**
- * The 64 bit key stores a 32bit hash (xxhash or other) in the lower word.
- * The top 32 bits stores a structured bit array. The top 1 bit will be
- * the selector of the hash region where the key match will be found. The
- * bottom 20 bits will store the element offset (an element number) to the position the
- * element data is stored. 
-*/
 
 // messages_reserved is an area to store pointers to the messages that will be read.
 // duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
@@ -411,6 +429,20 @@ class TierAndProcManager : public LRU_Consts {
 					//
 					_tier_value_restore_for_hmap_threads[i] = new thread(restore_runner,tier_lru);
 					//
+
+					// hash_table_value_restore_thread
+					auto random_generator_runner = [](LRU_cache *lru) {
+						this->_random_generator_running[tier] = true;
+						while ( this->_random_generator_running[tier] ) {
+	            			lru->hash_table_random_generator_thread_runner();
+						}
+        			}
+					//
+					_tier_random_generator_for_hmap_threads[i] = new thread(random_generator_runner,tier_lru);
+					//
+
+
+					
 				}
 			}
 		}
@@ -761,6 +793,57 @@ class TierAndProcManager : public LRU_Consts {
 
 
 		/**
+		 * search_method
+		 * 
+		 * 
+		 * Launch a search thread if `get` fails to find the entry within the first tier.
+		 * 
+		 * 
+		*/
+
+		int search_method(uint32_t process, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t tier, void (delay_func)()) {
+			uint32_t write_offset = 0;
+			//
+			if ( tier == 0 ) {
+				LRU_cache *lru = access_tier(tier);
+				if ( lru != nullptr ) {
+					write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
+					if ( write_offset != UINT32_MAX ) {
+						char *stored_data = lru->data_location(write_offset);
+						if ( stored_data != nullptr ) {
+							memcpy(data,stored_data,sz);
+							return 0;
+						}
+					} else {
+						// hash_table_value_restore_thread
+						memset(data,0,sz);
+						auto tier_search_runner = [this](uint32_t tier,uint32_t process, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz) {
+							for ( ; tier < this->_NTiers; tier++ ) {
+								LRU_cache *lru = this->access_tier(tier);
+								uint32_t write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
+								if ( write_offset != UINT32_MAX ) {
+									char *stored_data = lru->data_location(write_offset);
+									if ( stored_data != nullptr ) {
+										memcpy(data,stored_data,sz);
+										return;
+									}
+								}
+							}
+						}
+						//
+						thread th(tier_search_runner,tier,process,hash_bucket,full_hash,data,sz);
+						while ( data[0] == 0 ) {
+							delay_func();  // let other parts of the process/thread run
+						}
+						th.join();
+					}
+				}
+			}
+			//
+			return -1;
+		}
+
+		/**
 		 * del_method
 		 * 	A small group of methods. 
 		 * 	*	del_method -- the method called by the application, for leaving a key to remove from tables... (hit and run)
@@ -787,13 +870,12 @@ class TierAndProcManager : public LRU_Consts {
 				if ( write_offset != UINT32_MAX ) {
 					char *stored_data = lru->data_location(write_offset);
 					if ( stored != nullptr ) {
-						uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
-						uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,new_el_offset,(uint8_t)process);
+						// uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
+						uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,UINT32_MAX,(uint8_t)process);
 						if ( loaded_key != UINT64_MAX ) {
 							LRU_element *le = (LRU_element *)(stored_data);
 							uint32_t found_timestamp = le->_when;
-							lru->return_to_free_mem(le);
-							lru->remove_key(hash_bucket,full_hash,process,found_timestamp);
+							lru->free_memory_and_key(le,process,hash_bucket,hash_bucket,found_timestamp);
 						}
 						return 0;
 					}
@@ -804,12 +886,11 @@ class TierAndProcManager : public LRU_Consts {
 						if ( write_offset != UINT32_MAX ) {
 							char *stored_data = lru->data_location(write_offset);
 							if ( stored != nullptr ) {
-								uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
-								uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,new_el_offset,(uint8_t)process);
+								// uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
+								uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,UINT32_MAX,(uint8_t)process);
 								if ( loaded_key != UINT64_MAX ) {
 									LRU_element *le = (LRU_element *)(stored_data);
-									lru->return_to_free_mem(le);
-									lru->remove_key(hash_bucket,full_hash,process,timestamp);
+									lru->free_memory_and_key(le,process,hash_bucket,hash_bucket,timestamp);
 								}
 								return 0;
 							}
@@ -841,7 +922,6 @@ class TierAndProcManager : public LRU_Consts {
 				}
 			}
 		}
-
 
 
 		/**
@@ -904,6 +984,8 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 	protected:
+		//
+		//
 		void					*_com_buffer;
 		LRU_cache 				*_tiers[MAX_TIERS];		// local process storage
 		Tier_time_bucket		_t_times[MAX_TIERS];	// shared mem storage
@@ -919,6 +1001,9 @@ class TierAndProcManager : public LRU_Consts {
 		//
 		thread					*_tier_value_restore_for_hmap_threads[MAX_TIERS];
 		bool					_restores_running[MAX_TIERS];
+		//
+		thread					*_tier_random_generator_for_hmap_threads[MAX_TIERS];
+		bool					_random_generator_running[MAX_TIERS];
 		//
 		uint16_t				_proc;					// calling proc index (assigned by configuration) (indicates offset in com buffer)
 		Com_element				*_owner_proc_area;

@@ -1173,6 +1173,30 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
 
 
 
+class Test_HH : public HH_map<> {
+
+  public:
+      Test_HH(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false)
+          : HH_map<>(region,seg_sz,max_element_count,num_threads,am_initializer) {
+      }
+
+
+		// get an idea, don't try locking or anything  (combined counts)
+		uint32_t get_buckt_count(uint32_t h_bucket) {
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			return get_buckt_count(controller);
+		}
+
+		uint32_t get_buckt_count(atomic<uint32_t> *controller) {
+			uint32_t controls = controller->load(std::memory_order_relaxed);
+			uint8_t counter = (uint8_t)((controls & DOUBLE_COUNT_MASK) >> QUARTER);  
+			return counter;
+		}
+
+}
+
+
 
 
 // thread func
@@ -1266,7 +1290,7 @@ void test_hh_map_operation_initialization_linearization_small_noisy() {
 
   //
   try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
+    Test_HH *test_hh = new Test_HH(region, seg_sz, els_per_tier, num_procs, true);
     cout << test_hh->ok() << endl;
 
     //
@@ -1294,9 +1318,9 @@ void test_hh_map_operation_initialization_linearization_small_noisy() {
     uint32_t nn = 10; //els_per_tier/2;   // same as loop constant in thread
     for ( uint32_t i = 0; i < nn; i++ ) {
       uint8_t count1;
-      count1 = sg_share_test_hh->get_buckt_count(i);
+      count1 = test_hh->get_buckt_count(i);
       cout << "combined count: " << (int)count1 << endl;
-      pair<uint8_t,uint8_t> p = sg_share_test_hh->get_bucket_counts(i);
+      pair<uint8_t,uint8_t> p = test_hh->get_bucket_counts(i);
       cout << "odd bucket: " << (int)(p.first) << " :: " << (int)(p.second) << endl;
     }
 

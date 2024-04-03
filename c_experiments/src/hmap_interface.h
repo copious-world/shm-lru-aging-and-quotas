@@ -233,6 +233,8 @@ typedef struct HHASH {
 
 class HMap_interface {
 	public:
+		virtual void 		value_restore_runner(void) = 0;
+		virtual void		random_generator_thread_runner(void) = 0;
 		virtual uint64_t	update(uint32_t hash_bucket, uint32_t el_key, uint32_t v_value,uint8_t thread_id = 1) = 0;
 		virtual uint32_t	get(uint64_t key,uint8_t thread_id = 1) = 0;
 		virtual uint32_t	get(uint32_t key,uint32_t bucket,uint8_t thread_id = 1) = 0;
