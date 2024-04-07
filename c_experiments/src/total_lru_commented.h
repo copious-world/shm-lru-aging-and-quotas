@@ -1103,3 +1103,141 @@
 // };
 
 
+/*
+
+    // not using this... (just to recall what was considered)
+    * 
+    // raise the lower bound on the times allowed into an LRU 
+    // this operation does not run evictions. 
+    // but processes running evictions may use it.
+    //
+    // This is using atomics ... not certain that is the future with this...
+    //
+    // returns: the old lower bound on time. the lower bound may become the new upper bound of an
+    // older tier.
+
+    uint32_t	raise_lru_lb_time_bounds(uint32_t lb_timestamp) {
+        //
+        uint32_t index = time_interval_b_search(lb_timestamp, _t_times, _NTiers);
+        if ( index == 0 ) {
+            Tier_time_bucket *ttbr = &_t_times[0];
+            ttbr->_ub_time->store(UINT32_MAX);
+            uint32_t lbt = ttbr->_lb_time->load();
+            if ( lbt < lb_timestamp ) {
+                ttbr->_lb_time->store(lb_timestamp);
+                return lbt;
+            }
+            return 0;
+        }
+        if ( index < _NTiers ) {
+            Tier_time_bucket *ttbr = &_t_times[index];
+            uint32_t lbt = ttbr->_lb_time->load();
+            if ( lbt < lb_timestamp ) {
+                uint32_t ubt = ttbr->_ub_time->load();
+                uint32_t delta = (lb_timestamp - lbt);
+                ttbr->_lb_time->store(lb_timestamp);
+                ubt -= delta;
+                ttbr->_ub_time->store(lb_timestamp);					
+                return lbt;
+            }
+            return 0;
+        }
+        //
+    }
+
+*/
+
+
+
+// SNIPPETS AS WELL
+
+
+
+/*
+
+    vector<thread> v;
+    for (int n = 0; n < 10; ++n)
+        v.emplace_back(f, n);
+    for (auto& t : v)
+        t.join();
+
+    cout << "sizeof hh_element: " << sizeof(hh_element) << endl;
+
+    uint16_t my_uint = (1 << 7);
+    cout << my_uint << " " << (HOLD_BIT_SET & my_uint) << "   "  << bitset<16>(HOLD_BIT_SET) << "   "  << bitset<16>(my_uint) << endl;
+
+    uint16_t a = (my_uint<<1);
+    uint16_t b = (my_uint>>1);
+    
+    cout << countr_zero(my_uint) << " " << countr_zero(a)<< " " << countr_zero(b) << endl;
+#ifdef FFS
+      cout << FFS(my_uint) << " " << FFS(a)<< " " << FFS(b) << endl;
+#endif
+
+    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
+        cout << "countr_zero( " << bitset<8>(i) << " ) = "
+              << countr_zero(i) << '\n';
+
+#ifdef FFS
+    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
+        cout << "countr_zero( " << bitset<8>(i) << " ) = "
+              << FFS(i) << '\n';
+#endif
+
+
+
+auto ms_since_epoch(std::int64_t m){
+  return std::chrono::system_clock::from_time_t(time_t{0})+std::chrono::milliseconds(m);
+}
+
+uint64_t timeSinceEpochMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()
+).count();
+
+
+int main()
+{
+    using namespace std::chrono;
+ 
+    uint64_t ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    std::cout << ms << " milliseconds since the Epoch\n";
+ 
+    uint64_t sec = duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+    std::cout << sec << " seconds since the Epoch\n";
+ 
+    return 0;
+}
+
+
+milliseconds ms = duration_cast< milliseconds >(
+    system_clock::now().time_since_epoch()
+);
+
+*/
+
+
+/*
+template<typename T, typename OP>
+T manipulate_bit(std::atomic<T> &a, unsigned n, OP bit_op) {
+    static_assert(std::is_integral<T>::value, "atomic type not integral");
+
+    T val = a.load();
+    while (!a.compare_exchange_weak(val, bit_op(val, n)));
+
+    return val;
+}
+
+auto set_bit = [](auto val, unsigned n) { return val | (1 << n); };
+auto clr_bit = [](auto val, unsigned n) { return val & ~(1 << n); };
+auto tgl_bit = [](auto val, unsigned n) { return val ^ (1 << n); };
+
+int main() {
+    std::atomic<int> a{0x2216};
+    manipulate_bit(a, 3, set_bit);  // set bit 3
+    manipulate_bit(a, 7, tgl_bit);  // toggle bit 7
+    manipulate_bit(a, 13, clr_bit);  // clear bit 13
+    bool isset = (a.load() >> 5) & 1;  // testing bit 5
+}
+*/
+
+

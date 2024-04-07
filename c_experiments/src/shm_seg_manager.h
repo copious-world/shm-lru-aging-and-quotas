@@ -71,14 +71,15 @@ const uint32_t lengthMax = UINT16_MAX;   // for now
  * SharedSegmentsManager
 */
 
-class SharedSegmentsManager : public SharedSegments {
+template<class HH>
+class SharedSegmentsTForm : public SharedSegments {
 
 	public:
 
-		SharedSegmentsManager() {
+		SharedSegmentsTForm() {
 			_container_node_size = sizeof(uint32_t)*8;
 		}
-		virtual ~SharedSegmentsManager() {}
+		virtual ~SharedSegmentsTForm() {}
 
 	public:
 
@@ -208,7 +209,7 @@ class SharedSegmentsManager : public SharedSegments {
 			// size_t value_reagion_sz = sizeof(uint64_t)*els_per_tier;
 			// size_t bucket_region_sz = sizeof(uint32_t)*els_per_tier;
 			// size_t control_bits_sz = sizeof(atomic<uint32_t>)*els_per_tier;
-			size_t seg_size = HH_map<>::check_expected_hh_region_size(els_per_tier,num_threads);
+			size_t seg_size = HH::check_expected_hh_region_size(els_per_tier,num_threads);
 			//
 			if ( am_initializer ) {
 				status = _shm_creator(key,seg_size);
@@ -284,5 +285,22 @@ class SharedSegmentsManager : public SharedSegments {
 
 };
 
+
+
+
+
+
+class SharedSegmentsManager : public SharedSegmentsTForm<HH_map<>> {
+
+	public:
+
+		SharedSegmentsManager() {}
+		virtual ~SharedSegmentsManager() {}
+
+};
+
+
+
 }
+
 

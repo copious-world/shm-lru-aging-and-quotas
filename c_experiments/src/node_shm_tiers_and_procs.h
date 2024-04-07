@@ -2,8 +2,6 @@
 #define _H_TIERS_AND_PROCS_
 #pragma once
 
-// node_shm_tiers_and_procs.h
-
 
 using namespace std;
 
@@ -134,8 +132,6 @@ class TierAndProcManager : public LRU_Consts {
 				size_t seg_sz = seg_sizes[key];
 				//
 				_tiers[tier] = new LRU_cache(lru_region, max_obj_size, seg_sz, els_per_tier, _reserve_size, _Procs, _am_initializer, tier);
-				_t_times[tier]._lb_time = _tiers[tier]->_lb_time;
-				_t_times[tier]._ub_time = _tiers[tier]->_ub_time;
 				// initialize hopscotch
 				tier++;
 				if ( tier > _NTiers ) break;
@@ -162,6 +158,10 @@ class TierAndProcManager : public LRU_Consts {
 		virtual ~TierAndProcManager() {}
 
 	public:
+
+		/**
+		 * check_expected_com_region_size
+		*/
 
 		static uint32_t check_expected_com_region_size(uint32_t num_procs, uint32_t num_tiers) {
 			//
@@ -259,12 +259,27 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 		LRU_cache	*from_time(uint32_t timestamp) {
+			LRU_cache *lru = nullptr;
+			for ( uint8_t i = 0; i < MAX_TIERS; i++ ) {
+				lru = _tiers[i];
+				uint32_t lb_time = lru->_lb_time->load();
+				if ( timestamp > lb_time ) {
+					return lru;
+				}
+			}
+
+			return nullptr;
+		}
+
+/*
+			// instead, just look at the few number of tiers (usually not more than 3)
+			// look at their lower and upper bounds, which will be set more intelligently during transfers.
+
 			uint32_t index = time_interval_b_search(timestamp, _t_times, _NTiers);
 			if ( index < _NTiers ) {
 				return _tiers[index];
 			}
-			return nullptr;
-		}
+*/
 
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -344,7 +359,7 @@ class TierAndProcManager : public LRU_Consts {
 				// crisis mode...				elements will have to be discarded or sent to another machine
 				lru->notify_evictor(UINT32_MAX);   // also copy data...
 			} else {
-				lru->transfer_hashes(next_tier,req_count);
+				lru->transfer_hashes(next_tier,req_count,1);   // default thread id
 			}
 			//
 			return true;
@@ -387,16 +402,16 @@ class TierAndProcManager : public LRU_Consts {
 		void 		launch_second_phase_threads() {  // handle reads 
 			uint32_t P = _Procs;
 			uint32_t T = _NTiers;
-			for ( uint8_t i = 0; i < _NTiers; i++ ) {
+			for ( uint8_t i = 0; i < T; i++ ) {
 				auto secondary_runner = [&](uint8_t tier) {
 					uint32_t P = this->_Procs;
 					com_or_offset **messages_reserved = new com_or_offset *[P];
 					com_or_offset **duplicate_reserved = new com_or_offset *[P];
 					this->_thread_running[tier] = true;
 					while ( this->_thread_running[tier] ) {
-	            		this->second_phase_write_handler(second_phase_write_handler,P,messages_reserved,messages_reserved,tier);
+	            		this->second_phase_write_handler(P,messages_reserved,duplicate_reserved,tier);
 					}
-        		}
+        		};
 				_tier_threads[i] = new thread(secondary_runner,i);
 				//
 				auto removal_runner = [&](uint8_t tier) {
@@ -404,41 +419,41 @@ class TierAndProcManager : public LRU_Consts {
 					while ( this->_removals_running[tier] ) {
 						this->removal_thread(tier);
 					}
-				}
+				};
 				_tier_removal_threads[i] = new thread(removal_runner,(i + P));
 				//
 				LRU_cache *tier_lru = access_tier(i);
-				if ( lru != nullptr ) {
+				if ( tier_lru != nullptr ) {
 					//
 					auto evictor_runner = [&](uint8_t tier,LRU_cache *lru) {
 						this->_evictors_running[tier] = true;
 						while ( this->_evictors_running[tier] ) {
             				lru->local_evictor();
 						}
-        			}
+        			};
 					//
-					_tier_evictor_threads[i] = new thread(evictor_runner,tier_lru);
+					_tier_evictor_threads[i] = new thread(evictor_runner,i,tier_lru);
 					//
 					// hash_table_value_restore_thread
-					auto restore_runner = [](LRU_cache *lru) {
+					auto restore_runner = [this](uint8_t tier,LRU_cache *lru) {
 						this->_restores_running[tier] = true;
 						while ( this->_restores_running[tier] ) {
 	            			lru->hash_table_value_restore_thread();
 						}
-        			}
+        			};
 					//
-					_tier_value_restore_for_hmap_threads[i] = new thread(restore_runner,tier_lru);
+					_tier_value_restore_for_hmap_threads[i] = new thread(restore_runner,i,tier_lru);
 					//
 
 					// hash_table_value_restore_thread
-					auto random_generator_runner = [](LRU_cache *lru) {
+					auto random_generator_runner = [this](uint8_t tier,LRU_cache *lru) {
 						this->_random_generator_running[tier] = true;
 						while ( this->_random_generator_running[tier] ) {
 	            			lru->hash_table_random_generator_thread_runner();
 						}
-        			}
+        			};
 					//
-					_tier_random_generator_for_hmap_threads[i] = new thread(random_generator_runner,tier_lru);
+					_tier_random_generator_for_hmap_threads[i] = new thread(random_generator_runner,i,tier_lru);
 					//
 
 
@@ -490,6 +505,8 @@ class TierAndProcManager : public LRU_Consts {
 			}
 			if ( (proc_count > 0) && (assigned_tier < _NTiers) ) {
 				//
+				uint8_t thread_id = 1;
+				//
 				LRU_cache *lru = access_tier(assigned_tier);
 				if ( lru == NULL ) {
 					return(-1);
@@ -539,7 +556,7 @@ class TierAndProcManager : public LRU_Consts {
 				//
 				if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
 					// 	-- FILTER - only allocate for new objects
-					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
+					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count,thread_id);
 					//
 					// accesses are null or zero offset if the hash already has an allocated location.
 					// If accesses[i] is a zero offset, then the element is new. Otherwise, the element 
@@ -694,7 +711,7 @@ class TierAndProcManager : public LRU_Consts {
 			if ( wait_to_write(read_marker,MAX_WAIT_LOOPS,delay_func) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
 				// 
 				// tell a reader to get some free memory
-				hash_parameter[0] = hash_bucket; // put in the hash so that the read can see if this is a duplicate
+				hash_parameter[0] = hash_bucket; // put in the hash so that the reader can see if this is a duplicate
 				hash_parameter[1] = full_hash;
 				// the write offset should come back to the process's read maker
 				offset_offset[0] = updating ? UINT32_MAX : 0;
@@ -766,8 +783,8 @@ class TierAndProcManager : public LRU_Consts {
 				if ( lru != nullptr ) {
 					write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
 					if ( write_offset != UINT32_MAX ) {
-						char *stored_data = lru->data_location(write_offset);
-						if ( stored != nullptr ) {
+						uint8_t *stored_data = lru->data_location(write_offset);
+						if ( stored_data != nullptr ) {
 							memcpy(data,stored_data,sz);
 							return 0;
 						}
@@ -776,8 +793,8 @@ class TierAndProcManager : public LRU_Consts {
 						if ( lru != nullptr ) {
 							write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
 							if ( write_offset != UINT32_MAX ) {
-								char *stored_data = lru->data_location(write_offset);
-								if ( stored != nullptr ) {
+								uint8_t *stored_data = lru->data_location(write_offset);
+								if ( stored_data != nullptr ) {
 									memcpy(data,stored_data,sz);
 									return 0;
 								}
@@ -805,11 +822,12 @@ class TierAndProcManager : public LRU_Consts {
 			uint32_t write_offset = 0;
 			//
 			if ( tier == 0 ) {
+				uint32_t timestamp = 0;
 				LRU_cache *lru = access_tier(tier);
 				if ( lru != nullptr ) {
 					write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
 					if ( write_offset != UINT32_MAX ) {
-						char *stored_data = lru->data_location(write_offset);
+						uint8_t *stored_data = lru->data_location(write_offset);
 						if ( stored_data != nullptr ) {
 							memcpy(data,stored_data,sz);
 							return 0;
@@ -818,24 +836,26 @@ class TierAndProcManager : public LRU_Consts {
 						// hash_table_value_restore_thread
 						memset(data,0,sz);
 						auto tier_search_runner = [this](uint32_t tier,uint32_t process, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz) {
+							uint32_t timestamp = 0;
 							for ( ; tier < this->_NTiers; tier++ ) {
 								LRU_cache *lru = this->access_tier(tier);
 								uint32_t write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
 								if ( write_offset != UINT32_MAX ) {
-									char *stored_data = lru->data_location(write_offset);
+									uint8_t *stored_data = lru->data_location(write_offset);
 									if ( stored_data != nullptr ) {
 										memcpy(data,stored_data,sz);
 										return;
 									}
 								}
 							}
-						}
+						};
 						//
 						thread th(tier_search_runner,tier,process,hash_bucket,full_hash,data,sz);
 						while ( data[0] == 0 ) {
 							delay_func();  // let other parts of the process/thread run
 						}
 						th.join();
+						return 0;
 					}
 				}
 			}
@@ -868,8 +888,8 @@ class TierAndProcManager : public LRU_Consts {
 			if ( lru != nullptr ) {
 				auto write_offset = lru->getter(hash_bucket,full_hash,process);
 				if ( write_offset != UINT32_MAX ) {
-					char *stored_data = lru->data_location(write_offset);
-					if ( stored != nullptr ) {
+					uint8_t *stored_data = lru->data_location(write_offset);
+					if ( stored_data != nullptr ) {
 						// uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
 						uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,UINT32_MAX,(uint8_t)process);
 						if ( loaded_key != UINT64_MAX ) {
@@ -884,8 +904,8 @@ class TierAndProcManager : public LRU_Consts {
 					if ( lru != nullptr ) {
 						write_offset = lru->getter(hash_bucket,full_hash,process);
 						if ( write_offset != UINT32_MAX ) {
-							char *stored_data = lru->data_location(write_offset);
-							if ( stored != nullptr ) {
+							uint8_t *stored_data = lru->data_location(write_offset);
+							if ( stored_data != nullptr ) {
 								// uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
 								uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,UINT32_MAX,(uint8_t)process);
 								if ( loaded_key != UINT64_MAX ) {
@@ -903,9 +923,12 @@ class TierAndProcManager : public LRU_Consts {
 
 
 		/**
-		 * removal_thread
+		 * removal_thread - this method is the inner loop of the removal thread. 
+		 * 	See the thread initializer to understand the looping of the thread.
 		 * 
-		 * -- 
+		 *	This method contains a loop, which the method operating on all removal requests it has available.
+		 *	The thread will stop looping as soon as it empties the `_removal_work` queue.
+		 *	
 		*/
 
 		void removal_thread(uint8_t tier) {
@@ -927,12 +950,10 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * del_method
 		 * 
-		 * -- 
+		 * 
 		*/
 
 		int del_method(uint32_t process,uint32_t h_bucket, uint32_t full_hash,uint32_t timestamp,uint32_t tier) {
-			unsigned int size = record_size();
-			char buffer[size];
 			//
 			r_entry re = {process,timestamp,h_bucket,full_hash};
 			_removal_work[tier].push(re);
@@ -941,54 +962,10 @@ class TierAndProcManager : public LRU_Consts {
 
 
 	protected:
-
-		/**
-		 * 
-		// raise the lower bound on the times allowed into an LRU 
-		// this operation does not run evictions. 
-		// but processes running evictions may use it.
-		//
-		// This is using atomics ... not certain that is the future with this...
-		//
-		// returns: the old lower bound on time. the lower bound may become the new upper bound of an
-		// older tier.
-		*/
-
-		uint32_t	raise_lru_lb_time_bounds(uint32_t lb_timestamp) {
-			//
-			uint32_t index = time_interval_b_search(lb_timestamp, _t_times, _NTiers);
-			if ( index == 0 ) {
-				Tier_time_bucket *ttbr = &_t_times[0];
-				ttbr->_ub_time->store(UINT32_MAX);
-				uint32_t lbt = ttbr->_lb_time->load();
-				if ( lbt < lb_timestamp ) {
-					ttbr->_lb_time->store(lb_timestamp);
-					return lbt;
-				}
-				return 0;
-			}
-			if ( index < _NTiers ) {
-				Tier_time_bucket *ttbr = &_t_times[index];
-				uint32_t lbt = ttbr->_lb_time->load();
-				if ( lbt < lb_timestamp ) {
-					uint32_t ubt = ttbr->_ub_time->load();
-					uint32_t delta = (lb_timestamp - lbt);
-					ttbr->_lb_time->store(lb_timestamp);
-					ubt -= delta;
-					ttbr->_ub_time->store(lb_timestamp);					
-					return lbt;
-				}
-				return 0;
-			}
-			//
-		}
-
-	protected:
 		//
 		//
 		void					*_com_buffer;
 		LRU_cache 				*_tiers[MAX_TIERS];		// local process storage
-		Tier_time_bucket		_t_times[MAX_TIERS];	// shared mem storage
 		//
 		thread					*_tier_threads[MAX_TIERS];
 		bool					_thread_running[MAX_TIERS];

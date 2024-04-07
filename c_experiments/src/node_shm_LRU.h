@@ -18,7 +18,7 @@
 #include <list>
 #include <chrono>
 #include <atomic>
-
+#include <tuple>
 
 using namespace std;
 
@@ -536,7 +536,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			// or should have already been started.
 
 			check_count_free_against_reserve();      // check_count_free_against_reserve
-
 			//
 			free_mem_claim_satisfied(ready_msg_count);
 			//
@@ -673,11 +672,11 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 						memcpy(target,src,_record_size);
 					}
 				}
+				//
+				this->attach_to_lru_list(lru_element_offsets,additional_locations);  // attach to an LRU as a whole bucket...
 			} else {
 				this->transfer_out_of_tier_to_remote(moving);
 			}
-			//
-			this->attach_to_lru_list(lru_element_offsets,additional_locations);  // attach to an LRU as a whole bucket...
 		}
 
 
@@ -698,9 +697,58 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
+	private:
+
+		void (* app_transfer_method)(list<tuple<uint64_t,time_t,uint8_t *>> &) = nullptr;
+
 	public:
 
-		bool 			transfer_out_of_tier_to_remote([[maybe_unused]]list<uint32_t> &moving) { return false; }
+		/**
+		 * transfer_out_of_tier_to_remote - this method is called when an element has run out of tiers.
+		 * 
+		 * 	Depending on the application implementation of the `app_transfer_method`, elements moving past the 
+		 * 	number of tiers will either come to the end of their life, go into a file or other secondary storage,
+		 * 	or be moved across the network, maybe to a processor that acts like a clearing house. 
+		 * 	
+		 * 	In some scenarios, the object with a particular hash may be still be accessed after the operation, albeit slowly.
+		 * 
+		 * 	The interface to entire module separates the `get` operation from `set` or `put`. So, if a `get` fails on the 
+		 * 	current machine, it might succeed in the cluster. Outside the cluster, it is expected that that hash will be 
+		 * 	much more universal, i.e. the hashes within a cluster will have a much smaller range of values relative to 
+		 * 	hashes used in the wide area.
+		 * 
+		 * The `LRU_cache` type of object does not implemen a method 
+		*/
+		bool 			transfer_out_of_tier_to_remote(list<uint32_t> &moving) {
+			if ( app_transfer_method != nullptr ) {
+
+				list<tuple<uint64_t,time_t,uint8_t *>> move_data;
+
+				uint8_t *start = this->start();
+				for ( auto offset : moving ) {			// offset of where it is going
+					LRU_element *el = (LRU_element *)(start + offset);
+					uint64_t hash64  = el->_hash;
+					time_t update_time = el->_when;
+					uint8_t *data = this->data_location(offset);
+					//
+					tuple<uint64_t,time_t,uint8_t *> dat{hash64,update_time,data};
+					move_data.push_back(dat);
+				}
+
+				(* app_transfer_method)(move_data);
+				relinquish_hashes(moving,251);  // some suprious thread id
+			}
+			return false; 
+		}
+
+
+		/**
+		 * set_app_transfer_method -- the application calls this method to set the 
+		 * references to the application transfer method.
+		*/
+		void set_app_transfer_method(void (* atm)(list<tuple<uint64_t,time_t,uint8_t *>> &)) {
+			app_transfer_method = atm;
+		}
 
 
 	public:
@@ -779,11 +827,26 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 	public:
 
+		/**
+		 * store_in_hash  -- full_hash is 32 bit hash of data... hash_bucket is a modulus relative to the element count.
+		 * 		hash_bucket can have some control bits at the top of it indicating if the element is live yet and if 
+		 * 		so, which segment it lies in.
+		 * 
+		 * 		The full hash is stored in the top part of a 64 bit word. While the bucket information
+		 * 		is stored in the lower half.
+		 * 
+		 * 		| full 32 bit hash || control bits (2 to 4) | bucket number |
+		 * 		|   32 bits			| 32 bits ---->					        |
+		 * 							| 4 bits				| 28 bits		|  // 28 bits for 500 millon entries
+		*/
 
-		uint64_t		store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset,bool seletor_bit = false,uint8_t thread_id = 1) {
+		uint64_t		store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset,uint8_t thread_id = 1) {
 			HMap_interface *T = this->_hmap;
 			uint64_t result = 0;
-			if ( seletor_bit ) {
+
+			uint8_t seletor_bit = 0;
+			// a bit for being entered and one or more for which slab...
+			if ( !(selector_bit_is_set(hash_bucket,seletor_bit)) ) {
 				result = T->add_key_value(full_hash,hash_bucket,new_el_offset,thread_id); //UINT64_MAX
 			} else {
 				result = T->update(hash_bucket,full_hash,new_el_offset,thread_id);
@@ -791,12 +854,19 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			return result;
 		}
 
+		/**
+		 * store_in_hash
+		*/
+
 		uint64_t		store_in_hash(uint64_t hash64, uint32_t new_el_offset,uint8_t thread_id = 1) {
 			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
 			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
-			bool seletor_bit = seletor_bit_is_set(hash64);
-			return store_in_hash(full_hash,hash_bucket,new_el_offset,seletor_bit,seletor_bit,thread_id);
+			return store_in_hash(full_hash,hash_bucket,new_el_offset,thread_id);
 		}
+
+		/**
+		 * data_location
+		*/
 
 		uint8_t 		*data_location(uint32_t write_offset) {
 			uint8_t *strt = this->start();
@@ -806,34 +876,46 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			return nullptr;
 		}
 
-		uint32_t		getter(uint32_t h_bucket,uint32_t el_key,uint8_t thread_id) {
+		/**
+		 * getter
+		*/
+
+		uint32_t		getter(uint32_t full_hash,uint32_t h_bucket,uint8_t thread_id,[[maybe_unused]] uint32_t timestamp = 0) {
 			// can check on the limits of the timestamp if it is not zero
-			return _hmap->get(h_bucket,el_key,thread_id);
+			return _hmap->get(full_hash,h_bucket,thread_id);
 		}
 
 
+		/**
+		 * update_in_hash
+		*/
+
 		uint64_t		update_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset,uint8_t thread_id = 1) {
 			HMap_interface *T = this->_hmap;
-			uint64_t result = T->update(hash_bucket,full_hash,new_el_offset,thread_id);
+			uint64_t result = T->update(full_hash,hash_bucket,new_el_offset,thread_id);
 			return result;
 		}
 
 
-		void 			remove_key(uint32_t h_bucket,uint32_t el_key,uint8_t thread_id,uint32_t timestamp) {
-			if ( _timeout_table->remove_entry(timestamp) ) {
-				uint64_t key = (((uint64_t)h_bucket) << HALF) | el_key;
-				_hmap->del(key,thread_id);
-			}
+		/**
+		 * remove_key
+		*/
+
+		void 			remove_key(uint32_t full_hash, uint32_t h_bucket,uint8_t thread_id, uint32_t timestamp) {
+			_timeout_table->remove_entry(timestamp);
+			_hmap->del(full_hash,h_bucket,thread_id);
 		}
 
 
+		/**
+		 * free_memory_and_key -- calls two methods: one, to reclaim the memory that the eleent used; 
+		 *	two, a second method to remove the object hash from the hash table... 
+		*/
 
 		void			free_memory_and_key(LRU_element *le,uint32_t process,uint32_t hash_bucket, uint32_t full_hash, uint32_t timestamp) {
-			lru->return_to_free_mem(le);
-			lru->remove_key(hash_bucket,full_hash,process,timestamp);
+			this->return_to_free_mem(le);
+			this->remove_key(hash_bucket,full_hash,process,timestamp);
 		}
-
-
 
 
 
@@ -841,7 +923,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		void							*_region;
 		void 							*_endof_region;
-
+		//
 		size_t		 					_record_size;
 		size_t							_region_size;
 		//
@@ -857,7 +939,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		uint8_t							_reserve;
 		uint8_t							_max_tiers;
 		uint8_t							_thread_id;
-
+		//
 		uint32_t						_configured_tier_cooling;
 		double							_configured_shrinkage;
 
@@ -867,7 +949,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
  		KeyValueManager					*_timeout_table;
 		//
 		LRU_cache 						**_all_tiers;		// set by caller
-
+		//
 		Com_element						*_cascaded_com_area;   // if outsourcing tiers ....
 		Com_element						*_end_cascaded_com_area;
 

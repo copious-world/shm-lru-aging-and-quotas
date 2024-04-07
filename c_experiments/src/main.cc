@@ -80,6 +80,7 @@ using namespace node_shm;
 
 
 
+#include "node_shm_HH_for_test.h"
 
 // ---- ---- ---- ---- ---- ---- ---- ---
 
@@ -112,9 +113,41 @@ void print_stored(pair<uint32_t,uint32_t> *primary_storage,uint32_t print_max = 
 
 
 
+
+
+class Test_HH : public HH_map<> {
+
+  public:
+      Test_HH(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false)
+          : HH_map<>(region,seg_sz,max_element_count,num_threads,am_initializer) {
+      }
+
+
+		// get an idea, don't try locking or anything  (combined counts)
+		uint32_t get_buckt_count(uint32_t h_bucket) {
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
+			return get_buckt_count(controller);
+		}
+
+		uint32_t get_buckt_count(atomic<uint32_t> *controller) {
+			uint32_t controls = controller->load(std::memory_order_relaxed);
+			uint8_t counter = (uint8_t)((controls & DOUBLE_COUNT_MASK) >> QUARTER);  
+			return counter;
+		}
+
+};
+
+
+
+
+
 // -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
 
 SharedSegmentsManager *g_ssm_catostrophy_handler = nullptr;
+SharedSegmentsTForm<HH_map_test<>> *g_ssm_catostrophy_handler_custom = nullptr;
+
+
 volatile std::sig_atomic_t gSignalStatus;
 
 // -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
@@ -1122,7 +1155,7 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
 
   //
   try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
+    Test_HH *test_hh = new Test_HH(region, seg_sz, els_per_tier, num_procs, true);
     cout << test_hh->ok() << endl;
 
     //
@@ -1151,7 +1184,7 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
       uint32_t nn = els_per_tier/2;
       for ( uint32_t i = 0; i < nn; i++ ) {
         uint8_t count1;
-        count1 = sg_share_test_hh->get_buckt_count(i);
+        count1 = test_hh->get_buckt_count(i);
         cout << "combined count: " << (int)count1 << endl;
         pair<uint8_t,uint8_t> p = sg_share_test_hh->get_bucket_counts(i);
         cout << "odd bucket: " << (int)(p.first) << " :: " << (int)(p.second) << endl;
@@ -1166,33 +1199,6 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
   //
   pair<uint16_t,size_t> p = ssm->detach_all(true);
   cout << p.first << ", " << p.second << endl;
-
-}
-
-
-
-
-
-class Test_HH : public HH_map<> {
-
-  public:
-      Test_HH(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false)
-          : HH_map<>(region,seg_sz,max_element_count,num_threads,am_initializer) {
-      }
-
-
-		// get an idea, don't try locking or anything  (combined counts)
-		uint32_t get_buckt_count(uint32_t h_bucket) {
-			uint32_t *controllers = _region_C;
-			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			return get_buckt_count(controller);
-		}
-
-		uint32_t get_buckt_count(atomic<uint32_t> *controller) {
-			uint32_t controls = controller->load(std::memory_order_relaxed);
-			uint8_t counter = (uint8_t)((controls & DOUBLE_COUNT_MASK) >> QUARTER);  
-			return counter;
-		}
 
 }
 
@@ -1237,6 +1243,10 @@ void handle_catastrophic(int signal) {
   gSignalStatus = signal;
   if ( g_ssm_catostrophy_handler != nullptr ) {
     g_ssm_catostrophy_handler->detach_all(true);
+    exit(0);
+  }
+  if ( g_ssm_catostrophy_handler_custom != nullptr ) {
+    g_ssm_catostrophy_handler_custom->detach_all();
     exit(0);
   }
 }
@@ -1384,7 +1394,7 @@ void test_method_checks() {
 
   if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
 
-  uint8_t NUM_THREADS = 4;
+  [[maybe_unused]] uint8_t NUM_THREADS = 4;
   //
   try {
 
@@ -2993,6 +3003,169 @@ void test_some_bit_patterns_3(void) {   //  ----  ----  ----  ----  ----  ----  
 
 
 
+
+
+
+
+
+
+void test_hh_map_for_test_methods(void) {
+
+  int status = 0;
+
+  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsTForm<HH_map_test<>> *ssm = new SharedSegmentsTForm<HH_map_test<>>();
+
+  g_ssm_catostrophy_handler_custom = ssm;
+
+  uint32_t max_obj_size = 128;
+
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+  uint8_t num_threads = THREAD_COUNT;
+  uint32_t num_procs = num_threads;
+
+  cout << "test_hh_map_for_test_methods: # els: " << els_per_tier << endl;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+  //
+  key_t hh_key = hh_keys.front();
+  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
+  uint32_t seg_sz = ssm->get_size(hh_key);
+
+  try {
+    HH_map_test<> *test_hh = new HH_map_test<>(region, seg_sz, els_per_tier, num_procs, true);
+    cout << test_hh->ok() << endl;
+
+    uint64_t loaded_value = ((uint64_t)0xFFFFF << 32 | 0x1234);
+    auto time = now_time();
+    uint32_t back_to_base = 4;   // not an offset, since for the testing, this will just be the ref
+
+    //
+    cout << "T0: " << test_hh->_T0 << " buffer: " << test_hh->_T0->buffer << endl;
+    cout << "T1: " << test_hh->_T1 << " buffer: " << test_hh->_T1->buffer << endl;
+
+    hh_element *h1 = (hh_element *)(test_hh->_T0 + 1);
+    hh_element *h2 = (hh_element *)(test_hh->_T1 + 1);
+    //
+    cout << "h1: " << h1 << endl;
+    cout << "h2: " << h2 << endl;
+
+    test_hh->allocate_hh_element(test_hh->_T0,back_to_base,loaded_value,time);
+    test_hh->allocate_hh_element(test_hh->_T1,back_to_base,loaded_value,time+1);
+
+    back_to_base = 6;
+    loaded_value = ((uint64_t)0xFFFF7 << 32 | 0x2346);
+    test_hh->allocate_hh_element(test_hh->_T0,back_to_base,loaded_value,time+2);
+    test_hh->allocate_hh_element(test_hh->_T1,back_to_base,loaded_value,time+3);
+
+
+    loaded_value = ((uint64_t)0xEEEE7 << 32 | 0x9876);
+    time = now_time();
+
+    uint32_t h_bucket = 24;
+    test_hh->add_into_test_storage(nullptr,loaded_value,time,test_hh->_T0->buffer,h_bucket);
+    test_hh->add_into_test_storage(nullptr,loaded_value,time,test_hh->_T1->buffer,h_bucket);
+
+
+    for ( auto p : *(test_hh->_T0->test_it) ) {
+      cout << "T0 BUCKET:: " << p.first  << endl;
+      for ( auto p2 : p.second ) {
+        cout << "\tBUCKETS " << p2.first << "  " << hex <<  p2.second->_V << dec << endl;
+      }
+    }
+
+
+    for ( auto p : *(test_hh->_T1->test_it) ) {
+      cout << "T1 BUCKET:: " << p.first  << endl;
+      for ( auto p2 : p.second  ) {
+        cout << "\tBUCKETS " << p2.first << "  " << hex <<  p2.second->_V << dec << endl;
+      }
+    }
+
+    uint32_t h_start = 24;
+    uint32_t el_key = loaded_value & UINT32_MAX;
+
+    hh_element *ba = test_hh->bucket_at(test_hh->_T0->buffer,h_start,el_key);
+    //
+    cout << ba << endl;
+    if ( ba != nullptr ) {
+        cout << "BA " << hex <<  ba->_V << dec << endl;
+    }
+
+    try {
+
+      if ( test_hh-> remove_from_storage(h_start, el_key, test_hh->_T0->buffer) ) {
+        cout << "successfully removed" << endl;
+      }
+      //
+      if ( test_hh-> remove_from_storage(h_start, el_key, test_hh->_T0->buffer) ) {
+        cout << "successfully removed twice " << endl;
+      }
+
+    } catch ( void *err ) {
+      cout << "something broke" << endl;
+    }
+
+    //
+
+    for ( int i = 0; i < 8; i++ ) {
+      cout << std::hex << h1->_V << std::dec << "  --  " << bitset<32>(h1->c_bits)<< endl;
+      cout << std::hex << h2->_V << std::dec << "  --  " << bitset<32>(h2->c_bits)<< endl;
+      h1++; h2++;
+    }
+
+    cout << " get ref, del ref " << endl;
+    //
+    hh_element *hel = test_hh->get_ref(h_start, el_key, test_hh->_T0->buffer, test_hh->_T0->end);
+    //
+    cout << "hello .... " << hel << endl;
+    //
+    hel = test_hh->get_ref(h_start, el_key, test_hh->_T1->buffer, test_hh->_T1->end);
+
+    cout << "hello .... " << hel << endl;
+    if ( hel ) {
+      cout << "Give em: " << hex << hel->_V << dec << endl;
+      test_hh->del_ref(h_start, el_key, test_hh->_T1->buffer, test_hh->_T1->end);
+    } 
+
+
+    //
+    cout << endl << endl;
+
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
+
+
+
 /*
 
 
@@ -3072,8 +3245,9 @@ int main(int argc, char **argv) {
     //test_hh_map_methods3(); 
 
     // test_some_bit_patterns_2();  // auto last_view = (NEIGHBORHOOD - 1 - dist_base);
+    // test_some_bit_patterns_3();
 
-    test_some_bit_patterns_3();
+    test_hh_map_for_test_methods();
 
     //test_zero_above();
 
@@ -3086,101 +3260,3 @@ int main(int argc, char **argv) {
 
   return(0);
 }
-
-
-
-/*
-    vector<thread> v;
-    for (int n = 0; n < 10; ++n)
-        v.emplace_back(f, n);
-    for (auto& t : v)
-        t.join();
-*/
-
-
-
-
-
-/*
-
-
-
-    cout << "sizeof hh_element: " << sizeof(hh_element) << endl;
-
-    uint16_t my_uint = (1 << 7);
-    cout << my_uint << " " << (HOLD_BIT_SET & my_uint) << "   "  << bitset<16>(HOLD_BIT_SET) << "   "  << bitset<16>(my_uint) << endl;
-
-    uint16_t a = (my_uint<<1);
-    uint16_t b = (my_uint>>1);
-    
-    cout << countr_zero(my_uint) << " " << countr_zero(a)<< " " << countr_zero(b) << endl;
-#ifdef FFS
-      cout << FFS(my_uint) << " " << FFS(a)<< " " << FFS(b) << endl;
-#endif
-
-    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
-        cout << "countr_zero( " << bitset<8>(i) << " ) = "
-              << countr_zero(i) << '\n';
-
-#ifdef FFS
-    for (const uint8_t i : {0, 0b11111111, 0b00011100, 0b00011101})
-        cout << "countr_zero( " << bitset<8>(i) << " ) = "
-              << FFS(i) << '\n';
-#endif
-
-
-
-auto ms_since_epoch(std::int64_t m){
-  return std::chrono::system_clock::from_time_t(time_t{0})+std::chrono::milliseconds(m);
-}
-
-uint64_t timeSinceEpochMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-    std::chrono::system_clock::now().time_since_epoch()
-).count();
-
-
-int main()
-{
-    using namespace std::chrono;
- 
-    uint64_t ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-    std::cout << ms << " milliseconds since the Epoch\n";
- 
-    uint64_t sec = duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
-    std::cout << sec << " seconds since the Epoch\n";
- 
-    return 0;
-}
-
-
-milliseconds ms = duration_cast< milliseconds >(
-    system_clock::now().time_since_epoch()
-);
-
-*/
-
-
-/*
-template<typename T, typename OP>
-T manipulate_bit(std::atomic<T> &a, unsigned n, OP bit_op) {
-    static_assert(std::is_integral<T>::value, "atomic type not integral");
-
-    T val = a.load();
-    while (!a.compare_exchange_weak(val, bit_op(val, n)));
-
-    return val;
-}
-
-auto set_bit = [](auto val, unsigned n) { return val | (1 << n); };
-auto clr_bit = [](auto val, unsigned n) { return val & ~(1 << n); };
-auto tgl_bit = [](auto val, unsigned n) { return val ^ (1 << n); };
-
-int main() {
-    std::atomic<int> a{0x2216};
-    manipulate_bit(a, 3, set_bit);  // set bit 3
-    manipulate_bit(a, 7, tgl_bit);  // toggle bit 7
-    manipulate_bit(a, 13, clr_bit);  // clear bit 13
-    bool isset = (a.load() >> 5) & 1;  // testing bit 5
-}
-*/
-

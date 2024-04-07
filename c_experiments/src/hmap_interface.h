@@ -62,6 +62,18 @@ inline string map_maker_destruct(map<K,V> &jmap) {
 }
 
 
+
+static inline uint32_t now_time() {
+	//
+	uint32_t nowish = 0;
+	const auto right_now = chrono::system_clock::now();
+	nowish = chrono::system_clock::to_time_t(right_now);
+	//
+	return nowish;
+}
+
+
+
 #define WORD  (8*sizeof(uint32_t))		// 32 bits
 #define BIGWORD (8*sizeof(uint64_t))
 #define MOD(x, n) ((x) < (n) ? (x) : (x) - (n))
@@ -78,7 +90,6 @@ inline T CLZ(T x) {		// count leading zeros -- make sure it is not bigger than t
 #define SET(hh, i) (hh = (hh) | (1L << (i)))	// or in ith bit (ith bit set - rest 0)
 #define UNSET(hh, i) (hh = (hh) & ~(1L << (i)))	// and with ith bit 0 - rest 1 (think of as mask)
 //
-const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 //
 #define BitsPerByte 8
 #define HALF (sizeof(uint32_t)*BitsPerByte)  // should be 32
@@ -88,6 +99,7 @@ const uint64_t HASH_MASK = (((uint64_t)0) | ~(uint32_t)(0));  // 32 bits
 
 
 const uint32_t LOW_WORD = 0xFFFF;
+const uint64_t HASH_MASK = (((uint64_t)0) | LOW_WORD);  // 32 bits
 
 //
 // The control bit and the shared bit are mutually exclusive.
@@ -122,6 +134,66 @@ const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
 const uint32_t HOLD_BIT_EVEN_SLICE = (0x1 << (7));
 const uint32_t FREE_BIT_EVEN_SLICE_MASK = ~HOLD_BIT_EVEN_SLICE;
 
+// select bits for the key
+const uint32_t HH_SELECT_BIT_SHIFT = 30;
+const uint32_t HH_SELECTOR_SET_BIT = (1 << (HH_SELECT_BIT_SHIFT + 1));
+const uint32_t HH_SELECTOR_SET_BIT_MASK = (~HH_SELECTOR_SET_BIT);
+//
+const uint32_t HH_SELECTION_BIT = (1 << HH_SELECT_BIT_SHIFT);
+const uint32_t HH_SELECTION_BIT_MASK = (~HH_SELECTION_BIT);
+//
+const uint64_t HH_SELECTOR_SET_BIT64 = (1 << (HH_SELECT_BIT_SHIFT + 1));
+const uint64_t HH_SELECTOR_SET_BIT_MASK64 = (~HH_SELECTOR_SET_BIT64);
+
+
+const uint32_t HH_SELECT_BIT_INFO_MASK = (HH_SELECTION_BIT_MASK & HH_SELECTOR_SET_BIT_MASK);
+// ----
+
+static inline bool selector_bit_is_set(uint64_t hash64,uint8_t &selector) {
+	if ( (hash64 & HH_SELECTOR_SET_BIT64) != 0 ) {
+		if ( selector != 0x3 ) {
+			selector = hash64 & HH_SELECTION_BIT ? 1 : 0;
+			return true;
+		}
+	}
+	return false;
+}
+
+
+static inline bool selector_bit_is_set(uint32_t hash_bucket,uint8_t &selector) {
+	if ( (hash_bucket & HH_SELECTOR_SET_BIT) != 0 ) {
+		if ( selector != 0x3 ) {
+			selector =  hash_bucket & HH_SELECTION_BIT ? 1 : 0;
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * stamp_key
+ * 
+ * 		The full hash is stored in the top part of a 64 bit word. While the bucket information
+ * 		is stored in the lower half.
+ * 
+ * 		| full 32 bit hash || control bits (2 to 4) | bucket number |
+ * 		|   32 bits			| 32 bits ---->					        |
+ * 							| 4 bits				| 28 bits		|  // 28 bits for 500 millon entries
+ * 
+*/
+static inline uint32_t stamp_key(uint32_t h_bucket,uint8_t info) {
+	uint32_t info32 = info & 0x2;   // info will be 0 or 1 unless the app is special (second bit is the selection set indicator)
+	info32 <<= HH_SELECT_BIT_SHIFT;
+	return (h_bucket | info32);
+}
+
+/**
+ * clear_selector_bit
+*/
+static inline uint32_t clear_selector_bit(uint32_t h) {
+	h = (h & HH_SELECT_BIT_INFO_MASK);  // clear both bits
+	return h;
+}
 
 
 
@@ -176,13 +248,6 @@ static inline uint32_t get_partner_thread_id(uint32_t target, uint32_t thread_id
 
 
 
-// select bits for the key
-
-const uint32_t HH_SELECT_BIT = (1 << 24);
-const uint32_t HH_SELECT_BIT_MASK = (~HH_SELECT_BIT);
-const uint64_t HH_SELECT_BIT64 = (1 << 24);
-const uint64_t HH_SELECT_BIT_MASK64 = (~HH_SELECT_BIT64);
-
 
 typedef struct BucketSliceStats {
 	uint8_t			count	: 5;
@@ -235,11 +300,12 @@ class HMap_interface {
 	public:
 		virtual void 		value_restore_runner(void) = 0;
 		virtual void		random_generator_thread_runner(void) = 0;
-		virtual uint64_t	update(uint32_t hash_bucket, uint32_t el_key, uint32_t v_value,uint8_t thread_id = 1) = 0;
+		virtual uint64_t	update(uint32_t el_key, uint32_t hash_bucket, uint32_t v_value,uint8_t thread_id = 1) = 0;
 		virtual uint32_t	get(uint64_t key,uint8_t thread_id = 1) = 0;
 		virtual uint32_t	get(uint32_t key,uint32_t bucket,uint8_t thread_id = 1) = 0;
 		virtual uint8_t		get_bucket(uint32_t h, uint32_t xs[32]) = 0;
 		virtual uint32_t	del(uint64_t key,uint8_t thread_id = 1) = 0;
+		virtual uint32_t	del(uint32_t key,uint32_t bucket,uint8_t thread_id = 1) = 0;
 		virtual void		clear(void) = 0;
 		virtual uint64_t	add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
