@@ -1168,7 +1168,10 @@ class HH_map_test : public HMap_interface, public Random_bits_generator<> {
 			//
 
 			// VERSION : TEST ADD VALUE
-			bool quick_put_ok = add_into_test_storage(hash_ref, loaded_value, store_time, buffer, h_bucket);
+			uint32_t value = loaded_value & UINT32_MAX;
+			uint32_t el_key = (loaded_value >> 32) & UINT32_MAX;
+
+			bool quick_put_ok = add_into_test_storage(hash_ref, h_bucket, el_key, value, store_time, buffer);
 			//
 			if ( quick_put_ok ) {   // now unlock the bucket... 
 				this->slice_unlock_counter(controller,which_table,thread_id);
@@ -1328,10 +1331,10 @@ class HH_map_test : public HMap_interface, public Random_bits_generator<> {
 
 		// add_into_test_storage
 		//
-		bool add_into_test_storage([[maybe_unused]] hh_element *hash_base, uint64_t loaded_value, uint32_t time, hh_element *buffer,uint32_t h_bucket) {
+		bool add_into_test_storage([[maybe_unused]] hh_element *hash_base, uint32_t h_bucket, uint32_t el_key, uint32_t value, uint32_t time, hh_element *buffer) {
+			//								
+			uint64_t loaded_value = ((uint64_t)el_key << 32) | value;  // just unloads it (was index)
 			//
-			uint32_t el_key = (uint32_t)((loaded_value >> HALF) & HASH_MASK);
-
 			if ( buffer == _T0->buffer ) {
 				//
 				(* _T0->test_it)[h_bucket][el_key] = allocate_hh_element(_T0,h_bucket,loaded_value,time);
@@ -1349,7 +1352,7 @@ class HH_map_test : public HMap_interface, public Random_bits_generator<> {
 		/**
 		 * TESINT remove_from_storage
 		*/
-		bool remove_from_storage(uint32_t h_bucket,uint32_t el_key, hh_element *buffer) {
+		bool remove_from_storage(uint32_t h_bucket, uint32_t el_key, hh_element *buffer) {
 			hh_element *el = nullptr;
 			//
 			if ( buffer == _T0->buffer ) {
@@ -1426,7 +1429,7 @@ class HH_map_test : public HMap_interface, public Random_bits_generator<> {
 				} else {
 					//	save the old value
 					uint32_t tmp_key = hash_base->_kv.key;
-					uint64_t loaded_value = (((uint64_t)tmp_value) << HALF) | tmp_key;
+					uint64_t loaded_value = (((uint64_t)tmp_key) << HALF) | tmp_value;
 					// new values
 					hash_base->_kv.value = offset_value;  // put in the new values
 					hash_base->_kv.key = el_key;
@@ -1483,8 +1486,8 @@ class HH_map_test : public HMap_interface, public Random_bits_generator<> {
 				h_bucket = clear_selector_bit(h_bucket);
 			} else return UINT64_MAX;
 			//
-			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
-			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
+			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
+			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
 			//
 			//uint64_t loaded_value = (((uint64_t)v_value) << HALF) | el_key;
 			//
@@ -1526,16 +1529,20 @@ class HH_map_test : public HMap_interface, public Random_bits_generator<> {
 			//
 			uint8_t selector = 0;
 			if ( selector_bit_is_set(h_bucket,selector) ) {
+cout << "STORAGE SELECTOR WAS SET: " << (int)selector << endl;
 				h_bucket = clear_selector_bit(h_bucket);
+cout << "HH_SELECT_BIT_SHIFT: " << bitset<32>(h_bucket) <<  endl;
 			} else return UINT32_MAX;
 			//
-			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
-			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
+			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
+			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
 			//
 			//this->bucket_lock(h_bucket);
 			hh_element *storage_ref = get_ref(h_bucket, el_key, buffer, end);
 			//
 			if ( storage_ref == nullptr ) {
+
+cout << "STORAGE REF IS NULL: " << endl;
 				//this->store_unlock_controller(h_bucket);
 				return UINT32_MAX;
 			}
@@ -1564,8 +1571,8 @@ class HH_map_test : public HMap_interface, public Random_bits_generator<> {
 				h_bucket = clear_selector_bit(h_bucket);
 			} else return UINT32_MAX;
 			//
-			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
-			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
+			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
+			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
 			//
 			atomic<uint32_t> *controller = this->slice_bucket_lock(h_bucket,selector,thread_id);
 			if ( controller ) {

@@ -3074,36 +3074,50 @@ void test_hh_map_for_test_methods(void) {
     test_hh->allocate_hh_element(test_hh->_T1,back_to_base,loaded_value,time+1);
 
     back_to_base = 6;
-    loaded_value = ((uint64_t)0xFFFF7 << 32 | 0x2346);
+    loaded_value = ((uint64_t)0xFFFF7  << 32 | 0x2346);
     test_hh->allocate_hh_element(test_hh->_T0,back_to_base,loaded_value,time+2);
     test_hh->allocate_hh_element(test_hh->_T1,back_to_base,loaded_value,time+3);
 
 
-    loaded_value = ((uint64_t)0xEEEE7 << 32 | 0x9876);
+    loaded_value = ((uint64_t)0xEEEE7  << 32 | 0x9876);
     time = now_time();
 
+
+    uint32_t el_key = 0xEEEE7;
     uint32_t h_bucket = 24;
-    test_hh->add_into_test_storage(nullptr,loaded_value,time,test_hh->_T0->buffer,h_bucket);
-    test_hh->add_into_test_storage(nullptr,loaded_value,time,test_hh->_T1->buffer,h_bucket);
+    // ----
+    uint32_t value = loaded_value & UINT32_MAX;
+    el_key = (loaded_value >> 32) & UINT32_MAX;
+
+    test_hh->add_into_test_storage(nullptr,h_bucket,el_key,value,time,test_hh->_T0->buffer);
+    test_hh->add_into_test_storage(nullptr,h_bucket,el_key,value,time,test_hh->_T1->buffer);
+
+
+    uint32_t el_key_2 = 0xEEEE8;
+    uint32_t h_bucket_2 = 29;
+    uint32_t value_2 = 0xAE26;
+
+
+    test_hh->add_into_test_storage(nullptr,h_bucket_2,el_key_2,value_2,time,test_hh->_T0->buffer);
+    test_hh->add_into_test_storage(nullptr,h_bucket_2,el_key_2,value_2,time,test_hh->_T1->buffer);
 
 
     for ( auto p : *(test_hh->_T0->test_it) ) {
       cout << "T0 BUCKET:: " << p.first  << endl;
       for ( auto p2 : p.second ) {
-        cout << "\tBUCKETS " << p2.first << "  " << hex <<  p2.second->_V << dec << endl;
+        cout << "\tBUCKETS " << hex << p2.first << "  " <<  p2.second->_V << dec << endl;
       }
     }
-
 
     for ( auto p : *(test_hh->_T1->test_it) ) {
       cout << "T1 BUCKET:: " << p.first  << endl;
       for ( auto p2 : p.second  ) {
-        cout << "\tBUCKETS " << p2.first << "  " << hex <<  p2.second->_V << dec << endl;
+        cout << "\tBUCKETS " << hex << p2.first << "  " <<  p2.second->_V << dec << endl;
       }
     }
 
     uint32_t h_start = 24;
-    uint32_t el_key = loaded_value & UINT32_MAX;
+    el_key = (loaded_value >> 32) & UINT32_MAX;
 
     hh_element *ba = test_hh->bucket_at(test_hh->_T0->buffer,h_start,el_key);
     //
@@ -3140,14 +3154,29 @@ void test_hh_map_for_test_methods(void) {
     //
     cout << "hello .... " << hel << endl;
     //
+
+    h_bucket = stamp_key(h_bucket,1);
+    uint32_t big_V = test_hh->get(el_key,h_bucket,1);
+
+    cout << "big_V: " <<  std::hex <<  big_V << std::dec << endl;
+
     hel = test_hh->get_ref(h_start, el_key, test_hh->_T1->buffer, test_hh->_T1->end);
 
-    cout << "hello .... " << hel << endl;
+    cout << "hello delete.... " << hel << endl;
     if ( hel ) {
       cout << "Give em: " << hex << hel->_V << dec << endl;
       test_hh->del_ref(h_start, el_key, test_hh->_T1->buffer, test_hh->_T1->end);
-    } 
+    }
 
+    hel = test_hh->get_ref(h_bucket_2, el_key_2, test_hh->_T1->buffer, test_hh->_T1->end);
+    if ( hel ) {
+      cout << "Give em: " << hex << hel->_V << dec << endl;
+      test_hh->del(el_key_2,h_bucket_2,1);
+      hel = test_hh->get_ref(h_bucket_2, el_key_2, test_hh->_T1->buffer, test_hh->_T1->end);
+      if ( hel ) {
+        cout << "WHAT THE " << hel << endl;
+      }
+    }
 
     //
     cout << endl << endl;

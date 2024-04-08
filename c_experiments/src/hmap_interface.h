@@ -182,7 +182,7 @@ static inline bool selector_bit_is_set(uint32_t hash_bucket,uint8_t &selector) {
  * 
 */
 static inline uint32_t stamp_key(uint32_t h_bucket,uint8_t info) {
-	uint32_t info32 = info & 0x2;   // info will be 0 or 1 unless the app is special (second bit is the selection set indicator)
+	uint32_t info32 = info | 0x2;   // info will be 0 or 1 unless the app is special (second bit is the selection set indicator)
 	info32 <<= HH_SELECT_BIT_SHIFT;
 	return (h_bucket | info32);
 }

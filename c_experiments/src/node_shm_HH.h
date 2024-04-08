@@ -1467,7 +1467,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				} else {
 					//	save the old value
 					uint32_t tmp_key = hash_base->_kv.key;
-					uint64_t loaded_value = (((uint64_t)tmp_value) << HALF) | tmp_key;
+					uint64_t loaded_value = (((uint64_t)tmp_key) << HALF) | tmp_value;
 					// new values
 					hash_base->_kv.value = offset_value;  // put in the new values
 					hash_base->_kv.key = el_key;
@@ -1524,10 +1524,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				h_bucket = clear_selector_bit(h_bucket);
 			} else return UINT64_MAX;
 			//
-			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
-			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
+			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
+			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
 			//
-			//uint64_t loaded_value = (((uint64_t)v_value) << HALF) | el_key;
+			//uint64_t loaded_value = (((uint64_t)el_key) << HALF) | v_value;
 			//
 			atomic<uint32_t> *controller = this->slice_bucket_lock(h_bucket,selector,thread_id);
 			if ( controller ) {
@@ -1570,8 +1570,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			} else return UINT32_MAX;
 
 			//
-			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
-			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
+			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
+			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
 			//
 			//this->bucket_lock(h_bucket);
 			hh_element *storage_ref = get_ref(h_bucket, el_key, buffer, end);
@@ -1605,8 +1605,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				h_bucket = clear_selector_bit(h_bucket);
 			} else return UINT32_MAX;
 			//
-			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
-			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
+			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
+			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
 			//
 			atomic<uint32_t> *controller = this->slice_bucket_lock(h_bucket,selector,thread_id);
 			if ( controller ) {
@@ -1633,8 +1633,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			} else return UINT8_MAX;
 
 			//
-			hh_element *buffer = (selector ? _region_HV_0 : _region_HV_1);
-			hh_element *end = (selector ? _region_HV_0_end : _region_HV_1_end);
+			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
+			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
+			//
 			hh_element *next = bucket_at(buffer,h_bucket);
 			next = el_check_end(next,buffer,end);
 			auto c = next->c_bits;
