@@ -3171,7 +3171,19 @@ void test_hh_map_for_test_methods(void) {
     hel = test_hh->get_ref(h_bucket_2, el_key_2, test_hh->_T1->buffer, test_hh->_T1->end);
     if ( hel ) {
       cout << "Give em: " << hex << hel->_V << dec << endl;
+      cout << " now delete " << endl;
+      //
+      h_bucket_2 = stamp_key(h_bucket_2,1);
+
+      uint32_t v_value = 0xABADFEE;
+      test_hh->update(el_key_2,h_bucket_2,v_value,1);
+      //
+      auto was_stored = test_hh->get(el_key_2,h_bucket_2,1);
+
+      cout << "was_stored: " << hex << was_stored << dec << endl;
+      //
       test_hh->del(el_key_2,h_bucket_2,1);
+      //
       hel = test_hh->get_ref(h_bucket_2, el_key_2, test_hh->_T1->buffer, test_hh->_T1->end);
       if ( hel ) {
         cout << "WHAT THE " << hel << endl;

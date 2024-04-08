@@ -1575,8 +1575,15 @@ cout << "STORAGE REF IS NULL: " << endl;
 			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
 			//
 			atomic<uint32_t> *controller = this->slice_bucket_lock(h_bucket,selector,thread_id);
+cout << "del controller: " << controller << endl;
+
 			if ( controller ) {
+
+cout << "del controller: " << controller << endl;
+
 				uint32_t i = del_ref(h_bucket, el_key, buffer, end);
+cout << "del i: "  << i << endl;
+
 				if ( i == UINT32_MAX ) {
 					this->slice_unlock_counter(controller,selector,thread_id);
 				} else {
