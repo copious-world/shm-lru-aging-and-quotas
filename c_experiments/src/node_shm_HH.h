@@ -492,7 +492,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		void share_lock(void) {
 #ifndef __APPLE__
 				while ( _random_gen_thread_lock->test() ) {  // if not cleared, then wait
-					_random_gen_thread_lock->wait();
+					_random_gen_thread_lock->wait(true);
 				};
 				while ( !_random_gen_thread_lock->test_and_set() );
 #else
@@ -522,8 +522,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			while ( true ) {
 #ifndef __APPLE__
 				do {
-					_random_gen_thread_lock->wait();
-				} while ( !_random_gen_thread_lock->test() )
+					_random_gen_thread_lock->wait(true);
+				} while ( !_random_gen_thread_lock->test() );
 #else
 				do {
 					thread_sleep(10);
@@ -1246,7 +1246,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		void wake_up_one_restore([[maybe_unused]] uint32_t h_start) {
 #ifndef __APPLE__
 			do {
-				_sleeping_reclaimer.test_and_set()
+				_sleeping_reclaimer.test_and_set();
 			} while ( !(_sleeping_reclaimer.test(std::memory_order_acquire)) );
 			_sleeping_reclaimer.notify_one();
 #endif

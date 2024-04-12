@@ -1107,8 +1107,6 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
 
   int status = 0;
 
-
-
   memset(my_zero_count,0,2048*256*sizeof(uint32_t));
 
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----

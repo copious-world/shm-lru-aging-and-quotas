@@ -181,7 +181,7 @@ class SharedSegments {
 		*/
 		void _application_removals([[maybe_unused]] key_t key) {}
 
-		size_t detach(key_t key,bool forceDestroy) {
+		int detach(key_t key,bool forceDestroy) {
 			//
 			int status = this->_detach_op(key,forceDestroy);
 			if ( status == 0 ) {

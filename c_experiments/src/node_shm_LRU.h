@@ -768,7 +768,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		void			local_evictor(void) {   // parent caller executes a while loop and determins if it is still running
 			//
 #ifndef __APPLE__
-			_reserve_evictor->wait(std::memory_order_acquire);
+			_reserve_evictor->wait(true,std::memory_order_acquire);
 #endif
 			uint8_t thread_id = this->_thread_id;
 			if ( _Tier+1 < _max_tiers ) {
