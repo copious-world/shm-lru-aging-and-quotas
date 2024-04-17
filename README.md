@@ -58,3 +58,53 @@ Clients will have access to methods for changing configurations. Each change wil
 * Two-way Linear Probing Revisited - Again double hashing
 
 * RDCSS - 
+
+
+
+
+## Hash Map Interface
+
+The hash map interface, provides the implementation outline for the customized hop-scotch hash used in the loopup implementation.
+
+```c++
+class HMap_interface {
+	protected:
+	
+		// Internal thread dependent operation.
+		virtual void 		value_restore_runner(void) = 0;
+		virtual void		random_generator_thread_runner(void) = 0;
+		
+	public:
+	
+		// CRUD operations
+		virtual uint64_t	add_key_value(uint32_t el_match_key,uint32_t hash_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
+		virtual uint64_t	update(uint32_t el_match_key, uint32_t hash_bucket, uint32_t v_value,uint8_t thread_id = 1) = 0;
+		virtual uint32_t	get(uint32_t el_match_key,uint32_t hash_bucket,uint8_t thread_id = 1) = 0;
+		virtual uint8_t		get_bucket(uint32_t h, uint32_t xs[32]) = 0;
+		virtual uint32_t	del(uint32_t el_match_key,uint32_t hash_bucket,uint8_t thread_id = 1) = 0;
+		
+		virtual uint32_t	get(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
+		virtual uint32_t	del(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
+
+		// management other than initialization
+		virtual void		clear(void) = 0;
+		virtual void		set_random_bits(void *shared_bit_region) = 0;
+};
+
+```
+
+### Method parameter pattern
+
+Take note of the parameter pattern. Each method identifies the data access element as by its element match key `el_match_key` or hash key. A second parameter,  `hash_bucket` is also passed and may carry augmenting information. A third parameter is a thread id, which has use in the management of atomic contention.
+
+The first parameter, the hash key is a 32 bit hash, which is to be chosen by the application. For best results, it should have a low collision possibility. But, the key may represent a hash space that is much larger that the table (the usual hash table game). So, the methods expect that application to supply some approximation to the bucket.
+
+The second parameter should be the application's idea of the bucket number as derived from the hash key. This second parameter `hash_bucket` should be augemented except in the case of the element being added. The `hash_bucket` must not be augmented when passed to `add_key_value` and it must be augmented otherwise.
+
+Some code may use a 64 bit value to carry both the 32 bit hash and the augmented bucket index. Or the application may consistently keep these separate. For instance, in a node.js application, integers passed into modules can be expected to be 32 bits. While c++ applications may deal easily with 64 bit words. (This situation may change, but it is illustrative of the way the full 64 bits may be passed around.) The methods use two 32 bit words to accomodate the more general use case, but 64 bit single word overloads of the methods are supplied.
+
+#### Augmentation
+
+What does it mean for the hash bucket to be augmented?
+
+A single 32 bit word is allocate to the hash bucket, but the maximum number of buckets in a tier has to fit within memory on smaller computers. Furthermore, it is unlikely that more than 2^28 elements will be stored in a single tier. So, the top four bits of the the bucket index may be used to indicate a slice of memory (shard) in which parallel hash tables may reside. Four bits are set aside by this implementation; yet, maybe only two will be neeed. The top two bits may have values **0**,**1** or **3**. The **0** value indicates that the entry has yet to be added to the table (so methods will reject using it if the bit is not set.) The **1** value indicates that the entry has been store and that it is to be found in the first sharded table (**0** table). The **3** value indicates that the entry has been stored and has is to be found in the second shard (**1** table).

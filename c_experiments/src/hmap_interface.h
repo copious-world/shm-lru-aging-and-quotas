@@ -300,14 +300,13 @@ class HMap_interface {
 	public:
 		virtual void 		value_restore_runner(void) = 0;
 		virtual void		random_generator_thread_runner(void) = 0;
-		virtual uint64_t	update(uint32_t el_key, uint32_t hash_bucket, uint32_t v_value,uint8_t thread_id = 1) = 0;
-		virtual uint32_t	get(uint64_t key,uint8_t thread_id = 1) = 0;
-		virtual uint32_t	get(uint32_t key,uint32_t bucket,uint8_t thread_id = 1) = 0;
-		virtual uint8_t		get_bucket(uint32_t h, uint32_t xs[32]) = 0;
-		virtual uint32_t	del(uint64_t key,uint8_t thread_id = 1) = 0;
-		virtual uint32_t	del(uint32_t key,uint32_t bucket,uint8_t thread_id = 1) = 0;
+		virtual uint64_t	update(uint32_t el_match_key, uint32_t hash_bucket, uint32_t v_value,uint8_t thread_id = 1) = 0;
+		virtual uint32_t	get(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
+		virtual uint32_t	get(uint32_t el_match_key,uint32_t hash_bucket,uint8_t thread_id = 1) = 0;
+		virtual uint32_t	del(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
+		virtual uint32_t	del(uint32_t el_match_key,uint32_t hash_bucket,uint8_t thread_id = 1) = 0;
 		virtual void		clear(void) = 0;
-		virtual uint64_t	add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
+		virtual uint64_t	add_key_value(uint32_t el_match_key,uint32_t hash_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 };
 

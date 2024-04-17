@@ -27,6 +27,7 @@
 
 #include "hmap_interface.h"
 #include "random_selector.h"
+#include "entry_holder.h"
 
 
 /*
@@ -81,6 +82,12 @@ typedef struct PRODUCT_DESCR {
 	uint32_t		partner_thread;
 	uint32_t		stats;
 } proc_descr;
+
+
+
+/*
+
+*/
 
 
 
@@ -1287,7 +1294,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
 			//
 			uint32_t store_time = now_time(); // now
-			bool quick_put_ok = pop_until_oldest(hash_ref, loaded_value, store_time, buffer, end);
+			bool quick_put_ok = pop_until_oldest(hash_ref, loaded_value, store_time, buffer, end, thread_id);
 			//
 			if ( quick_put_ok ) {   // now unlock the bucket... 
 				this->slice_unlock_counter(controller,which_table,thread_id);
@@ -1368,7 +1375,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * c_bits - the c_bits field from hash_ref
 		*/
 
-		uint8_t usurp_membership_position(hh_element *hash_ref, uint32_t c_bits,hh_element *buffer,hh_element *end) {
+		uint8_t usurp_membership_position(hh_element *hash_ref, uint32_t c_bits, hh_element *buffer, hh_element *end) {
 			uint8_t k = 0xFF & (c_bits >> 1);  // have stored the offsets to the bucket head
 			hh_element *base_ref = (hash_ref - k);  // base_ref ... the base that owns the spot
 			base_ref = el_check_beg_wrap(base_ref,buffer,end);
@@ -1621,43 +1628,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			return UINT32_MAX;
 		}
 
-		
-		/**
-		 * get_bucket -- bucket probing -- return a whole bucket... (all values)
-		*/
-		uint8_t get_bucket(uint32_t h_bucket, uint32_t xs[32]) {
-			//
-			uint8_t selector = 0;
-			if ( selector_bit_is_set(h_bucket,selector) ) {
-				h_bucket = clear_selector_bit(h_bucket);
-			} else return UINT8_MAX;
-
-			//
-			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
-			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
-			//
-			hh_element *next = bucket_at(buffer,h_bucket);
-			next = el_check_end(next,buffer,end);
-			auto c = next->c_bits;
-			if ( ~(c & 0x1) ) {
-				uint8_t offset = (c >> 0x1);
-				next -= offset;
-				next = el_check_beg_wrap(next,buffer,end);
-				c =  next->c_bits;
-			}
-			//
-			uint8_t count = 0;
-			hh_element *base = next;
-			while ( c ) {
-				next = base;
-				uint8_t offset = get_b_offset_update(c);				
-				next = el_check_end(next + offset,buffer,end);
-				xs[count++] = next->_kv.value;
-			}
-			//
-			return count;	// no value  (values will always be positive, perhaps a hash or'ed onto a 0 value)
-		}
-
 
 
 	protected:			// these may be used in a test class...
@@ -1689,7 +1659,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 					if ( el_key == next->_kv.key ) {
 						return next;
 					}
-				}
+				}										// H by reference against H constant
 			} while ( bucket_bits->compare_exchange_weak(H,H,std::memory_order_acq_rel)  );  // if it changes try again 
 			return nullptr;  // found nothing and the bit pattern did not change.
 		}
@@ -1729,6 +1699,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		/**
 		 * place_taken_spots
+		 * 
+		 * c contains bucket starts..  Each one of these may be busy....
+		 * but, this just sets the taken spots; so, the taken spots may be treated as atomic...
+		 * 
 		*/
 		void place_taken_spots(hh_element *hash_ref, uint32_t hole, uint32_t c, hh_element *buffer, hh_element *end) {
 			hh_element *vb_probe = hash_ref;
@@ -1739,6 +1713,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				uint8_t offset = get_b_offset_update(c);			
 				vb_probe += offset;
 				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+				//
+				// may check to see if the value settles down...
 				vb_probe->taken_spots |= (1 << (hole - offset));   // the bit is not as far out
 			}
 			//
@@ -1940,6 +1916,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		/**
 		 * seek_min_member
+		 * 
+		 * The min member could change if there is a usurpation.
 		*/
 		void seek_min_member(hh_element **min_probe_ref, hh_element **min_base_ref, uint32_t &min_base_offset, hh_element *base_probe, uint32_t time, uint32_t offset, uint32_t offset_nxt_base, hh_element *buffer, hh_element *end) {
 			auto c = base_probe->c_bits;		// nxt is the membership of this bucket that has been found
@@ -2000,9 +1978,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		/**
 		 * inner_bucket_time_swaps
+		 * 
+		 * Only one thread can time swap its own elements.
+		 * But, a usurping thread can interfere with one element.
 		*/
 
-		uint32_t inner_bucket_time_swaps(hh_element *hash_ref,uint8_t hole,uint64_t &v_passed,uint32_t &time,hh_element *buffer, hh_element *end) {
+		uint32_t inner_bucket_time_swaps(hh_element *hash_ref,uint8_t hole,uint64_t &v_passed,uint32_t &time,hh_element *buffer, hh_element *end, [[maybe_unused]] uint8_t thread_id) {
 			uint32_t a = hash_ref->c_bits;
 			a = a & zero_above(hole);
 			//
@@ -2016,6 +1997,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				offset = get_b_offset_update(a);
 				vb_probe += offset;
 				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+				// if this is being usurpred, then it can't be accessible... check thread_id
 				swap(v_passed,vb_probe->_V);
 				time = stamp_offset(time,offset);
 				swap(time,vb_probe->taken_spots);  // when the element is not a bucket head, this is time... 
@@ -2040,7 +2022,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * 
 		*/
 
-		bool pop_until_oldest(hh_element *hash_base, uint64_t &v_passed, uint32_t &time, hh_element *buffer, hh_element *end_buffer) {
+		bool pop_until_oldest(hh_element *hash_base, uint64_t &v_passed, uint32_t &time, hh_element *buffer, hh_element *end_buffer, uint8_t thread_id) {
 			if ( v_passed == 0 ) return false;  // zero indicates empty...
 			//
 			hh_element *vb_probe = hash_base;
@@ -2056,7 +2038,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			hash_base->c_bits = a;
 			hash_base->taken_spots = b;
 			//
-			uint32_t offset = inner_bucket_time_swaps(hash_base,hole,v_passed,time,buffer,end_buffer);
+			uint32_t offset = inner_bucket_time_swaps(hash_base,hole,v_passed,time,buffer,end_buffer);  // thread id
 			// offset will be > 0
 
 			// now the oldest element in this bucket is in hand and may be stored if interleaved buckets don't
@@ -2069,7 +2051,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			if ( b == UINT32_MAX ) {  // v_passed can't be zero. Instead it is the oldest of the (maybe) full bucket.
 				// however, other buckets are stored interleaved. These buckets have not been examined for maybe 
-				// swapping with the current bucket oldest value.
+				// swapping with the current bucket oldest value.  (enter into territory of another bucket).
 				pop_oldest_full_bucket(hash_base,c,v_passed,time,offset,buffer,end_buffer);
 				//
 				//h_bucket += offset;
@@ -2078,7 +2060,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				vb_probe = hash_base + hole;
 				vb_probe->c_bits = (hole << 1);
 				vb_probe->taken_spots = time;
-				place_taken_spots(hash_base, hole, c, buffer, end_buffer);
+				place_taken_spots(hash_base, hole, c, buffer, end_buffer);  c contains bucket starts..
 			}
 
 			// the oldest element should now be free cell or at least (if it was something deleted) all the older values

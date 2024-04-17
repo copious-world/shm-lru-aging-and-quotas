@@ -136,6 +136,45 @@ class Test_HH : public HH_map<> {
 			return counter;
 		}
 
+
+
+		/**
+		 * get_bucket -- bucket probing -- return a whole bucket... (all values)
+		*/
+		uint8_t get_bucket(uint32_t h_bucket, uint32_t xs[32]) {
+			//
+			uint8_t selector = 0;
+			if ( selector_bit_is_set(h_bucket,selector) ) {
+				h_bucket = clear_selector_bit(h_bucket);
+			} else return UINT8_MAX;
+
+			//
+			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
+			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
+			//
+			hh_element *next = bucket_at(buffer,h_bucket);
+			next = el_check_end(next,buffer,end);
+			auto c = next->c_bits;
+			if ( ~(c & 0x1) ) {
+				uint8_t offset = (c >> 0x1);
+				next -= offset;
+				next = el_check_beg_wrap(next,buffer,end);
+				c =  next->c_bits;
+			}
+			//
+			uint8_t count = 0;
+			hh_element *base = next;
+			while ( c ) {
+				next = base;
+				uint8_t offset = get_b_offset_update(c);				
+				next = el_check_end(next + offset,buffer,end);
+				xs[count++] = next->_kv.value;
+			}
+			//
+			return count;	// no value  (values will always be positive, perhaps a hash or'ed onto a 0 value)
+		}
+
+
 };
 
 

@@ -11,6 +11,27 @@
             "program": "${workspaceFolder}/build/atests",
             "args": [],
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "C++ Remote Launch",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceRoot}/myprogram",
+            "miDebuggerServerAddress": "localhost:9091",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceRoot}",
+            "environment": [],
+            "externalConsole": true,
+            "linux": {
+              "MIMode": "gdb"
+            },
+            "osx": {
+              "MIMode": "gdb"
+            },
+            "windows": {
+              "MIMode": "gdb"
+            }
         }
     ]
 }

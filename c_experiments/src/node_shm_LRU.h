@@ -103,6 +103,8 @@ const uint32_t TOTAL_ATOMIC_OFFSET = (OFFSET_TO_HASH + sizeof(uint64_t));
 const uint32_t DEFAULT_MICRO_TIMEOUT = 2; // 2 seconds
 
 
+// uint64_t hash is the augmented hash...
+
 // five fences (??)
 typedef struct COM_ELEMENT {
 	atomic<COM_BUFFER_STATE>	_marker;	// control over accessing the message buffer
