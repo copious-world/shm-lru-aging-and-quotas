@@ -610,7 +610,7 @@ class TierAndProcManager : public LRU_Consts {
 									// 	the lru calls upon the hash table to store the hash/offset pair...
 									//
 									auto thread_id = lru->_thread_id;
-									uint64_t augmented_hash = this->store_in_hash(hash64,target_offset,thread_id);
+									uint64_t augmented_hash = this->store_in_hash(hash64,offset,thread_id);
 
 									if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
 										write_offset_here[0] = offset;

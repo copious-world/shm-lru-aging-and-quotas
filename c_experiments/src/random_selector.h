@@ -203,8 +203,9 @@ public:
 		_shared_bits = _shared_bits_regions[_current_shared_region];
 	}
 
-
-	// 
+	/**
+	 * regenerate_shared
+	*/
 	void regenerate_shared(uint8_t region_selector) {
 		//
 		if ( (region_selector < SELECTOR_MAX) && (_shared_bits_regions[region_selector] != nullptr) ) {

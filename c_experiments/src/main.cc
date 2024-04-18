@@ -2528,7 +2528,7 @@ void test_hh_map_methods3(void) {
     offset = 0;
     hole = 32;
     //
-    offset = test_hh->inner_bucket_time_swaps(hash_ref,hole,v_passed,time, buffer, end);
+    offset = test_hh->inner_bucket_time_swaps(hash_ref,hole,v_passed,time, buffer, end, 1);
 
     cout << "before pop_oldest_full_bucket: " <<  bitset<32>(c) << endl;
     cout << "before pop_oldest_full_bucket: " << (int)offset << endl;

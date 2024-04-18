@@ -2015,7 +2015,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			hash_base->c_bits = a;
 			hash_base->taken_spots = b;
 			//
-			uint32_t offset = inner_bucket_time_swaps(hash_base,hole,v_passed,time,buffer,end_buffer);  // thread id
+			uint32_t offset = inner_bucket_time_swaps(hash_base,hole,v_passed,time,buffer,end_buffer,thread_id);  // thread id
 			// offset will be > 0
 
 			// now the oldest element in this bucket is in hand and may be stored if interleaved buckets don't
@@ -2037,7 +2037,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				vb_probe = hash_base + hole;
 				vb_probe->c_bits = (hole << 1);
 				vb_probe->taken_spots = time;
-				place_taken_spots(hash_base, hole, c, buffer, end_buffer);  c contains bucket starts..
+				place_taken_spots(hash_base, hole, c, buffer, end_buffer);  // c contains bucket starts..
 			}
 
 			// the oldest element should now be free cell or at least (if it was something deleted) all the older values

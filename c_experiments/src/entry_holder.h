@@ -34,20 +34,20 @@ class SharedQueue_SRSW {    // single reader, single writer
 	//
 	public:
 
-		SharedQueue() {
+		SharedQueue_SRSW() {
 			_beg = &_entries[0];
 			_end = _beg + ExpectedMax;
 			_r.store(_beg);
 			_w.store(_beg);
 		}
-		virtual ~SharedQueue() {
+		virtual ~SharedQueue_SRSW() {
 		}
 
 	public:
 
 		bool 		pop(Entry &entry) {
 			//
-			uint16_t *rr = nullptr;
+			Entry *rr = nullptr;
 			if ( emptiness(&rr) ) {
 				memset(&entry,0,sizeof(Entry));
 				return false;
@@ -66,7 +66,7 @@ class SharedQueue_SRSW {    // single reader, single writer
 		}
 
 
-		bool		emptiness(uint16_t **rr) {   // read obtains the snapshot of the write location (saves for future comparison)
+		bool		emptiness(Entry **rr) {   // read obtains the snapshot of the write location (saves for future comparison)
 			auto rr0 = _r.load(std::memory_order_relaxed);
 			if ( rr0 == _w_cached ) {  // current idea of cache is that it is maxed out
 				_w_cached = _w.load(std::memory_order_acquire);   // did it move since we looked last?
@@ -82,8 +82,8 @@ class SharedQueue_SRSW {    // single reader, single writer
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		bool		push(Entry &entry) {
-			uint16_t *wrt = nullptr;
-			uint16_t *wrt_update;
+			Entry *wrt = nullptr;
+			Entry *wrt_update;
 			if ( full(&wrt,&wrt_update) ) {   // the update will be no less than one behind the writer
 				return false;
 			}
@@ -94,7 +94,7 @@ class SharedQueue_SRSW {    // single reader, single writer
 		}
 
 
-		bool		full(uint16_t **wrt_ref,uint16_t **wrt_update) {
+		bool		full(Entry **wrt_ref,Entry **wrt_update) {
 			//
 			auto wrt = _w.load(std::memory_order_relaxed);
 			auto next_w = (wrt + 1);
@@ -135,12 +135,12 @@ class SharedQueue_SRSW {    // single reader, single writer
 
 		Entry	_entries[ExpectedMax];
 		Entry	*_beg;
-		Entyr	*_end;
+		Entry	*_end;
 
-		atomic<uint16_t *>		_r;
-		uint16_t		 		*_r_cached;
-		atomic<uint16_t *>		_w;
-		uint16_t		 		*_w_cached;
+		atomic<Entry *>		_r;
+		Entry		 		*_r_cached;
+		atomic<Entry *>		_w;
+		Entry		 		*_w_cached;
 
 };
 
