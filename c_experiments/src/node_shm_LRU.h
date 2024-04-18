@@ -668,7 +668,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 					auto target_offset = *current++;
 
 					uint8_t thread_id = this->_thread_id;
-					if ( this->store_in_hash(hash64,target_offset,thread_id) != UINT64_MAX ) { // add to the hash table...
+					uint64_t augmented_hash = this->store_in_hash(hash64,target_offset,thread_id);
+					if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
 						void *src = (void *)(lel + 1);
 						void *target = (void *)(start + (target_offset + sizeof(LRU_element)));
 						memcpy(target,src,_record_size);

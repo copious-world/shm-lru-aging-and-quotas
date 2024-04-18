@@ -29,14 +29,16 @@ using namespace std;
 // 
 
 
-template<uint16_t const ExpectedMax = 100, class Entry>
-class SharedQueue {
+template<class Entry, uint16_t const ExpectedMax = 100>
+class SharedQueue_SRSW {    // single reader, single writer
 	//
 	public:
 
 		SharedQueue() {
-			_r = 0;
-			_w = 0;
+			_beg = &_entries[0];
+			_end = _beg + ExpectedMax;
+			_r.store(_beg);
+			_w.store(_beg);
 		}
 		virtual ~SharedQueue() {
 		}
@@ -45,87 +47,100 @@ class SharedQueue {
 
 		bool 		pop(Entry &entry) {
 			//
-			uint16_t rr;
-			if ( emptiness(rr) ) {
+			uint16_t *rr = nullptr;
+			if ( emptiness(&rr) ) {
 				memset(&entry,0,sizeof(Entry));
 				return false;
 			}
 
-			entry = _entries[rr++];
+			entry = *rr++;  // can only get here if the read pointer does not meet the write pointer
 
-			if ( rr == ExpectedMax ) {
-				_r.store(0,std::memory_order_release);
+			if ( rr == _end ) {		// read aprises the writer of its update
+				_r.store(_beg,std::memory_order_release);
 			} else {
 				_r.store(rr,std::memory_order_release);
 			}
+
 			//
 			return true;
 		}
 
 
-		bool		emptiness(uint16_t &rr) {
-			rr = _r.load(1,std::memory_order_relaxed);
-			if (rr == _w_cached) {  // current idea of cache is that it is maxed out
+		bool		emptiness(uint16_t **rr) {   // read obtains the snapshot of the write location (saves for future comparison)
+			auto rr0 = _r.load(std::memory_order_relaxed);
+			if ( rr0 == _w_cached ) {  // current idea of cache is that it is maxed out
 				_w_cached = _w.load(std::memory_order_acquire);   // did it move since we looked last?
-				if (rr == _w_cached) { // no it didn't
+				if ( rr0 == _w_cached ) { // no it didn't
 					return true;
 				}
 			}
+			*rr = rr0;
 			return false;
 		}
 
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		bool		push(Entry &entry) {
-			uint16_t wrt;
-			uint16_t wrt_update;
-			if ( full(wrt,wrt_update) ) {
+			uint16_t *wrt = nullptr;
+			uint16_t *wrt_update;
+			if ( full(&wrt,&wrt_update) ) {   // the update will be no less than one behind the writer
 				return false;
 			}
-			_entries[wrt] = entry;
-			_w.store(wrt_update,std::memory_order_release);
+			*wrt = entry;  // the last write position receives the value...
+			_w.store(wrt_update,std::memory_order_release);  // the write aprises the reader of the write position
+
 			return true;
 		}
 
 
-		bool full(uint16_t &wrt,uint16_t &wrt_update) {
-			wrt = _w.load(std::memory_order_relaxed);
+		bool		full(uint16_t **wrt_ref,uint16_t **wrt_update) {
+			//
+			auto wrt = _w.load(std::memory_order_relaxed);
 			auto next_w = (wrt + 1);
-			if ( next_w == ExpectedMax ) next_w = 0;
+			if ( next_w == _end ) next_w = _beg;
 			//
 			auto rr = _r_cached;
 			if ( rr < next_w ) {
-				if ( ((next_w - rr) == ExpectedMax) || ((rr == 0) && (next_w == (ExpectedMax-1)))  ) {
+				const auto max_span = ExpectedMax - 1;
+				// initial state until the first wrap around
+				// (either at opposite ends or trailing by one at first wrap around)
+				if ( ((next_w - rr) == max_span) || ((rr == _beg) && (next_w == (_end-1)))  ) {
 					rr = _r_cached = _r.load(std::memory_order_acquire);
-					if ( ((next_w - rr) == ExpectedMax) || ((rr == 0) && (next_w == (ExpectedMax-1)))  ) {
+					if ( ((next_w - rr) == max_span) || ((rr == _beg) && (next_w == (_end-1)))  ) {
 						return true;
 					}
 				}
-			} else {
-				if ( (rr-next_w) == 1 ) {
+			} else {  // after wrap around
+				if ( (rr - next_w) == 1 ) {  // full if it trails by one
 					rr = _r_cached = _r.load(std::memory_order_acquire);
-					if ( (next_w-rr) == ExpectedMax ) {
+					if ( (rr - next_w) == 1 ) {
 						return true;
 					}
 				}
 			}
-			wrt_update = next_w;
+			//
+			*wrt_ref = wrt;
+			*wrt_update = next_w;
 			return false;
 		}
 
 
-		bool empty(void) {
+		bool 		empty(void) {
 			return ( _r.load() == _w.load() );
 		}
 
 
 	public:
 
-		Entry _entries[ExpectedMax];
-		atomic<uint16_t> _r;
-		uint16_t		 _r_cached;
-		atomic<uint16_t> _w;
-		uint16_t		 _w_cached;
+		Entry	_entries[ExpectedMax];
+		Entry	*_beg;
+		Entyr	*_end;
+
+		atomic<uint16_t *>		_r;
+		uint16_t		 		*_r_cached;
+		atomic<uint16_t *>		_w;
+		uint16_t		 		*_w_cached;
 
 };
 

@@ -46,50 +46,8 @@ typedef struct R_ENTRY {
 } r_entry;
 
 
-
 template<uint16_t const ExpectedMax = 100>
-class RemovalEntryHolder {
-	//
-	public:
-		//
-		RemovalEntryHolder() {
-			_current = 0;
-			_last = 0;
-		}
-		virtual ~RemovalEntryHolder() {
-		}
-
-	public:
-
-		void 		pop(r_entry &entry) {
-			if ( _current == _last ) {
-				memset(&entry,0,sizeof(r_entry));
-				return;
-			}
-			entry = _entries[_current++];
-			if ( _current == ExpectedMax ) {
-				_current = 0;
-			}
-		}
-
-		void		push(r_entry &entry) {
-			_entries[_last++] = entry;
-			if ( _last == ExpectedMax ) _last = 0;
-		}
-
-		bool empty() {
-			return ( _current == _last);
-		}
-
-	public:
-
-		r_entry _entries[ExpectedMax];
-		uint16_t _current;
-		uint16_t _last;
-
-};
-
-
+class RemovalEntryHolder : public  SharedQueue_SRSW<r_entry,ExpectedMax> {};
 
 
 
@@ -112,7 +70,7 @@ class TierAndProcManager : public LRU_Consts {
 											map<key_t,size_t> &seg_sizes,
 												bool am_initializer, uint32_t proc_number,
 													uint32_t num_procs, uint32_t num_tiers,
-														uint32_t els_per_tier, uint32_t max_obj_size) {
+														uint32_t els_per_tier, uint32_t max_obj_size,void **random_segs = nullptr) {
 			//
 			_am_initializer = am_initializer; // need to keep around for downstream initialization
 			//
@@ -146,8 +104,12 @@ class TierAndProcManager : public LRU_Consts {
 				size_t hh_seg_sz = seg_sizes[key];
 				//
 				LRU_cache *lru = _tiers[tier];
+				void **random_seg_ref = random_segs;
 				if ( lru != nullptr ) {
 					lru->set_hash_impl(hh_region,hh_seg_sz,els_per_tier);
+					if ( random_seg_ref != nullptr ) {
+						lru->_hmap->set_random_bits(*random_seg_ref++);
+					}
 				}
 				// initialize hopscotch
 				tier++;
@@ -170,7 +132,7 @@ class TierAndProcManager : public LRU_Consts {
 			uint32_t predict = num_tiers*(tier_atomics_sz*2 + proc_tier_com_sz);
 			//
 			return predict;
-		} 
+		}
 
 		// -- set_owner_proc_area
 		// 		the com buffer is set separately outside the constructor... this may just be stylistic. 
@@ -648,8 +610,11 @@ class TierAndProcManager : public LRU_Consts {
 									// 	the lru calls upon the hash table to store the hash/offset pair...
 									//
 									auto thread_id = lru->_thread_id;
-									if ( lru->store_in_hash(hash64,offset,thread_id) != UINT64_MAX ) { // add to the hash table...
+									uint64_t augmented_hash = this->store_in_hash(hash64,target_offset,thread_id);
+
+									if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
 										write_offset_here[0] = offset;
+										hash_parameter[0] = augmented_hash;  // put the augmented hash where the process can get it.
 										//
 										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
 										clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
@@ -685,7 +650,7 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		*/
 
-		int 		put_method([[maybe_unused]] uint32_t process, uint32_t hash_bucket, uint32_t full_hash, bool updating, char* buffer, unsigned int size, uint32_t timestamp, uint32_t tier, void (delay_func)()) {
+		int 		put_method([[maybe_unused]] uint32_t process, uint32_t &hash_bucket, uint32_t &full_hash, bool updating, char* buffer, unsigned int size, uint32_t timestamp, uint32_t tier, void (delay_func)()) {
 			//
 			if ( _com_buffer == nullptr ) return -1;  // has not been initialized
 			if ( (buffer == nullptr) || (size <= 0) ) return -1;  // might put a limit on size lower and uppper
@@ -711,8 +676,8 @@ class TierAndProcManager : public LRU_Consts {
 			if ( wait_to_write(read_marker,MAX_WAIT_LOOPS,delay_func) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
 				// 
 				// tell a reader to get some free memory
-				hash_parameter[0] = hash_bucket; // put in the hash so that the reader can see if this is a duplicate
-				hash_parameter[1] = full_hash;
+				hash_parameter[0] = hash_bucket;	// put in the hash so that the reader can see if this is a duplicate
+				hash_parameter[1] = full_hash;		// but also, this is the hash (not yet augmented)
 				// the write offset should come back to the process's read maker
 				offset_offset[0] = updating ? UINT32_MAX : 0;
 				//
@@ -726,7 +691,7 @@ class TierAndProcManager : public LRU_Consts {
 				if ( !status ) {
 					return -2;
 				}
-				//					
+				//
 				if ( await_write_offset(read_marker,MAX_WAIT_LOOPS,delay_func) ) {
 					//
 					uint32_t write_offset = offset_offset[0];
@@ -738,6 +703,8 @@ class TierAndProcManager : public LRU_Consts {
 					//
 					uint8_t *m_insert = lru->data_location(write_offset);
 					if ( m_insert != nullptr ) {
+						hash_bucket = hash_parameter[0]; // return the augmented hash 
+						full_hash = hash_parameter[1];
 						memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));  // COPY IN NEW DATA HERE...
 					} else {
 						clear_for_write(read_marker);   // next write from this process can now proceed...

@@ -86,52 +86,11 @@ typedef struct PRODUCT_DESCR {
 
 
 /*
-
+	QueueEntryHolder ...
 */
 
-
-
 template<uint16_t const ExpectedMax = 100>
-class QueueEntryHolder {
-	//
-	public:
-		//
-		QueueEntryHolder() {
-			_current = 0;
-			_last = 0;
-		}
-		virtual ~QueueEntryHolder() {
-		}
-
-	public:
-
-		void 		pop(q_entry &entry) {
-			if ( _current == _last ) {
-				memset(&entry,0,sizeof(q_entry));
-				return;
-			}
-			entry = _entries[_current++];
-			if ( _current == ExpectedMax ) {
-				_current = 0;
-			}
-		}
-
-		void		push(q_entry &entry) {
-			_entries[_last++] = entry;
-			if ( _last == ExpectedMax ) _last = 0;
-		}
-
-		bool empty() {
-			return ( _current == _last);
-		}
-
-	public:
-
-		q_entry _entries[ExpectedMax];
-		uint16_t _current;
-		uint16_t _last;
-
-};
+class QueueEntryHolder : public  SharedQueue_SRSW<q_entry,ExpectedMax> {};
 
 
 inline uint8_t get_b_offset_update(uint32_t &c) {
@@ -459,7 +418,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		void set_random_bits(void *shared_bit_region) {
 			uint32_t *bits_for_test = (uint32_t *)(shared_bit_region);
 			for ( int i = 0; i < 4; i++ ) {
-				this->set_region(bits_for_test,i);
+				this->set_region(bits_for_test,i);    // inherited method set the storage (otherwise null and not operative)
 				this->regenerate_shared(i);
 				bits_for_test += this->_bits.size() + 4*sizeof(uint32_t);
 			}
@@ -476,26 +435,18 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		/**
-		 * wakeup_random_genator
-		*/
-		void wakeup_random_genator(uint8_t which_region) {   //
-			//
-			_random_gen_region->store(which_region);
-#ifndef __APPLE__
-			while ( !(_random_gen_thread_lock->test_and_set()) );
-			_random_gen_thread_lock->notify_one();
-#else
-			while ( !(_random_gen_thread_lock->test_and_set()) );
-#endif
-		}
-
 		void thread_sleep([[maybe_unused]] uint8_t ticks) {
 
 		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+
+		/**
+		 * share_lock 
+		 * 
+		 * override the lock for shared random bits (in parent this is a no op)
+		*/
 		void share_lock(void) {
 #ifndef __APPLE__
 				while ( _random_gen_thread_lock->test() ) {  // if not cleared, then wait
@@ -510,7 +461,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 #endif			
 		}
 
-		
+
+		/**
+		 * share_unlock 
+		 * 
+		 * override the lock for shared random bits (in parent this is a no op)
+		*/
 		void share_unlock(void) {
 #ifndef __APPLE__
 			while ( _random_share_lock->test() ) {
@@ -524,6 +480,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 #endif
 		}
 
+
+		/**
+		 * random_generator_thread_runner 
+		 * 
+		 * override the lock for shared random bits (in parent this is a no op)
+		*/
 
 		void random_generator_thread_runner() {
 			while ( true ) {
@@ -542,6 +504,21 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			}
 		}
 
+
+
+		/**
+		 * wakeup_random_genator
+		*/
+		void wakeup_random_genator(uint8_t which_region) {   //
+			//
+			_random_gen_region->store(which_region);
+#ifndef __APPLE__
+			while ( !(_random_gen_thread_lock->test_and_set()) );
+			_random_gen_thread_lock->notify_one();
+#else
+			while ( !(_random_gen_thread_lock->test_and_set()) );
+#endif
+		}
 
 
 	
