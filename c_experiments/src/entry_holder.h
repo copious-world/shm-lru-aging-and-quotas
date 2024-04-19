@@ -35,10 +35,7 @@ class SharedQueue_SRSW {    // single reader, single writer
 	public:
 
 		SharedQueue_SRSW() {
-			_beg = &_entries[0];
-			_end = _beg + ExpectedMax;
-			_r.store(_beg);
-			_w.store(_beg);
+			reset();
 		}
 		virtual ~SharedQueue_SRSW() {
 		}
@@ -89,7 +86,6 @@ class SharedQueue_SRSW {    // single reader, single writer
 			}
 			*wrt = entry;  // the last write position receives the value...
 			_w.store(wrt_update,std::memory_order_release);  // the write aprises the reader of the write position
-
 			return true;
 		}
 
@@ -101,13 +97,13 @@ class SharedQueue_SRSW {    // single reader, single writer
 			if ( next_w == _end ) next_w = _beg;
 			//
 			auto rr = _r_cached;
-			if ( rr < next_w ) {
-				const auto max_span = ExpectedMax - 1;
+			if ( rr < wrt ) {
+				const auto max_span = ExpectedMax-1;
 				// initial state until the first wrap around
 				// (either at opposite ends or trailing by one at first wrap around)
-				if ( ((next_w - rr) == max_span) || ((rr == _beg) && (next_w == (_end-1)))  ) {
+				if ( ((wrt - rr) == max_span) || ((rr == _beg) && (wrt == (_end-1)))  ) {
 					rr = _r_cached = _r.load(std::memory_order_acquire);
-					if ( ((next_w - rr) == max_span) || ((rr == _beg) && (next_w == (_end-1)))  ) {
+					if ( ((wrt - rr) == max_span) || ((rr == _beg) && (wrt == (_end-1)))  ) {
 						return true;
 					}
 				}
@@ -128,6 +124,18 @@ class SharedQueue_SRSW {    // single reader, single writer
 
 		bool 		empty(void) {
 			return ( _r.load() == _w.load() );
+		}
+
+
+		void		reset(void) {
+			_beg = &_entries[0];
+			_end = _beg + ExpectedMax;
+			_r_cached = _beg;
+			_w_cached = _beg;
+			_r.store(_beg);
+			_w.store(_beg);
+
+			memset(_entries,0,sizeof(Entry)*ExpectedMax);
 		}
 
 

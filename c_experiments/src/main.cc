@@ -3243,6 +3243,127 @@ void test_hh_map_for_test_methods(void) {
 
 
 
+typedef struct Q_ENTRY_TEST {
+	public:
+		uint64_t 	loaded_value;
+		uint32_t 	h_bucket;
+		uint8_t		which_table;
+		uint8_t		thread_id;
+		uint8_t   __rest[2];
+} q_entry_test;
+
+
+/*
+	QueueEntryHolder ...
+*/
+
+template<uint16_t const ExpectedMax = 100>
+class QueueEntryHolder_test : public  SharedQueue_SRSW<q_entry_test,ExpectedMax> {};
+
+
+void entry_holder_test(void) {
+
+  cout << "entry_holder_test" << endl;
+  //
+  QueueEntryHolder_test<> *qeht = new QueueEntryHolder_test<>();
+  //
+  cout << "is empty: " << (qeht->empty() ? "true" : "false") << endl;
+
+  q_entry_test  funny_bizz;
+  funny_bizz.loaded_value = 1;
+  qeht->push(funny_bizz);
+  auto its_empty = qeht->empty();
+  cout << "is empty: " << (qeht->empty() ? "true" : "false") << endl;
+  if ( !(its_empty) ) {
+    cout << "check w: " << (qeht->_w_cached - qeht->_beg) << endl;
+    cout << "check r: " << (qeht->_r_cached - qeht->_beg) << endl;
+    cout << qeht->_w_cached << " :: " << qeht->_r_cached << endl;
+    cout << qeht->_w.load() << " :: " << qeht->_r.load() << endl;
+  }
+
+  q_entry_test  funny_bizz_out;
+  if ( qeht->pop(funny_bizz_out) ) {
+    cout << "funny_bizz_out.loaded_value: " << funny_bizz_out.loaded_value << endl;
+  }
+
+  if ( qeht->pop(funny_bizz_out) ) {
+    cout << "funny_bizz_out.loaded_value: " << funny_bizz_out.loaded_value << endl;
+  } else {
+    cout << "q e h test is empty" << endl;
+  }
+
+
+  qeht->reset();
+  for ( int i = 0; i < 100; i++ ) {
+     q_entry_test  fizzy_bun;
+     fizzy_bun.loaded_value = i+1;
+     auto fullness = qeht->push(fizzy_bun);
+     q_entry_test *writable, *nextable;
+     if ( qeht->full(&writable,&nextable) ) {
+      cout << "qeht full at " << i << " indicated by " << fullness << endl;
+     }
+  }
+  its_empty = qeht->empty();
+  cout << "again::  is empty: " << (qeht->empty() ? "true" : "false") << endl;
+  if ( !(its_empty) ) {
+    cout << "check w c: " << (qeht->_w_cached - qeht->_beg) << endl;
+    cout << "check r c: " << (qeht->_r_cached - qeht->_beg) << endl;
+    cout << "check w: " << (qeht->_w.load() - qeht->_beg) << endl;
+    cout << "check r: " << (qeht->_r.load() - qeht->_beg) << endl;
+    cout << qeht->_w_cached << " :: " << qeht->_r_cached << endl;
+    cout << qeht->_w.load() << " :: " << qeht->_r.load() << endl;
+  }
+
+  for ( int i = 0; i < 100; i++ ) {
+    cout << "stored [" << i << "]\t" << qeht->_entries[i].loaded_value << "\t";
+  }
+  cout << endl;
+
+  for ( int j = 0; j < 20; j++ ) {
+     q_entry_test  fizzy_bun;
+     fizzy_bun.loaded_value = j+100;
+     auto fullness = qeht->push(fizzy_bun);
+     q_entry_test *writable, *nextable;
+     if ( qeht->full(&writable,&nextable) ) {
+      cout << "qeht full at " << j << " indicated by " << fullness << endl;
+     }
+     qeht->pop(fizzy_bun);
+     cout << " popped: " << fizzy_bun.loaded_value << endl;
+  }
+
+
+  for ( int i = 0; i < 100; i++ ) {
+    cout << "stored [" << i << "]\t" << qeht->_entries[i].loaded_value << "\t";
+  }
+  cout << endl;
+
+
+  its_empty = qeht->empty();
+  cout << "is empty: " << (qeht->empty() ? "true" : "false") << endl;
+  if ( !(its_empty) ) {
+    cout << "check w: " << (qeht->_w_cached - qeht->_beg) << endl;
+    cout << "check r: " << (qeht->_r_cached - qeht->_beg) << endl;
+    cout << qeht->_w_cached << " :: " << qeht->_r_cached << endl;
+    cout << qeht->_w.load() << " :: " << qeht->_r.load() << endl;
+  }
+
+  while ( !(qeht->empty()) ) {
+    q_entry_test  fuzzy_bin;
+    qeht->pop(fuzzy_bin);
+    cout << " popped: " << fuzzy_bin.loaded_value << endl;
+    cout << "check w c: " << (qeht->_w_cached - qeht->_beg) << endl;
+    cout << "check r c: " << (qeht->_r_cached - qeht->_beg) << endl;
+    cout << "check w: " << (qeht->_w.load() - qeht->_beg) << endl;
+    cout << "check r: " << (qeht->_r.load() - qeht->_beg) << endl;
+    cout << qeht->_w_cached << " :: " << qeht->_r_cached << endl;
+    cout << qeht->_w.load() << " :: " << qeht->_r.load() << endl;
+    cout << " " << endl;
+  }
+
+}
+
+
+
 
 /*
 
@@ -3325,9 +3446,11 @@ int main(int argc, char **argv) {
     // test_some_bit_patterns_2();  // auto last_view = (NEIGHBORHOOD - 1 - dist_base);
     // test_some_bit_patterns_3();
 
-    test_hh_map_for_test_methods();
+    //test_hh_map_for_test_methods();
 
     //test_zero_above();
+
+    entry_holder_test();
 
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;

@@ -62,6 +62,22 @@ typedef struct HH_element {
 } hh_element;
 
 
+
+typedef struct PRODUCT_DESCR {
+	uint32_t		partner_thread;
+	uint32_t		stats;
+} proc_descr;
+
+
+
+
+/*
+	QueueEntryHolder ...
+*/
+
+/** 
+ * q_entry is struct Q_ENTRY
+*/
 typedef struct Q_ENTRY {
 	public:
 		//
@@ -77,16 +93,8 @@ typedef struct Q_ENTRY {
 } q_entry;
 
 
-
-typedef struct PRODUCT_DESCR {
-	uint32_t		partner_thread;
-	uint32_t		stats;
-} proc_descr;
-
-
-
-/*
-	QueueEntryHolder ...
+/**
+ * QueueEntryHolder uses q_entry in SharedQueue_SRSW<q_entry,ExpectedMax>
 */
 
 template<uint16_t const ExpectedMax = 100>
