@@ -3360,7 +3360,101 @@ void entry_holder_test(void) {
     cout << " " << endl;
   }
 
+
+  for ( int j = 0; j < 200; j++ ) {
+     q_entry_test  fizzy_bun;
+     fizzy_bun.loaded_value = j+200;
+     auto fullness = qeht->push(fizzy_bun);
+     q_entry_test *writable, *nextable;
+     if ( qeht->full(&writable,&nextable) ) {
+      cout << "qeht full at " << j << " indicated by " << fullness << endl;
+     }
+     qeht->pop(fizzy_bun);
+     cout << " popped: " << fizzy_bun.loaded_value << endl;
+  }
+
+
+  for ( int i = 0; i < 100; i++ ) {
+    cout << "stored [" << i << "]\t" << qeht->_entries[i].loaded_value << "\t";
+  }
+  cout << endl;
+
+
 }
+
+
+
+
+
+
+
+
+void entry_holder_threads_test(void) {
+
+  cout << "entry_holder_test" << endl;
+  //
+  QueueEntryHolder_test<> *qeht = new QueueEntryHolder_test<>();
+  //
+  cout << "is empty: " << (qeht->empty() ? "true" : "false") << endl;
+
+  uint64_t results[600];
+
+  memset(results,0,600*sizeof(uint64_t));
+
+  auto primary_runner = [&](void) {
+      q_entry_test  funny_bizz;
+      int loop_ctrl = 0;
+      for ( int i = 0; i < 600; i++ ) {
+        funny_bizz.loaded_value = i+1;
+        while ( !qeht->push(funny_bizz) && (loop_ctrl < 100000) ) { // qeht->push(funny_bizz);   //  
+          loop_ctrl++;
+          if ( (loop_ctrl % (1<<14)) == 0 ) {
+            __libcpp_thread_yield();
+          }
+        }
+        loop_ctrl = 0;
+      }
+  };
+  
+
+
+  auto secondary_runner = [&](void) {
+      q_entry_test  fizzy_bun;
+      uint64_t j = 0;
+      uint64_t k = 0;
+      uint64_t q = 0;
+      while ( k < 600 ) {
+        if ( qeht->pop(fizzy_bun) ) {
+          j = fizzy_bun.loaded_value;
+          results[k++] = j;
+        } else q++;
+        //if ( q > 10000 ) break;
+      }
+
+      cout << " Q : " << q << endl;
+      cout << " K : " << k << endl;
+      cout << " J : " << j << endl;
+  };
+
+
+  thread th1(primary_runner);
+  thread th2(secondary_runner);
+
+  th1.join();
+  th2.join();
+
+
+  for ( int i = 1; i < 600; i++ ) {
+    uint64_t j = i-1;
+    if ( results[i] - results[j] > 1 ) {
+      cout << "oops: (" << i << ")" << results[i] << " " << results[j] << endl;
+    }
+  }
+
+  cout << "FINISHED" << endl;
+
+} 
+
 
 
 
@@ -3450,7 +3544,9 @@ int main(int argc, char **argv) {
 
     //test_zero_above();
 
-    entry_holder_test();
+    // entry_holder_test();
+
+    entry_holder_threads_test();
 
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;

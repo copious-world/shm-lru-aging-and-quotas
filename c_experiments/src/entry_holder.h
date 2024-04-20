@@ -52,7 +52,7 @@ class SharedQueue_SRSW {    // single reader, single writer
 
 			entry = *rr++;  // can only get here if the read pointer does not meet the write pointer
 
-			if ( rr == _end ) {		// read aprises the writer of its update
+			if ( rr >= _end ) {		// read aprises the writer of its update
 				_r.store(_beg,std::memory_order_release);
 			} else {
 				_r.store(rr,std::memory_order_release);
@@ -96,26 +96,34 @@ class SharedQueue_SRSW {    // single reader, single writer
 			auto next_w = (wrt + 1);
 			if ( next_w == _end ) next_w = _beg;
 			//
+			auto rr = _r.load(std::memory_order_acquire);
+			if ( rr == next_w ) {
+				return true;
+			}
+
+			//
+			/*
 			auto rr = _r_cached;
-			if ( rr < wrt ) {
+			if ( rr < next_w ) {
 				const auto max_span = ExpectedMax-1;
 				// initial state until the first wrap around
 				// (either at opposite ends or trailing by one at first wrap around)
-				if ( ((wrt - rr) == max_span) || ((rr == _beg) && (wrt == (_end-1)))  ) {
+				if ( ((next_w - rr) >= max_span) || ((rr == _beg) && (next_w >= (_end-1)))  ) {
 					rr = _r_cached = _r.load(std::memory_order_acquire);
-					if ( ((wrt - rr) == max_span) || ((rr == _beg) && (wrt == (_end-1)))  ) {
+					if ( ((next_w - rr) == max_span) || ((rr == _beg) && (next_w >= (_end-1)))  ) {
 						return true;
 					}
 				}
 			} else {  // after wrap around
-				if ( (rr - next_w) == 1 ) {  // full if it trails by one
+				if ( (rr - next_w) <= 1 ) {  // full if it trails by one
 					rr = _r_cached = _r.load(std::memory_order_acquire);
 					if ( (rr - next_w) == 1 ) {
 						return true;
 					}
 				}
 			}
-			//
+			*/
+
 			*wrt_ref = wrt;
 			*wrt_update = next_w;
 			return false;
