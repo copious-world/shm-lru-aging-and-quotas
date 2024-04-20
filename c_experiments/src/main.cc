@@ -3437,12 +3437,19 @@ void entry_holder_threads_test(void) {
   };
 
 
+  auto start = chrono::system_clock::now();
+
+
   thread th1(primary_runner);
   thread th2(secondary_runner);
 
   th1.join();
   th2.join();
 
+
+
+  chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
+  cout << "Duration pre print time: " << dur_t2.count() << " seconds" << endl;
 
   for ( int i = 1; i < 600; i++ ) {
     uint64_t j = i-1;

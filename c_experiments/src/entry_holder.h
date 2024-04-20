@@ -96,34 +96,14 @@ class SharedQueue_SRSW {    // single reader, single writer
 			auto next_w = (wrt + 1);
 			if ( next_w == _end ) next_w = _beg;
 			//
-			auto rr = _r.load(std::memory_order_acquire);
-			if ( rr == next_w ) {
-				return true;
+			if ( _r_cached == next_w ) {
+				auto rr = _r.load(std::memory_order_acquire);
+				_r_cached = rr;
+				if ( _r_cached == next_w ) {
+					return true;
+				}
 			}
-
 			//
-			/*
-			auto rr = _r_cached;
-			if ( rr < next_w ) {
-				const auto max_span = ExpectedMax-1;
-				// initial state until the first wrap around
-				// (either at opposite ends or trailing by one at first wrap around)
-				if ( ((next_w - rr) >= max_span) || ((rr == _beg) && (next_w >= (_end-1)))  ) {
-					rr = _r_cached = _r.load(std::memory_order_acquire);
-					if ( ((next_w - rr) == max_span) || ((rr == _beg) && (next_w >= (_end-1)))  ) {
-						return true;
-					}
-				}
-			} else {  // after wrap around
-				if ( (rr - next_w) <= 1 ) {  // full if it trails by one
-					rr = _r_cached = _r.load(std::memory_order_acquire);
-					if ( (rr - next_w) == 1 ) {
-						return true;
-					}
-				}
-			}
-			*/
-
 			*wrt_ref = wrt;
 			*wrt_update = next_w;
 			return false;
