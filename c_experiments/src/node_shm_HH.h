@@ -1116,18 +1116,18 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		//
 		/**
-		 * wait_if_unlock_bucket_counts
+		 * wait_if_unlock_bucket_counts_refs
 		*/
-		bool wait_if_unlock_bucket_counts(uint32_t h_bucket,uint8_t thread_id,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
+		bool wait_if_unlock_bucket_counts_refs(uint32_t h_bucket,uint8_t thread_id,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
 			atomic<uint32_t> *controller = nullptr;
-			return wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,T_ref,buffer_ref,end_buffer_ref,which_table);
+			return wait_if_unlock_bucket_counts_refs(&controller,thread_id,h_bucket,T_ref,buffer_ref,end_buffer_ref,which_table);
 		}
 
 
 		/**
-		 * wait_if_unlock_bucket_counts
+		 * wait_if_unlock_bucket_counts_refs
 		*/
-		bool wait_if_unlock_bucket_counts(atomic<uint32_t> **controller_ref,uint8_t thread_id,uint32_t h_bucket,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
+		bool wait_if_unlock_bucket_counts_refs(atomic<uint32_t> **controller_ref,uint8_t thread_id,uint32_t h_bucket,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t &which_table) {
 			// ----
 			HHash *T = _T0;
 			hh_element *buffer		= _region_HV_0;
@@ -1203,6 +1203,85 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			*T_ref = T;
 			*buffer_ref = buffer;
 			*end_buffer_ref = end_buffer;
+			return true;
+			//
+		}
+
+
+
+		//
+		/**
+		 * wait_if_unlock_bucket_counts
+		*/
+		bool wait_if_unlock_bucket_counts(uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table) {
+			atomic<uint32_t> *controller = nullptr;
+			return wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,which_table);
+		}
+
+		/**
+		 * wait_if_unlock_bucket_counts
+		*/
+		bool wait_if_unlock_bucket_counts(atomic<uint32_t> **controller_ref,uint8_t thread_id,uint32_t h_bucket,uint8_t &which_table) {
+			// ----
+			which_table = 0;
+
+			uint8_t count_0 = 0;		// favor the least full bucket ... but in case something doesn't move try both
+			uint8_t count_1 = 0;
+			uint32_t controls = 0;
+
+			// ----
+			atomic<uint32_t> *controller = this->bucket_counts_lock(h_bucket,controls,thread_id,count_0,count_1);
+			*controller_ref = controller;
+
+			if ( (count_0 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
+				this->store_unlock_controller(controller,thread_id);
+				return false;
+			}
+
+			// 1 odd 0 even 
+	
+			controls = controller->load();
+			if ( controls & SHARED_BIT_SET ) {
+				if ( (controls & HOLD_BIT_ODD_SLICE) && (count_1 < COUNT_MASK) ) {
+					which_table = 1;
+					count_1++;
+				} else if ( (controls & HOLD_BIT_EVEN_SLICE)  && (count_0 < COUNT_MASK) ) {
+					which_table = 0;
+					count_0++;
+				} else if ( ( controls & HOLD_BIT_ODD_SLICE ) && ( controls & HOLD_BIT_EVEN_SLICE ) ) {
+					// should not be here
+					this->store_unlock_controller(controller,thread_id);
+					return false;
+				} else {
+					// running out of space....
+					this->store_unlock_controller(controller,thread_id);
+					return false;
+				}
+			} else {  // changing from T0 to T1 otherwise leave it alone.
+				//
+				if ( (count_1 < count_0) && (count_1 < COUNT_MASK) ) {
+					T = _T1;
+					which_table = 1;
+					count_1++;
+				} else if ( (count_1 == count_0) && (count_1 < COUNT_MASK) ) {
+					uint8_t bit = pop_shared_bit();
+					if ( bit ) {
+						which_table = 1;
+						count_1++;
+					} else {
+						count_0++;
+					}
+				} else if ( count_0 < COUNT_MASK ) {
+					count_0++;
+				} else return false;
+				//
+			}
+
+			controls = this->update_slice_counters(controls,count_0,count_1);
+			controls = this->update_count_incr(controls);   // does not lock -- may roll back if adding fails
+			//
+			this->to_slice_transition(controller,controls,which_table,thread_id);
+
 			return true;
 			//
 		}

@@ -296,8 +296,6 @@ class TierAndProcManager : public LRU_Consts {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		// run_evictions
-
 		/**
 		 * run_evictions
 		 * 
@@ -609,8 +607,20 @@ class TierAndProcManager : public LRU_Consts {
 									//	this is the first time the lru pairs the hash and offset.
 									// 	the lru calls upon the hash table to store the hash/offset pair...
 									//
+									
+									// auto thread_id = lru->_thread_id;
+									// uint64_t augmented_hash = lru->store_in_hash(hash64,offset,thread_id);
+
+									// if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
+									// 	write_offset_here[0] = offset;
+									// 	hash_parameter[0] = augmented_hash;  // put the augmented hash where the process can get it.
+									// 	//
+									// 	atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
+									// 	clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
+									// }
+
 									auto thread_id = lru->_thread_id;
-									uint64_t augmented_hash = this->store_in_hash(hash64,offset,thread_id);
+									uint64_t augmented_hash = lru->get_augmented_hash_locking(hash64,thread_id);
 
 									if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
 										write_offset_here[0] = offset;
@@ -618,7 +628,13 @@ class TierAndProcManager : public LRU_Consts {
 										//
 										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
 										clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
+										//
+										// -- if there is a problem, it will affect older entries
+										lru->store_in_hash_unlocking(augmented_hash,offset,thread_id);
+									} else {
+										lru->unlock_cell(thread_id);
 									}
+
 								}
 							}
 							//
@@ -650,7 +666,7 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		*/
 
-		int 		put_method([[maybe_unused]] uint32_t process, uint32_t &hash_bucket, uint32_t &full_hash, bool updating, char* buffer, unsigned int size, uint32_t timestamp, uint32_t tier, void (delay_func)()) {
+		int 		put_method(uint32_t &hash_bucket, uint32_t &full_hash, bool updating, char* buffer, unsigned int size, uint32_t timestamp, uint32_t tier, void (delay_func)()) {
 			//
 			if ( _com_buffer == nullptr ) return -1;  // has not been initialized
 			if ( (buffer == nullptr) || (size <= 0) ) return -1;  // might put a limit on size lower and uppper
@@ -703,7 +719,7 @@ class TierAndProcManager : public LRU_Consts {
 					//
 					uint8_t *m_insert = lru->data_location(write_offset);
 					if ( m_insert != nullptr ) {
-						hash_bucket = hash_parameter[0]; // return the augmented hash 
+						hash_bucket = hash_parameter[0]; // return the augmented hash ... update by reference...
 						full_hash = hash_parameter[1];
 						memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));  // COPY IN NEW DATA HERE...
 					} else {

@@ -3415,7 +3415,14 @@ void entry_holder_threads_test(void) {
         loop_ctrl = 0;
       }
   };
-  
+
+
+
+
+    uint64_t j_final = 0;
+    uint64_t k_final = 0;
+    uint64_t q_final = 0;
+
 
 
   auto secondary_runner = [&](void) {
@@ -3430,10 +3437,10 @@ void entry_holder_threads_test(void) {
         } else q++;
         //if ( q > 10000 ) break;
       }
-
-      cout << " Q : " << q << endl;
-      cout << " K : " << k << endl;
-      cout << " J : " << j << endl;
+      //
+      q_final = q;
+      k_final = k;
+      j_final = j;
   };
 
 
@@ -3447,9 +3454,12 @@ void entry_holder_threads_test(void) {
   th2.join();
 
 
-
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
   cout << "Duration pre print time: " << dur_t2.count() << " seconds" << endl;
+
+  cout << " Q : " << q_final << endl;
+  cout << " K : " << k_final << endl;
+  cout << " J : " << j_final << endl;
 
   for ( int i = 1; i < 600; i++ ) {
     uint64_t j = i-1;
@@ -3462,6 +3472,157 @@ void entry_holder_threads_test(void) {
 
 } 
 
+
+
+typedef struct LRU_ELEMENT_HDR_test {
+	uint32_t	_info;
+	uint32_t	_next;
+	uint64_t 	_hash;
+	time_t		_when;
+	uint32_t	_share_key;
+} LRU_element_test;
+
+
+class LRU_cache_test : public AtomicStack<LRU_element_test> {
+
+	public:
+
+};
+
+
+
+
+void stack_threads_test(void) {
+
+  LRU_cache_test *stacker = new LRU_cache_test();
+  //
+  size_t el_sz = sizeof(LRU_element_test) + sizeof(uint64_t);
+  //
+  uint16_t test_size = 100;
+  size_t reg_size = el_sz*test_size + 2*sizeof(atomic<uint32_t>*);  // two control words at the beginning
+  //
+  uint8_t *data_area = new uint8_t[reg_size];
+  uint32_t *reserved_offsets = new uint32_t[test_size];
+  
+  stacker->setup_region_free_list(data_area,el_sz,reg_size);
+
+  cout << "got through initialization" << endl;
+
+  LRU_element_test *chk = stacker->_ctrl_free;
+
+  cout << "2*sizeof(atomic<uint32_t>*) :: " << 2*sizeof(atomic<uint32_t>*) << endl;
+  cout << "el_sz: " << el_sz << " = sizeof(LRU_element_test)  "
+              << sizeof(LRU_element_test) << " + sizeof(uint64_t) " <<  sizeof(uint64_t) << endl;
+  cout << "first check: " << chk->_next << endl;
+
+
+
+  // uint8_t ii = 0;
+  // while ( chk->_next != UINT32_MAX ) {
+  //   auto nxt = chk->_next;
+  //   if ( nxt == 0 ) {
+  //     cout << "nxt is 0" << endl;
+  //     break;
+  //   }
+  //   chk = (LRU_element_test *)(data_area + nxt);
+  //   cout << chk->_next << endl;
+  //   ii++; 
+  //   if ( ii > test_size ) {
+  //     cout << "ii greater than the test size" << endl;
+  //     break;
+  //   }
+  // }
+
+
+  //stacker->pop_number(data_area, 1000, reserved_offsets);
+
+  stacker->pop_number(data_area, (test_size - 20), reserved_offsets);
+  //
+  cout << stacker->_reason << endl;
+
+  for ( int i = 0; i < test_size; i++ ) {
+    cout << reserved_offsets[i] << " "; cout.flush();
+  }
+  //
+  cout << endl;
+  //
+
+  for ( int i = 0; i < test_size; i++ ) {
+    auto offset = reserved_offsets[i];
+    if ( offset != 0 ) {
+      LRU_element_test *el = (LRU_element_test *)(data_area + offset);
+      stacker->_atomic_stack_push(data_area,el);
+    }
+  }
+  //
+
+
+
+  uint32_t *reserved_offsets_1 = new uint32_t[test_size];
+  uint32_t *reserved_offsets_2 = new uint32_t[test_size];
+
+
+  auto primary_runner = [&](void) {
+      for ( int k = 0; k < 10000; k++ ) {
+        for ( int i = 0; i < test_size; i++ ) {
+          auto offset = reserved_offsets_1[i];
+          if ( offset != 0 ) {
+            reserved_offsets_1[i] = 0;
+            LRU_element_test *el = (LRU_element_test *)(data_area + offset);
+            stacker->_atomic_stack_push(data_area,el);
+            break;
+          }
+        }
+        for ( int i = 0; i < test_size; i++ ) {
+          auto offset = reserved_offsets_2[i];
+          if ( offset != 0 ) {
+            reserved_offsets_2[i] = 0;
+            LRU_element_test *el = (LRU_element_test *)(data_area + offset);
+            stacker->_atomic_stack_push(data_area,el);
+            break;
+          }
+        }
+      }
+
+  };
+
+
+  auto secondary_runner = [&](void) {
+      //
+      for ( int i = 0; i < 1000; i++ ) {
+        memset(reserved_offsets_1,0,test_size);
+        stacker->pop_number(data_area, 10, reserved_offsets_1);
+      }
+      //
+  };
+
+
+
+  auto tertiary_runner = [&](void) {
+      //
+      for ( int i = 0; i < 1000; i++ ) {
+        memset(reserved_offsets_2,0,test_size);
+        stacker->pop_number(data_area, 10, reserved_offsets_2);
+      }
+      //
+  };
+
+
+  auto start = chrono::system_clock::now();
+
+
+  thread th1(primary_runner);
+  thread th2(secondary_runner);
+  thread th3(tertiary_runner);
+
+  th1.join();
+  th2.join();
+  th3.join();
+
+
+  chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
+  cout << "Duration pre print time: " << dur_t2.count() << " seconds" << endl;
+}
 
 
 
@@ -3553,8 +3714,9 @@ int main(int argc, char **argv) {
 
     // entry_holder_test();
 
-    entry_holder_threads_test();
+    //entry_holder_threads_test();
 
+    stack_threads_test();
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

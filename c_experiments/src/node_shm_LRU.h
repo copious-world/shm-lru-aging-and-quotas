@@ -126,7 +126,7 @@ typedef union {
 
 
 typedef struct LRU_ELEMENT_HDR {
-	uint32_t	_prev;
+	uint32_t	_info;
 	uint32_t	_next;
 	uint64_t 	_hash;
 	time_t		_when;
@@ -519,12 +519,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		uint32_t		claim_free_mem(uint32_t ready_msg_count,uint32_t *reserved_offsets) {
 			//
 			uint8_t *start = this->start();
-			size_t step = _step;
 			//
-
-			LRU_element *ctrl_free = (LRU_element *)(start + 2*step);  // always the same each tier...
-			//
-			uint32_t status = pop_number(start,ctrl_free,ready_msg_count,reserved_offsets);
+			uint32_t status = pop_number(start,ready_msg_count,reserved_offsets);
 			if ( status == UINT32_MAX ) {
 				_status = false;
 				_reason = "out of free memory: free count == 0";
@@ -552,7 +548,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		*/
 		void			return_to_free_mem(LRU_element *el) {			// a versions of push
 			uint8_t *start = this->start();
-			_atomic_stack_push(start,(LRU_element *)(start + 2*_step),el);
+			_atomic_stack_push(start,el);
 			_count_free->fetch_add(1, std::memory_order_relaxed);
 		}
 
@@ -845,7 +841,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		uint64_t		store_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset,uint8_t thread_id = 1) {
 			HMap_interface *T = this->_hmap;
-			uint64_t result = 0;
+			uint64_t result = UINT64_MAX;
 
 			uint8_t seletor_bit = 0;
 			// a bit for being entered and one or more for which slab...
@@ -921,6 +917,36 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
+		uint64_t get_augmented_hash_locking(uint64_t hash64,uint8_t thread_id = 1) {
+			HMap_interface *T = this->_hmap;
+			uint64_t result = UINT64_MAX;
+			//
+			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
+			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
+			//
+			uint8_t seletor_bit = 0;
+			// a bit for being entered and one or more for which slab...
+			if ( !(selector_bit_is_set(hash64,seletor_bit)) ) {
+				uint8_t which_table = 0;
+				uint64_t loaded_key = UINT64_MAX;
+				if ( T->wait_if_unlock_bucket_counts(hash_bucket,thread_id,which_table) ) {
+					result = stamp_key(hash_bucket,which_table) | (full_hash << HALF);
+				}
+			}
+			return result;
+		}
+
+		//  ----
+		void store_in_hash_unlocking(uint64_t hash64,uint32_t offset,uint8_t thread_id) {
+
+		}
+		
+		//  ----
+		void unlock_cell(uint8_t thread_id) {
+
+		}
+
+		
 
 	public:
 
@@ -961,7 +987,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		atomic<uint32_t>				*_lb_time;
 		atomic<uint32_t>				*_ub_time;
 		atomic<uint32_t>				*_memory_requested;
-		atomic<uint32_t>				*_count_free;
+		atomic<uint32_t>				*_free_count;
 		atomic_flag						*_reserve_evictor;
 		//
 };

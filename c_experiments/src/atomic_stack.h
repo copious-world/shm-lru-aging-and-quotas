@@ -10,11 +10,9 @@ using namespace std;
 
 
 typedef struct BASIC_ELEMENT_HDR {
-	uint32_t	_prev;
+	uint32_t	_info;
 	uint32_t	_next;
 } Basic_element;
-
-
 
 
 template<class StackEl>
@@ -26,11 +24,16 @@ class AtomicStack {
 
 		virtual ~AtomicStack() {}
 
-		uint32_t pop_number(uint8_t *start, StackEl *ctrl_free, uint32_t n, uint32_t *reserved_offsets) {
+
+		/**
+		 * pop_number
+		*/
+		uint32_t pop_number(uint8_t *start, uint32_t n, uint32_t *reserved_offsets) {
 			//
-			auto head = (atomic<uint32_t>*)(&(ctrl_free->_prev));
-			uint32_t h_offset = head->load(std::memory_order_relaxed);
-			if ( h_offset == UINT32_MAX ) {
+			auto head = (atomic<uint32_t>*)(&(_ctrl_free->_next));
+			uint32_t hdr_offset = head->load(std::memory_order_relaxed);
+
+			if ( hdr_offset == UINT32_MAX ) {
 				_status = false;
 				_reason = "out of free memory: free count == 0";
 				return(UINT32_MAX);
@@ -38,70 +41,110 @@ class AtomicStack {
 			//
 			// POP as many as needed
 			//
+			auto fc = _count_free->load(std::memory_order_acquire);
+
+			if ( (fc < n) && _backout_overflow ) {
+				_status = false;
+				_reason = "potential free memory overflow: free count == 0";
+				return(UINT32_MAX);			/// failed memory allocation...
+			}
+
+			bool modified=false;
+			auto modification = fc;
+			do {
+				if (fc == 0) break;
+				modification = fc;
+				if ( fc < n ) {
+					modification = 0;
+				} else {
+					modification -= n;
+				}
+			} while (!(modified = _count_free->compare_exchange_weak(fc, modification, std::memory_order_relaxed)) && (modification == fc));
+
+			std::atomic_thread_fence(std::memory_order_acquire);
+			
+			// ----
+
+			uint32_t *tmp_p = reserved_offsets;
+			//
 			while ( n-- ) {  // consistently pop the free stack
 				uint32_t next_offset = UINT32_MAX;
 				uint32_t first_offset = UINT32_MAX;
 				do {
-					if ( h_offset == UINT32_MAX ) {
+					if ( hdr_offset == UINT32_MAX ) {
 						_status = false;
 						_reason = "out of free memory: free count == 0";
 						return(UINT32_MAX);			/// failed memory allocation...
 					}
-					first_offset = h_offset;
-					StackEl *first = (StackEl *)(start + first_offset);
-					next_offset = first->_next;
-				} while( !(head->compare_exchange_weak(h_offset, next_offset)) );  // link ctrl->next to new first
+
+					first_offset = hdr_offset;
+					StackEl *first = (StackEl *)(start + first_offset); 	// ref next free object
+					next_offset = first->_next;								// next of next free
+				} while( !(head->compare_exchange_weak(hdr_offset, next_offset)) );  // link ctrl->next to new first
 				//
-				if ( next_offset < UINT32_MAX ) {
-					reserved_offsets[n] = first_offset;  // h_offset should have changed
+				if ( first_offset < UINT32_MAX ) {
+					*tmp_p++ = first_offset;  // hdr_offset should have changed
 				}
 			}
+
 			return 0;
 		}
 
 
-		// _atomic_stack_push
-		void _atomic_stack_push(uint8_t *start, StackEl *ctrl_free, StackEl *el) {
-			auto head = (atomic<uint32_t>*)(&(ctrl_free->_next));
-			uint32_t el_offset = (uint32_t)(((uint8_t *)el) - start);
-			uint32_t h_offset = head->load(std::memory_order_relaxed);
-			while(!head->compare_exchange_weak(h_offset, el_offset));
+		/**
+		 * _atomic_stack_push
+		*/
+		void _atomic_stack_push(uint8_t *start, StackEl *el) {
+			if ( !full() ) {
+				auto head = (atomic<uint32_t>*)(&(_ctrl_free->_next));		// whereever this is pointing now (may be UINT32_MAX)
+				uint32_t el_offset = (uint32_t)(((uint8_t *)el) - start);	// 
+				uint32_t hdr_offset = head->load(std::memory_order_relaxed);
+				el->_next = hdr_offset;
+				while(!head->compare_exchange_weak(hdr_offset, el_offset));
+			}
 		}
 
+		/**
+		 * full
+		*/
+		bool full(void) {
+			bool status = false;
+			if ( _max_free_local == _count_free->load() ) status = true;
+			return status;
+		}
 
+		/**
+		 * 	step -- step is the size of the list object header plus the object data allowed length..
+		*/
 		uint16_t setup_region_free_list(uint8_t *start, size_t step, size_t region_size) {
 
 			uint16_t free_count = 0;
 
-			StackEl *ctrl_hdr = (StackEl *)start;
-			ctrl_hdr->_prev = UINT32_MAX;
-			ctrl_hdr->_next = step;
-			ctrl_hdr->_hash = 0;
-			ctrl_hdr->_when = 0;
-			
-			StackEl *ctrl_tail = (StackEl *)(start + step);
-			ctrl_tail->_prev = 0;
-			ctrl_tail->_next = UINT32_MAX;
-			ctrl_tail->_hash = 0;
-			ctrl_tail->_when = 0;
+			_stack_region_end = start + region_size;
 
-			StackEl *ctrl_free = (StackEl *)(start + 2*step);
-			ctrl_free->_prev = UINT32_MAX;
-			ctrl_free->_next = 3*step;
-			ctrl_free->_hash = 0;
-			ctrl_free->_when = 0;
+			_count_free = (atomic<uint32_t>*)(start);		// whereever this is pointing now (may be UINT32_MAX)
+			_max_free = (atomic<uint32_t>*)(start + sizeof(atomic<uint32_t>*));		// whereever this is pointing now (may be UINT32_MAX)
 
 			//
-			size_t curr = ctrl_free->_next;
-			size_t next = 4*step;
+			_ctrl_free = (StackEl *)(start + 2*sizeof(atomic<uint32_t>*));
+			_ctrl_free->_info = UINT32_MAX;
+			_ctrl_free->_next = (step + 2*sizeof(atomic<uint32_t>*));	// step in bytes
+			_ctrl_free->_hash = 0;
+			_ctrl_free->_when = 0;
+
+			//
+			size_t curr = _ctrl_free->_next;
+			size_t next = curr + step;
 			
+			StackEl *last_free = nullptr;
 			while ( curr < region_size ) {   // all the ends are in the first three elements ... the rest is either free or part of the LRU
 				free_count++;
 				StackEl *next_free = (StackEl *)(start + curr);
+				last_free = next_free;
 				if ( !check_end((uint8_t *)next_free) ) {
 					throw "test_lru_creation_and_initialization: run past end of reion";
 				}
-				next_free->_prev = UINT32_MAX;  // singly linked free list
+				next_free->_info = UINT32_MAX;  // singly linked free list (may become something like time)
 				next_free->_next = next;
 				if ( next >= region_size ) {
 					next_free->_next = UINT32_MAX;
@@ -113,8 +156,14 @@ class AtomicStack {
 				next += step;
 			}
 
-			ctrl_free->_hash = 0;   // how many free elements avaibale
-			ctrl_hdr->_hash = 0;
+			if ( last_free ) {
+				last_free->_next = UINT32_MAX;
+			}
+
+			_count_free->store(free_count);
+			_max_free->store(free_count);
+			_max_free_local = free_count;
+			_ctrl_free->_hash = 0;   // how many free elements avaibale
 
 			return free_count;
 		}
@@ -127,13 +176,24 @@ class AtomicStack {
 
 	protected: 
 
-		virtual bool check_end([[maybe_unused]] uint8_t *ref,[[maybe_unused]] bool expect_end = false) { return true; }
+		virtual bool check_end([[maybe_unused]] uint8_t *ref,[[maybe_unused]] bool expect_end = false) { 
+			if ( _stack_region_end <= ref ) {
+				return false;
+			}
+			return true; 
+		}
 
 	public:
 
-		bool							_status;
-		const char 						*_reason;
 
+		bool							_status;
+		bool							_backout_overflow {false};
+		const char 						*_reason {""};
+		uint8_t							*_stack_region_end;
+		StackEl 						*_ctrl_free;
+		//
+		atomic<uint32_t>				*_count_free;
+		atomic<uint32_t>				*_max_free;  // so other threads can read it
+		uint32_t						_max_free_local;
 
 };
-
