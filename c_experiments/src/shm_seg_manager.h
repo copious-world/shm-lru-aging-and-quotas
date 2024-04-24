@@ -254,15 +254,19 @@ class SharedSegmentsTForm : public SharedSegments {
 		//
 		int region_intialization_ops(list<uint32_t> &lru_keys,list<uint32_t> &hh_keys, bool am_initializer, 
 										uint32_t num_procs, uint32_t num_tiers, uint32_t els_per_tier,
-											uint32_t max_obj_size, key_t com_key, key_t randoms_key) {
+											uint32_t max_obj_size, key_t com_key, key_t randoms_key = 0) {
 			int status = 0;
 			
 			status = this->initialize_com_shm(com_key,am_initializer,num_procs,num_tiers);
 			if ( status != 0 ) return status;
-
-			status = this->initialize_randoms_shm(randoms_key,am_initializer);
-			if ( status != 0 ) return status;
-
+			//
+			if ( randoms_key != 0 ) {
+				status = this->initialize_randoms_shm(randoms_key,am_initializer);
+				if ( status != 0 ) return status;
+			} else {
+				_random_bits_buffer = nullptr;
+			}
+			//
 			status = this->tier_segments_initializers(am_initializer,lru_keys,hh_keys,max_obj_size,num_procs,els_per_tier);
 			if ( status != 0 ) return status;
 			

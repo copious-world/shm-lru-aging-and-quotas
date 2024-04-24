@@ -24,9 +24,7 @@ using namespace std;
 
 #define  BITS_GEN_COUNT_LAPSE (3)
 
-
-
-
+#define RNDMS_CONTROL_WD_CNT (4)
 
 
 template<const uint32_t NbitWords = 256,const uint8_t SELECTOR_MAX = 4>
@@ -52,7 +50,8 @@ class Random_bits_generator {
 
 public:
 
-	static constexpr uint32_t check_expected_region_size = SELECTOR_MAX*(NbitWords + 4)*sizeof(uint32_t);
+	static constexpr uint32_t check_expected_region_size = SELECTOR_MAX*(NbitWords + RNDMS_CONTROL_WD_CNT)*sizeof(uint32_t);
+	static constexpr uint8_t _max_r_buffers{SELECTOR_MAX};
 
 	list<uint32_t>			_bits;
 
@@ -82,6 +81,11 @@ public:
 
 public:
 
+
+	/**
+	 * set_region
+	 * 
+	*/
 
 	void set_region(uint32_t *region,uint8_t index) {
 		if ( (index < SELECTOR_MAX) && (region != nullptr) ) {
@@ -115,6 +119,11 @@ public:
 	}
 
 
+	/**
+	 * pop_bit
+	 * 
+	*/
+
 	uint8_t pop_bit() {
 		//
 		if ( _bcount == 0 ) {
@@ -136,6 +145,10 @@ public:
 	}
 
 
+	/**
+	 * transfer_to_shared_buffer
+	 * 		copy from the STL list container to the shared bits area.
+	*/
 
 	void transfer_to_shared_buffer(uint32_t *shared_bit_area, uint32_t size, uint8_t selector = UINT8_MAX) {
 		//
@@ -149,7 +162,7 @@ public:
 		shared_bit_area[2] = 0; // shared last bit (being shifted 32-1 times)
 		//
 		_shared_bits = shared_bit_area;
-		uint32_t *area_w = shared_bit_area + 3;
+		uint32_t *area_w = shared_bit_area + RNDMS_CONTROL_WD_CNT;
 		uint32_t *end = area_w + size;
 		for ( auto bword : _bits ) {
 			*area_w++ = bword;
@@ -162,6 +175,11 @@ public:
 		// regenerate_shared(which_region);
 	}
 
+
+	/**
+	 * pop_shared_bit
+	 * 
+	*/
 
 	uint8_t pop_shared_bit() {
 		//
@@ -194,6 +212,11 @@ public:
 		return the_bit;
 	}
 
+
+	/**
+	 * swap_prepped_bit_regions
+	 * 
+	*/
 
 	void swap_prepped_bit_regions(bool gen_wakes_up = false) {
 		if ( gen_wakes_up ) {

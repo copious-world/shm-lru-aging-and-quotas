@@ -93,10 +93,12 @@ class TierAndProcManager : public LRU_Consts {
 				// initialize hopscotch
 				tier++;
 				if ( tier > _NTiers ) break;
-				_tiers[tier]->set_tier_table(_tiers);
+				_tiers[tier]->set_tier_table(_tiers,_NTiers);
 			}
 			//
 			tier = 0;
+			void **random_seg_ref = random_segs;
+			//
 			for ( auto p : hh_table_segs ) {
 				//
 				key_t key = p.first;
@@ -104,7 +106,6 @@ class TierAndProcManager : public LRU_Consts {
 				size_t hh_seg_sz = seg_sizes[key];
 				//
 				LRU_cache *lru = _tiers[tier];
-				void **random_seg_ref = random_segs;
 				if ( lru != nullptr ) {
 					lru->set_hash_impl(hh_region,hh_seg_sz,els_per_tier);
 					if ( random_seg_ref != nullptr ) {
@@ -602,39 +603,30 @@ class TierAndProcManager : public LRU_Consts {
 									uint64_t *hash_parameter =  (&ce->_hash);
 									//
 									uint64_t hash64 = hash_parameter[0];
+									uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
+									uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
 									//
 									// second phase writer hands the hash and offset to the lru
 									//	this is the first time the lru pairs the hash and offset.
 									// 	the lru calls upon the hash table to store the hash/offset pair...
 									//
-									
-									// auto thread_id = lru->_thread_id;
-									// uint64_t augmented_hash = lru->store_in_hash(hash64,offset,thread_id);
-
-									// if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
-									// 	write_offset_here[0] = offset;
-									// 	hash_parameter[0] = augmented_hash;  // put the augmented hash where the process can get it.
-									// 	//
-									// 	atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
-									// 	clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
-									// }
 
 									auto thread_id = lru->_thread_id;
-									uint64_t augmented_hash = lru->get_augmented_hash_locking(hash64,thread_id);
+									uint8_t which_slice;
+									// hash_bucket goes in by ref and will be stamped
+									uint64_t augmented_hash = lru->get_augmented_hash_locking(full_hash,&hash_bucket,&which_slice,thread_id);
 
 									if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
 										write_offset_here[0] = offset;
+										// the 64 bit version goes back to the caller...
 										hash_parameter[0] = augmented_hash;  // put the augmented hash where the process can get it.
 										//
 										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
 										clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
 										//
 										// -- if there is a problem, it will affect older entries
-										lru->store_in_hash_unlocking(augmented_hash,offset,thread_id);
-									} else {
-										lru->unlock_cell(thread_id);
-									}
-
+										lru->store_in_hash_unlocking(full_hash,hash_bucket,offset,which_slice,thread_id);
+									} // else the bucket has not been locked...
 								}
 							}
 							//
@@ -692,8 +684,10 @@ class TierAndProcManager : public LRU_Consts {
 			if ( wait_to_write(read_marker,MAX_WAIT_LOOPS,delay_func) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
 				// 
 				// tell a reader to get some free memory
-				hash_parameter[0] = hash_bucket;	// put in the hash so that the reader can see if this is a duplicate
-				hash_parameter[1] = full_hash;		// but also, this is the hash (not yet augmented)
+				uint32_t *hpar_low = (uint32_t *)hash_parameter;
+				uint32_t *hpar_hi = (hpar_low + 1);
+				hpar_low[0] = hash_bucket;	// put in the hash so that the reader can see if this is a duplicate
+				hpar_hi[0] = full_hash;		// but also, this is the hash (not yet augmented)
 				// the write offset should come back to the process's read maker
 				offset_offset[0] = updating ? UINT32_MAX : 0;
 				//
@@ -717,10 +711,10 @@ class TierAndProcManager : public LRU_Consts {
 						return -1;
 					}
 					//
-					uint8_t *m_insert = lru->data_location(write_offset);
+					uint8_t *m_insert = lru->data_location(write_offset);  // write offset filtered by above line
 					if ( m_insert != nullptr ) {
-						hash_bucket = hash_parameter[0]; // return the augmented hash ... update by reference...
-						full_hash = hash_parameter[1];
+						hash_bucket = hpar_low[0]; // return the augmented hash ... update by reference...
+						full_hash = hpar_hi[0];
 						memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));  // COPY IN NEW DATA HERE...
 					} else {
 						clear_for_write(read_marker);   // next write from this process can now proceed...

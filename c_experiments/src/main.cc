@@ -74,7 +74,7 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 
 #include "node_shm_tiers_and_procs.h"
 
-//static TierAndProcManager<4> *g_tiers_procs = nullptr;
+static TierAndProcManager<4> *g_tiers_procs = nullptr;
 
 using namespace node_shm;
 
@@ -902,7 +902,7 @@ void hash_counter_bucket_access(void) {
     // 
     for ( uint16_t j =  0; j < 1000; j++ ) {
       if ( sg_share_test_hh ) {
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(20,1,&T,&buffer,&end,which_table) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts_refs(20,1,&T,&buffer,&end,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
@@ -1031,7 +1031,7 @@ void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,uint8_
         uint32_t h_bucket = ud(gen_v);
         my_zero_count[thread_num][h_bucket]++;
         //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,thread_num,&T,&buffer,&end,which_table) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts_refs(h_bucket,thread_num,&T,&buffer,&end,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
@@ -1061,7 +1061,7 @@ void hash_counter_bucket_access_many_buckets(uint32_t num_elements,uint8_t threa
         bucket_counter = ((bucket_counter + skip) >= num_elements) ? 0 : bucket_counter;
         uint32_t h_bucket = bucket_counter += skip;
         //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts(h_bucket,thread_num,&T,&buffer,&end,which_table) ) {
+        if ( sg_share_test_hh->wait_if_unlock_bucket_counts_refs(h_bucket,thread_num,&T,&buffer,&end,which_table) ) {
           //
           int i = 0; while ( i < 100 ) i++;
           //
@@ -3624,6 +3624,64 @@ void stack_threads_test(void) {
   cout << "Duration pre print time: " << dur_t2.count() << " seconds" << endl;
 }
 
+
+
+
+void test_tiers_and_procs() {
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  g_ssm_catostrophy_handler = ssm;
+
+  uint32_t max_obj_size = 128;
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+  uint8_t num_threads = THREAD_COUNT;
+  uint32_t num_procs = num_threads;
+  //
+	bool am_initializer = false;
+  uint32_t proc_number = 0;
+  void *com_buffer = nullptr;
+
+
+  cout << "test_hh_map_methods3: # els: " << els_per_tier << endl;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+//  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+  //
+  //
+  int status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size, com_key);
+  //
+  com_buffer = ssm->_com_buffer;
+  //
+	map<key_t,void *> &lru_segs = ssm->_seg_to_lrus;
+  map<key_t,void *> &hh_table_segs = ssm->_seg_to_hh_tables;
+	map<key_t,size_t> &seg_sizes = ssm->_ids_to_seg_sizes;
+  //
+  void *random_segs[num_tiers];
+  for ( int i = 0; i < num_tiers; i++ ) {
+    random_segs[i] = new uint32_t[260*4];
+  }
+
+
+  g_tiers_procs = new TierAndProcManager<4>(com_buffer,lru_segs,
+                                              hh_table_segs,seg_sizes,am_initializer,proc_number,
+                                                num_procs,num_tiers,els_per_tier,max_obj_size,random_segs);
+
+}
 
 
 

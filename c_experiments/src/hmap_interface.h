@@ -308,9 +308,9 @@ class HMap_interface {
 		virtual void		clear(void) = 0;
 		virtual uint64_t	add_key_value(uint32_t el_match_key,uint32_t hash_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
-
-
-		virtual bool		wait_if_unlock_bucket_counts(uint32_t hash_bucket,uint8_t thread_id,uint8_t &which_table)= 0;
+		//
+		virtual bool		wait_if_unlock_bucket_counts(uint32_t h_bucket, uint8_t thread_id, uint8_t &which_table) = 0;
+		virtual uint64_t	add_key_value_known_slice(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id = 1) = 0;
 };
 
 

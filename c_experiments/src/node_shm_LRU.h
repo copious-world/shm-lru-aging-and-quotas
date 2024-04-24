@@ -916,36 +916,35 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			this->remove_key(hash_bucket,full_hash,process,timestamp);
 		}
 
-
-		uint64_t get_augmented_hash_locking(uint64_t hash64,uint8_t thread_id = 1) {
+		uint64_t		get_augmented_hash_locking(uint32_t full_hash, uint32_t *h_bucket_ref,uint8_t *which_table_ref,uint8_t thread_id = 1) {
 			HMap_interface *T = this->_hmap;
 			uint64_t result = UINT64_MAX;
 			//
-			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
-			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
-			//
 			uint8_t seletor_bit = 0;
+			auto h_bucket = *h_bucket_ref;
 			// a bit for being entered and one or more for which slab...
-			if ( !(selector_bit_is_set(hash64,seletor_bit)) ) {
+			if ( !(selector_bit_is_set(h_bucket,seletor_bit)) ) {
 				uint8_t which_table = 0;
-				uint64_t loaded_key = UINT64_MAX;
-				if ( T->wait_if_unlock_bucket_counts(hash_bucket,thread_id,which_table) ) {
-					result = stamp_key(hash_bucket,which_table) | (full_hash << HALF);
+				if ( T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table) ) {
+					*which_table_ref = which_table;
+					h_bucket = stamp_key(h_bucket,which_table);
+					result = h_bucket | ((uint64_t)full_hash << HALF);
 				}
 			}
 			return result;
 		}
 
-		//  ----
-		void store_in_hash_unlocking(uint64_t hash64,uint32_t offset,uint8_t thread_id) {
-
-		}
-		
-		//  ----
-		void unlock_cell(uint8_t thread_id) {
-
+		uint64_t		get_augmented_hash_locking(uint64_t hash64,uint8_t *which_table_ref,uint8_t thread_id = 1) {
+			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
+			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
+			return this->get_augmented_hash_locking(full_hash,&hash_bucket,which_table_ref,thread_id);
 		}
 
+		//  ----
+		void			store_in_hash_unlocking(uint32_t full_hash, uint32_t h_bucket,uint32_t offset,uint8_t which_table,uint8_t thread_id) {
+			HMap_interface *T = this->_hmap;
+			T->add_key_value_known_slice(full_hash,h_bucket,offset,which_table,thread_id);
+		}
 		
 
 	public:
