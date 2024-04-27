@@ -78,10 +78,9 @@ class TierAndProcManager : public LRU_Consts {
 			_proc = proc_number;
 			_NTiers = min(num_tiers,(uint32_t)MAX_TIERS);
 			_reserve_size = RESERVE_FACTOR;	// set the precent as part of the build
-			_com_buffer = com_buffer;			// the com buffer is another share section.. separate from the shared data regions
+			_com_buffer = (uint8_t *)com_buffer;			// the com buffer is another share section.. separate from the shared data regions
 
 			//
-
 			uint8_t tier = 0;
 			for ( auto p : lru_segs ) {
 				//
@@ -90,10 +89,10 @@ class TierAndProcManager : public LRU_Consts {
 				size_t seg_sz = seg_sizes[key];
 				//
 				_tiers[tier] = new LRU_cache(lru_region, max_obj_size, seg_sz, els_per_tier, _reserve_size, _Procs, _am_initializer, tier);
+				_tiers[tier]->set_tier_table(_tiers,_NTiers);
 				// initialize hopscotch
 				tier++;
 				if ( tier > _NTiers ) break;
-				_tiers[tier]->set_tier_table(_tiers,_NTiers);
 			}
 			//
 			tier = 0;
@@ -116,6 +115,14 @@ class TierAndProcManager : public LRU_Consts {
 				tier++;
 				if ( tier > _NTiers ) break;
 			}
+
+			_status = true;
+			set_reason("OK");
+
+			if ( !set_and_init_com_buffer() ) {
+				_status = false;
+				set_reason("failed to initialize com buffer");
+			}
 		}
 
 		virtual ~TierAndProcManager() {}
@@ -135,10 +142,12 @@ class TierAndProcManager : public LRU_Consts {
 			return predict;
 		}
 
-		// -- set_owner_proc_area
-		// 		the com buffer is set separately outside the constructor... this may just be stylistic. 
-		//		the com buffer services the acceptance of new data and the output of secondary processes.
 		//
+		/**
+		 * set_owner_proc_area
+		 * 
+		 * the com buffer services the acceptance of new data and the output of secondary processes
+		*/
 		bool		set_owner_proc_area(void) {
 			if ( _com_buffer != nullptr ) {
 				_owner_proc_area = (Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *)) + (_proc*_NTiers);
@@ -148,20 +157,26 @@ class TierAndProcManager : public LRU_Consts {
 
 
 		// -- set_reader_atomic_tags
+		/**
+		 * set_reader_atomic_tags
+		*/
 		void 		set_reader_atomic_tags() {
 			if ( _com_buffer != nullptr ) {
 				atomic_flag *af = (atomic_flag *)_com_buffer;
-				for ( int i; i < _NTiers; i++ ) {
+				for ( uint32_t i = 0; i < _NTiers; i++ ) {
 					_readerAtomicFlag[i] = af;
 					af++;
 				}
 			}
 		}
 
+		/**
+		 * set_removal_atomic_tags
+		*/
 		void		set_removal_atomic_tags() {
 			if ( _com_buffer != nullptr ) {
 				atomic_flag *af = ((atomic_flag *)_com_buffer) + _NTiers;
-				for ( int i; i < _NTiers; i++ ) {
+				for ( uint32_t i = 0; i < _NTiers; i++ ) {
 					_removerAtomicFlag[i] = af;
 					af++;
 				}
@@ -169,7 +184,9 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 
-		// -- get_proc_entry
+		/**
+		 * get_proc_entries
+		*/
 		Com_element	*get_proc_entries() {
 			return (Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *));
 		}
@@ -177,9 +194,10 @@ class TierAndProcManager : public LRU_Consts {
 
 	public:
 
-		// -- set_and_init_com_buffer
-		//		the com buffer is retains a set of values or each process 
-		//		
+		/**
+		 * set_and_init_com_buffer
+		 * 	the shaed com buffer retains a set of values or each process 
+		 */	
 		bool 		set_and_init_com_buffer() {
 			//
 			if ( _com_buffer == nullptr ) return false;
@@ -208,6 +226,7 @@ class TierAndProcManager : public LRU_Consts {
 					}
 				}
 			}
+			return true;
 		}
 
 
@@ -331,7 +350,9 @@ class TierAndProcManager : public LRU_Consts {
 		// Stop the process on a futex until notified...
 		void		wait_for_data_present_notification(uint8_t tier) {
 			_readerAtomicFlag[tier]->clear();
+#ifndef __APPLE__
 			_readerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
+#endif
 		}
 
 		/**
@@ -937,11 +958,32 @@ class TierAndProcManager : public LRU_Consts {
 			wakeup_removal(tier);
 		}
 
+	protected:
+
+		bool					_status;
+		char					*_reason;
+
+	public:
+
+		bool					status() {
+			return _status;
+		}
+
+
+		void set_reason(const char *msg) {
+			_reason = (char *)msg;
+		}
+
+		char					*reason() {
+			char *msg = this->_reason;
+			set_reason("OK");
+			return msg;
+		}
 
 	protected:
 		//
 		//
-		void					*_com_buffer;
+		uint8_t					*_com_buffer;
 		LRU_cache 				*_tiers[MAX_TIERS];		// local process storage
 		//
 		thread					*_tier_threads[MAX_TIERS];

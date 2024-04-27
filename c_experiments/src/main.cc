@@ -1181,6 +1181,7 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
 
   status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
                                   num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+  g_ssm_catostrophy_handler = ssm;
 
 
   key_t hh_key = hh_keys.front();
@@ -3664,6 +3665,12 @@ void test_tiers_and_procs() {
   //
   int status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
                                   num_procs, num_tiers, els_per_tier, max_obj_size, com_key);
+
+  g_ssm_catostrophy_handler = ssm;
+
+  if ( status != 0 ) {
+    cout << "region_intialization_ops failed" << endl;
+  }
   //
   com_buffer = ssm->_com_buffer;
   //
@@ -3680,6 +3687,14 @@ void test_tiers_and_procs() {
   g_tiers_procs = new TierAndProcManager<4>(com_buffer,lru_segs,
                                               hh_table_segs,seg_sizes,am_initializer,proc_number,
                                                 num_procs,num_tiers,els_per_tier,max_obj_size,random_segs);
+
+  if ( g_tiers_procs->status() ) {
+    g_tiers_procs->wait_for_data_present_notification(0);
+  }
+
+
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
 
 }
 
@@ -3772,9 +3787,11 @@ int main(int argc, char **argv) {
 
     // entry_holder_test();
 
-    //entry_holder_threads_test();
+    // entry_holder_threads_test();
 
-    stack_threads_test();
+    // stack_threads_test();
+
+    test_tiers_and_procs();
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

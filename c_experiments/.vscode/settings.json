@@ -4,6 +4,7 @@
         "ostream": "cpp",
         "iostream": "cpp",
         "iterator": "cpp",
-        "chrono": "cpp"
+        "chrono": "cpp",
+        "bitset": "cpp"
     }
 }

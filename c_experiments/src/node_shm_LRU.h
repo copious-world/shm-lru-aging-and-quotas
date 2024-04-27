@@ -157,7 +157,6 @@ class LRU_Consts {
 		uint32_t			_NTiers;
 		uint32_t			_Procs;
 		bool				_am_initializer;
-
 };
 
 

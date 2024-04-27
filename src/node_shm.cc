@@ -354,8 +354,6 @@ namespace node_shm {
 																am_initializer, proc_number,
 																	num_procs, num_tiers, els_per_tier, max_obj_size);
 		//
-		g_tiers_procs->set_and_init_com_buffer();
-		//
 		status = g_tiers_procs->launch_second_phase_threads();
 		//
 		if ( status != 0 ) {
