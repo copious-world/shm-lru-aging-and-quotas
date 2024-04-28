@@ -2,6 +2,7 @@
 #define _H_TIERS_AND_PROCS_
 #pragma once
 
+#include <queue>
 
 using namespace std;
 
@@ -163,8 +164,13 @@ class TierAndProcManager : public LRU_Consts {
 		void 		set_reader_atomic_tags() {
 			if ( _com_buffer != nullptr ) {
 				atomic_flag *af = (atomic_flag *)_com_buffer;
-				for ( uint32_t i = 0; i < _NTiers; i++ ) {
-					_readerAtomicFlag[i] = af;
+				for ( uint32_t tier = 0; tier < _NTiers; tier++ ) {
+#ifndef __APPLE__ 
+					af->clear();
+#else
+					while ( !af->test_and_set() );  // set it high
+#endif
+					_readerAtomicFlag[tier] = af;
 					af++;
 				}
 			}
@@ -349,11 +355,26 @@ class TierAndProcManager : public LRU_Consts {
 
 		// Stop the process on a futex until notified...
 		void		wait_for_data_present_notification(uint8_t tier) {
-			_readerAtomicFlag[tier]->clear();
 #ifndef __APPLE__
+			_readerAtomicFlag[tier]->clear();
 			_readerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
+#else
+cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier << endl;
+//cout << "waiting..."; cout.flush();
+			while ( _readerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) && this->_thread_running[tier] ) {
+//cout << "+"; cout.flush();
+				microseconds us = microseconds(100);
+				auto start = high_resolution_clock::now();
+				auto end = start + us;
+				do {
+					std::this_thread::yield();
+//cout << "."; cout.flush();
+				} while ( high_resolution_clock::now() < end );
+			}
 #endif
 		}
+
+
 
 		/**
 		 * Waking up any thread that waits on input into the tier.
@@ -361,19 +382,36 @@ class TierAndProcManager : public LRU_Consts {
 		 * If the tier is full, the reader has the job of kicking off the eviction process.
 		*/
 		bool		wake_up_write_handlers(uint32_t tier) {
+#ifndef __APPLE__
 			_readerAtomicFlag[tier]->test_and_set();
 			_readerAtomicFlag[tier]->notify_all();
+#else
+			_readerAtomicFlag[tier]->clear();
+#endif
 			return true;
 		}
 
 		void 		wait_for_removal_notification(uint8_t tier) {
+#ifndef __APPLE__
 			_removerAtomicFlag[tier]->clear();
 			_removerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
+#else
+			while ( _removerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) ) {
+				microseconds us = microseconds(100);
+				auto start = high_resolution_clock::now();
+				auto end = start + us;
+				do {
+					std::this_thread::yield();
+				} while ( high_resolution_clock::now() < end );
+			}
+#endif
 		}
 		
 		bool 		wakeup_removal(uint32_t tier) {
 			_removerAtomicFlag[tier]->test_and_set();
+#ifndef __APPLE__
 			_removerAtomicFlag[tier]->notify_all();
+#endif
 			return true;
 		}
 
@@ -393,6 +431,8 @@ class TierAndProcManager : public LRU_Consts {
 					while ( this->_thread_running[tier] ) {
 	            		this->second_phase_write_handler(P,messages_reserved,duplicate_reserved,tier);
 					}
+					delete[] messages_reserved;
+					delete[] duplicate_reserved;
         		};
 				_tier_threads[i] = new thread(secondary_runner,i);
 				//
@@ -437,8 +477,6 @@ class TierAndProcManager : public LRU_Consts {
 					//
 					_tier_random_generator_for_hmap_threads[i] = new thread(random_generator_runner,i,tier_lru);
 					//
-
-
 					
 				}
 			}
@@ -478,6 +516,26 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		*/
 
+		/**
+		 * second_phase_waiter
+		 * 		helper for `second_phase_write_handler`
+		*/
+
+		void second_phase_waiter(queue<uint32_t> &ready_procs,uint16_t proc_count,uint8_t assigned_tier) {
+			do {
+				for ( uint32_t proc = 0; (proc < proc_count); proc++ ) {
+					atomic<COM_BUFFER_STATE> *read_marker = this->get_read_marker(proc, assigned_tier);
+					if ( read_marker->load() == CLEARED_FOR_ALLOC ) {   // process has a message
+						ready_procs.push(proc);
+					}
+				}
+				//
+				if ( ready_procs.size() == 0 ) {
+					wait_for_data_present_notification(assigned_tier);
+				}
+			} while ( (ready_procs.size() == 0) && this->_thread_running[assigned_tier] );
+		}
+
 		// At the app level obtain the LRU for the tier and work from there
 		//
 		int 		second_phase_write_handler(uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint8_t assigned_tier = 0) {
@@ -496,9 +554,8 @@ class TierAndProcManager : public LRU_Consts {
 				//  messages[ready_msg_count]->_offset
 				//
 				// 												WAIT FOR WORK
-
-				wait_for_data_present_notification(assigned_tier);
-
+				queue<uint32_t> ready_procs;		// ---- ---- ---- ---- ---- ----
+				second_phase_waiter(ready_procs, proc_count, assigned_tier);
 				//
 				//
 				com_or_offset **messages = (com_or_offset **)messages_reserved;  // get this many addrs if possible...
@@ -512,9 +569,12 @@ class TierAndProcManager : public LRU_Consts {
 				// Here, the assigned tier provides the offset into the proc's tier entries.
 				// Lock down the message written by the proc for the particular tier.. (often 0)
 				//
-				uint32_t ready_msg_count = 0;
+				uint32_t ready_msg_count = 0;  // ready_msg_count should end up less than or equal to proc_count
 				//
-				for ( uint32_t proc = 0; (proc < proc_count); proc++ ) {
+				while ( !ready_procs.empty() ) {
+					//
+					uint32_t proc = ready_procs.front();
+					ready_procs.pop();
 					//
 					atomic<COM_BUFFER_STATE> *read_marker = this->get_read_marker(proc, assigned_tier);
 					Com_element *access = this->access_point(proc,assigned_tier);
@@ -526,10 +586,9 @@ class TierAndProcManager : public LRU_Consts {
 						messages[ready_msg_count]->_cel = access;
 						accesses[ready_msg_count]->_cel = access;
 						//
-						ready_msg_count++;
-						//
 					}
 					//
+					ready_msg_count++;
 				}
 				// rof; 
 				//
@@ -930,7 +989,9 @@ class TierAndProcManager : public LRU_Consts {
 		*/
 
 		void removal_thread(uint8_t tier) {
-			wait_for_removal_notification(tier);
+			if ( _removal_work[tier].empty() ) {
+				wait_for_removal_notification(tier);
+			}
 			while ( !_removal_work[tier].empty() ) {
 				r_entry re;
 				if ( _removal_work[tier].pop(re) ) {
@@ -948,6 +1009,9 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * del_method
 		 * 
+		 * The del method is the method the client process calls. It's main action is to put the hash key and bucket key
+		 * into the removal work queue. After that the `removal_thread` takes over and uses `del_action` to free up the 
+		 * storage position and the hash table positions.
 		 * 
 		*/
 
@@ -955,7 +1019,7 @@ class TierAndProcManager : public LRU_Consts {
 			//
 			r_entry re = {process,timestamp,h_bucket,full_hash};
 			_removal_work[tier].push(re);
-			wakeup_removal(tier);
+			wakeup_removal(tier);		// just in case the removal thread is waiting.
 		}
 
 	protected:
@@ -980,7 +1044,8 @@ class TierAndProcManager : public LRU_Consts {
 			return msg;
 		}
 
-	protected:
+	//protected:
+	public:
 		//
 		//
 		uint8_t					*_com_buffer;

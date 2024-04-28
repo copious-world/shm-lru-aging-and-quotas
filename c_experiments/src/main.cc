@@ -3637,8 +3637,10 @@ void test_tiers_and_procs() {
   uint32_t max_obj_size = 128;
   uint32_t els_per_tier = 1024;
   uint8_t num_tiers = 3;
-  uint8_t num_threads = THREAD_COUNT;
-  uint32_t num_procs = num_threads;
+  //uint8_t num_threads = THREAD_COUNT;
+  uint32_t num_procs = 4;
+  //uint8_t NUM_THREADS = 4;
+
   //
 	bool am_initializer = false;
   uint32_t proc_number = 0;
@@ -3688,10 +3690,29 @@ void test_tiers_and_procs() {
                                               hh_table_segs,seg_sizes,am_initializer,proc_number,
                                                 num_procs,num_tiers,els_per_tier,max_obj_size,random_segs);
 
+  uint32_t P = g_tiers_procs->_Procs;
+  com_or_offset **messages_reserved = new com_or_offset *[P];
+  com_or_offset **duplicate_reserved = new com_or_offset *[P];
+
+  for ( uint8_t j = 0; j < num_tiers; j++ ) {
+		g_tiers_procs->_thread_running[j] = true;
+  }
+
+  thread ender([&](){
+    usleep(1);
+    cout << "hit em now" << endl;
+    g_tiers_procs->wake_up_write_handlers(0);
+  });
+
   if ( g_tiers_procs->status() ) {
     g_tiers_procs->wait_for_data_present_notification(0);
   }
 
+  ender.join();
+  cout << "done" << endl;
+
+  delete[] messages_reserved;
+  delete[] duplicate_reserved;
 
   pair<uint16_t,size_t> p = ssm->detach_all(true);
   cout << p.first << ", " << p.second << endl;
