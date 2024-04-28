@@ -57,7 +57,7 @@ class RemovalEntryHolder : public  SharedQueue_SRSW<r_entry,ExpectedMax> {};
 // messages_reserved is an area to store pointers to the messages that will be read.
 // duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
 
-template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_FACTOR = 3>
+template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_FACTOR = 3,class LRU_c_impl = LRU_cache>
 class TierAndProcManager : public LRU_Consts {
 
 	public:
@@ -81,7 +81,7 @@ class TierAndProcManager : public LRU_Consts {
 			_reserve_size = RESERVE_FACTOR;	// set the precent as part of the build
 			_com_buffer = (uint8_t *)com_buffer;			// the com buffer is another share section.. separate from the shared data regions
 			//
-			_offset_to_com_elements = (LRU_cache::NUM_ATOMIC_OPS)*sizeof(atomic_flag)*2*_NTiers;
+			_offset_to_com_elements = (LRU_c_impl::NUM_ATOMIC_OPS)*sizeof(atomic_flag)*2*_NTiers;
 			//
 			//
 			uint8_t tier = 0;
@@ -91,7 +91,7 @@ class TierAndProcManager : public LRU_Consts {
 				void *lru_region = p.second;
 				size_t seg_sz = seg_sizes[key];
 				//
-				_tiers[tier] = new LRU_cache(lru_region, max_obj_size, seg_sz, els_per_tier, _reserve_size, _Procs, _am_initializer, tier);
+				_tiers[tier] = new LRU_c_impl(lru_region, max_obj_size, seg_sz, els_per_tier, _reserve_size, _Procs, _am_initializer, tier);
 				_tiers[tier]->set_tier_table(_tiers,_NTiers);
 				// initialize hopscotch
 				tier++;
@@ -107,7 +107,7 @@ class TierAndProcManager : public LRU_Consts {
 				void *hh_region = p.second;
 				size_t hh_seg_sz = seg_sizes[key];
 				//
-				LRU_cache *lru = _tiers[tier];
+				LRU_c_impl *lru = _tiers[tier];
 				if ( lru != nullptr ) {
 					lru->set_hash_impl(hh_region,hh_seg_sz,els_per_tier);
 					if ( random_seg_ref != nullptr ) {
@@ -138,7 +138,7 @@ class TierAndProcManager : public LRU_Consts {
 
 		static uint32_t check_expected_com_region_size(uint32_t num_procs, uint32_t num_tiers) {
 			//
-			size_t tier_atomics_sz = (LRU_cache::NUM_ATOMIC_OPS)*sizeof(atomic_flag);  // ref to the atomic flag
+			size_t tier_atomics_sz = (LRU_c_impl::NUM_ATOMIC_OPS)*sizeof(atomic_flag);  // ref to the atomic flag
 			size_t proc_tier_com_sz = sizeof(Com_element)*num_procs;  // each process writes into its own message block per tier
 			uint32_t predict = num_tiers*(tier_atomics_sz*2 + proc_tier_com_sz);
 			//
@@ -250,15 +250,15 @@ class TierAndProcManager : public LRU_Consts {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
-		LRU_cache	*access_tier(uint8_t tier) {
+		LRU_c_impl	*access_tier(uint8_t tier) {
 			if ( (0 <= tier) && (tier < MAX_TIERS) ) {
 				return _tiers[tier];
 			}
 			return nullptr;
 		}
 
-		LRU_cache	*from_time(uint32_t timestamp) {
-			LRU_cache *lru = nullptr;
+		LRU_c_impl	*from_time(uint32_t timestamp) {
+			LRU_c_impl *lru = nullptr;
 			for ( uint8_t i = 0; i < MAX_TIERS; i++ ) {
 				lru = _tiers[i];
 				uint32_t lb_time = lru->_lb_time->load();
@@ -337,7 +337,7 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		*/
 
-		bool		run_evictions(LRU_cache *lru,uint32_t source_tier,uint32_t ready_msg_count) {
+		bool		run_evictions(LRU_c_impl *lru,uint32_t source_tier,uint32_t ready_msg_count) {
 			//
 			// lru - is a source tier
 			uint32_t req_count = lru->free_mem_requested();
@@ -350,7 +350,7 @@ class TierAndProcManager : public LRU_Consts {
 			if ( lru->check_free_mem(ready_msg_count,false) ) return true;  // check if the situation changed on the way here
 
 			//
-			LRU_cache *next_tier = this->access_tier(source_tier+1);
+			LRU_c_impl *next_tier = this->access_tier(source_tier+1);
 			if ( next_tier == nullptr ) {
 				// crisis mode...				elements will have to be discarded or sent to another machine
 				lru->notify_evictor(UINT32_MAX);   // also copy data...
@@ -454,10 +454,10 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 				};
 				_tier_removal_threads[i] = new thread(removal_runner,(i + P));
 				//
-				LRU_cache *tier_lru = access_tier(i);
+				LRU_c_impl *tier_lru = access_tier(i);
 				if ( tier_lru != nullptr ) {
 					//
-					auto evictor_runner = [&](uint8_t tier,LRU_cache *lru) {
+					auto evictor_runner = [&](uint8_t tier,LRU_c_impl *lru) {
 						this->_evictors_running[tier] = true;
 						while ( this->_evictors_running[tier] ) {
             				lru->local_evictor();
@@ -467,7 +467,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 					_tier_evictor_threads[i] = new thread(evictor_runner,i,tier_lru);
 					//
 					// hash_table_value_restore_thread
-					auto restore_runner = [this](uint8_t tier,LRU_cache *lru) {
+					auto restore_runner = [this](uint8_t tier,LRU_c_impl *lru) {
 						this->_restores_running[tier] = true;
 						while ( this->_restores_running[tier] ) {
 	            			lru->hash_table_value_restore_thread();
@@ -478,7 +478,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 					//
 
 					// hash_table_value_restore_thread
-					auto random_generator_runner = [this](uint8_t tier,LRU_cache *lru) {
+					auto random_generator_runner = [this](uint8_t tier,LRU_c_impl *lru) {
 						this->_random_generator_running[tier] = true;
 						while ( this->_random_generator_running[tier] ) {
 	            			lru->hash_table_random_generator_thread_runner();
@@ -557,7 +557,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 				//
 				uint8_t thread_id = 1;
 				//
-				LRU_cache *lru = access_tier(assigned_tier);
+				LRU_c_impl *lru = access_tier(assigned_tier);
 				if ( lru == NULL ) {
 					return(-1);
 				}
@@ -754,7 +754,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 			if ( (buffer == nullptr) || (size <= 0) ) return -1;  // might put a limit on size lower and uppper
 			//
 			//
-			LRU_cache *lru = from_time(timestamp);   // this is being accessed in more than one place...
+			LRU_c_impl *lru = from_time(timestamp);   // this is being accessed in more than one place...
 
 			if ( lru == nullptr ) {  // has not been initialized
 				return -1;
@@ -846,7 +846,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 			uint32_t write_offset = 0;
 			//
 			if ( tier == 0 ) {
-				LRU_cache *lru = access_tier(tier);
+				LRU_c_impl *lru = access_tier(tier);
 				if ( lru != nullptr ) {
 					write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
 					if ( write_offset != UINT32_MAX ) {
@@ -890,7 +890,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 			//
 			if ( tier == 0 ) {
 				uint32_t timestamp = 0;
-				LRU_cache *lru = access_tier(tier);
+				LRU_c_impl *lru = access_tier(tier);
 				if ( lru != nullptr ) {
 					write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
 					if ( write_offset != UINT32_MAX ) {
@@ -905,7 +905,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 						auto tier_search_runner = [this](uint32_t tier,uint32_t process, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz) {
 							uint32_t timestamp = 0;
 							for ( ; tier < this->_NTiers; tier++ ) {
-								LRU_cache *lru = this->access_tier(tier);
+								LRU_c_impl *lru = this->access_tier(tier);
 								uint32_t write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
 								if ( write_offset != UINT32_MAX ) {
 									uint8_t *stored_data = lru->data_location(write_offset);
@@ -951,7 +951,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 		*/
 
 		int del_action(uint32_t process,uint32_t hash_bucket, uint32_t full_hash, uint32_t timestamp, uint32_t tier) {
-			LRU_cache *lru = access_tier(tier);
+			LRU_c_impl *lru = access_tier(tier);
 			if ( lru != nullptr ) {
 				auto write_offset = lru->getter(hash_bucket,full_hash,process);
 				if ( write_offset != UINT32_MAX ) {
@@ -1059,7 +1059,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 		//
 		//
 		uint8_t					*_com_buffer;
-		LRU_cache 				*_tiers[MAX_TIERS];		// local process storage
+		LRU_c_impl 				*_tiers[MAX_TIERS];		// local process storage
 		//
 		thread					*_tier_threads[MAX_TIERS];
 		bool					_thread_running[MAX_TIERS];
