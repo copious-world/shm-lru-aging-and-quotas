@@ -154,6 +154,8 @@ class LRU_Consts {
 
 	public:
 
+		static const uint8_t	NUM_ATOMIC_OPS{NUM_ATOMIC_FLAG_OPS_PER_TIER};			
+
 		uint32_t			_NTiers;
 		uint32_t			_Procs;
 		bool				_am_initializer;

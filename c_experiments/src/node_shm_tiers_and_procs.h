@@ -80,7 +80,9 @@ class TierAndProcManager : public LRU_Consts {
 			_NTiers = min(num_tiers,(uint32_t)MAX_TIERS);
 			_reserve_size = RESERVE_FACTOR;	// set the precent as part of the build
 			_com_buffer = (uint8_t *)com_buffer;			// the com buffer is another share section.. separate from the shared data regions
-
+			//
+			_offset_to_com_elements = (LRU_cache::NUM_ATOMIC_OPS)*sizeof(atomic_flag)*2*_NTiers;
+			//
 			//
 			uint8_t tier = 0;
 			for ( auto p : lru_segs ) {
@@ -136,12 +138,21 @@ class TierAndProcManager : public LRU_Consts {
 
 		static uint32_t check_expected_com_region_size(uint32_t num_procs, uint32_t num_tiers) {
 			//
-			size_t tier_atomics_sz = NUM_ATOMIC_FLAG_OPS_PER_TIER*sizeof(atomic_flag *);  // ref to the atomic flag
-			size_t proc_tier_com_sz = sizeof(Com_element)*num_procs;
+			size_t tier_atomics_sz = (LRU_cache::NUM_ATOMIC_OPS)*sizeof(atomic_flag);  // ref to the atomic flag
+			size_t proc_tier_com_sz = sizeof(Com_element)*num_procs;  // each process writes into its own message block per tier
 			uint32_t predict = num_tiers*(tier_atomics_sz*2 + proc_tier_com_sz);
 			//
 			return predict;
 		}
+
+
+		/**
+		 * get_owner_proc_area
+		*/
+		Com_element	*get_owner_proc_area(uint16_t proc) {
+			 return ((Com_element *)(_com_buffer + _offset_to_com_elements)) + (proc*_NTiers);
+		}
+
 
 		//
 		/**
@@ -151,7 +162,7 @@ class TierAndProcManager : public LRU_Consts {
 		*/
 		bool		set_owner_proc_area(void) {
 			if ( _com_buffer != nullptr ) {
-				_owner_proc_area = (Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *)) + (_proc*_NTiers);
+				_owner_proc_area = get_owner_proc_area(_proc);
 			}
 			return true;
 		}
@@ -273,48 +284,47 @@ class TierAndProcManager : public LRU_Consts {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
-		atomic<COM_BUFFER_STATE> *get_read_marker(uint8_t tier = 0) {
-			Com_element *ce = (_owner_proc_area + tier);
-			return &(ce->_marker);
-		}
-
 		Com_element *access_point(uint8_t tier = 0) {
-			Com_element *ce = (_owner_proc_area + tier);
+			Com_element *ce = (_owner_proc_area + tier);  // access to the control block of the instance's `_proc` for the tier
 			return ce;
 		}
 
-		uint64_t	*get_hash_parameter(uint8_t tier = 0) {
-			Com_element *ce = (_owner_proc_area + tier);
+		atomic<COM_BUFFER_STATE> *get_read_marker(uint8_t tier = 0) {
+			Com_element *ce = (_owner_proc_area + tier);  // From the instance's reserved com elements by it's `_proc` member.
+			return &(ce->_marker);   // The marker (may be the first field), provides access to just the atomically shared field.
+		}
+
+		uint64_t	*get_hash_parameter(uint8_t tier = 0) {		// the hash parameter of a read and write operations
+			Com_element *ce = (_owner_proc_area + tier);		// values will be written here and modified values returned here.
 			return &(ce->_hash);
 		}
 
-		uint32_t	*get_offset_parameter(uint8_t tier = 0) {
-			Com_element *ce = (_owner_proc_area + tier);
+		uint32_t	*get_offset_parameter(uint8_t tier = 0) {	// The offset to the storage data area for writing the object
+			Com_element *ce = (_owner_proc_area + tier);		// new element offsets will be returned here
 			return &(ce->_offset);
 		}
 
 
-		atomic<COM_BUFFER_STATE> *get_read_marker(uint8_t proc, uint8_t tier = 0) {
-			Com_element *owner_proc_area = ((Com_element *)_com_buffer) + (proc*_NTiers);
-			Com_element *ce = (owner_proc_area + tier);
-			return &(ce->_marker);
-		}
-
-
 		Com_element	*access_point(uint8_t proc, uint8_t tier = 0) {
-			Com_element *owner_proc_area = ((Com_element *)_com_buffer) + (proc*_NTiers);
+			Com_element *owner_proc_area = get_owner_proc_area(proc);;
 			Com_element *ce = (owner_proc_area + tier);
 			return ce;
 		}
 
+		atomic<COM_BUFFER_STATE> *get_read_marker(uint8_t proc, uint8_t tier = 0) {
+			Com_element *owner_proc_area = get_owner_proc_area(proc);;
+			Com_element *ce = (owner_proc_area + tier);
+			return &(ce->_marker);
+		}
+
 		uint64_t	*get_hash_parameter(uint8_t proc, uint8_t tier = 0) {
-			Com_element *owner_proc_area = ((Com_element *)_com_buffer) + (proc*_NTiers);
+			Com_element *owner_proc_area = get_owner_proc_area(proc);;
 			Com_element *ce = (owner_proc_area + tier);
 			return &(ce->_hash);
 		}
 
 		uint32_t	*get_offset_parameter(uint8_t proc, uint8_t tier = 0) {
-			Com_element *owner_proc_area = ((Com_element *)_com_buffer) + (proc*_NTiers);
+			Com_element *owner_proc_area = get_owner_proc_area(proc);;
 			Com_element *ce = (owner_proc_area + tier);
 			return &(ce->_offset);
 		}
@@ -1069,6 +1079,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 		uint16_t				_proc;					// calling proc index (assigned by configuration) (indicates offset in com buffer)
 		Com_element				*_owner_proc_area;
 		uint8_t					_reserve_size;
+		uint16_t				_offset_to_com_elements;
 
 	protected:
 

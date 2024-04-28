@@ -20,7 +20,7 @@ Finally, a number of parameters may be configured for tuning the module as the a
 
 The elements of these lists only store offsets to the object storage regions.  The object storage region does not have to map precisely to a tier LRU; however, this mapping will likely be maintained for simplicity. Suffice it to say that if there is a queue node in free memory, then there is a hole in the object storage where a new element may be stored.
 
-**com buffer:** One difference from other basket queue operations is that each process will provide a communication slot for new data. The slot will retain an atomic flag indicating if the data has been consumed. Each proess will queue their own new entries based on the slot. A consumer of the slots will coalesce the slots into a basket. Later consumption of the queue will rely on the basket grouping for LRU eviction.
+**com buffer:** One difference from other basket queue operations is that each process will provide a communication slot for new data. The slot will retain an atomic flag indicating if the data has been consumed. Each process will queue their own new entries based on the slot. A consumer of the slots will coalesce the slots into a basket. Later consumption of the queue will rely on the basket grouping for LRU eviction.
 
 **tiers:** Again, each LRU HopScotch pair will correspond to a single tier of usage activity. As the usage of ceratain data objects decrease, they will be evicted from their current activity tier and marshalled to a lower activity tier until they are ready to leave the aegis of the processor, mutlicore CPU.
 
@@ -108,3 +108,45 @@ Some code may use a 64 bit value to carry both the 32 bit hash and the augmented
 What does it mean for the hash bucket to be augmented?
 
 A single 32 bit word is allocate to the hash bucket, but the maximum number of buckets in a tier has to fit within memory on smaller computers. Furthermore, it is unlikely that more than 2^28 elements will be stored in a single tier. So, the top four bits of the the bucket index may be used to indicate a slice of memory (shard) in which parallel hash tables may reside. Four bits are set aside by this implementation; yet, maybe only two will be neeed. The top two bits may have values **0**,**1** or **3**. The **0** value indicates that the entry has yet to be added to the table (so methods will reject using it if the bit is not set.) The **1** value indicates that the entry has been store and that it is to be found in the first sharded table (**0** table). The **3** value indicates that the entry has been stored and has is to be found in the second shard (**1** table).
+
+
+## The Com Buffer
+
+The communication buffer is managed by *TierAndProcManager* class.  The constructor for this class
+takes a reference to the memory area (preferably shared) where the communication buffer resides. The class constructor 
+initializes the com buffer area, and that is the last step in its construction. If the com buffer area cannot be 
+appropriately initialized, the constructor will set the TierAndProcManager status to **false**, but it does not throw an exception.
+
+One criterion for using the com buffer correctly is that the application allocates the right size for the buffer. The size is not enforced by the constructor parameter. Instead, the application can refer to the static emthod `check_expected_com_region_size`. The region size method will return the minimum size for the com buffer area dependent on the number of writer processes using the buffer and the number of tiers that each process may access.
+
+The `check_expected_com_region_size` includes room for a layout of the com buffer that includes the following in order:
+
+* A constant number of w/r flag pairs X the number of tiers  (i.e. one list of pairs per tier in sequence grouped by tier).
+* A sequence of `Com_element` entries for each proc grouped by proc. 
+	* For each proc, successive `Com_element`s are stored contiguously each indexed by the tier.
+
+
+There is one of these per reader/writer process per tier:
+
+```
+typedef struct COM_ELEMENT {
+	atomic<COM_BUFFER_STATE>	_marker;	// control over accessing the message buffer
+	uint8_t						_proc;		// the index of the owning proc
+	uint8_t						_tier;		// the index of the managed tier (this com element)
+	uint8_t						_ops;		// read/write/delete and other flags. 
+	//
+	uint64_t					_hash;		// the hash of the message
+	uint32_t					_offset;	// offset to the LRU element... where data will be stored
+	uint32_t					_timestamp;	// control over accessing the message buffer
+	char						_message[MAX_MESSAGE_SIZE];   // 64*2
+} Com_element;
+
+```
+
+
+The `Com_element` provides parameters for managing data exchange between consumer facing processes and backend operation. The state of read/write sharing is managed by the `_marker`. The `_message` buffer is provided for input and output operations if needed. (In truth, appropriate LRU classes provided offsets to the data storage which the  *TierAndProcManager* owning processe
+will have exclusively until `_marker` indicates freedom.)
+
+
+
+
