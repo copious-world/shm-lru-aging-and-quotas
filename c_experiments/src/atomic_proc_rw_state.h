@@ -40,6 +40,48 @@ typedef enum {
 // entries summed across the pool entries. 
 
 
+//
+static inline void clear_for_write(atomic<COM_BUFFER_STATE> *read_marker) {   // first and last
+    auto p = read_marker;
+    auto current_marker = p->load();
+    while(!p->compare_exchange_weak(current_marker,CLEAR_FOR_WRITE)
+                    && ((COM_BUFFER_STATE)(*read_marker) != CLEAR_FOR_WRITE));
+}
+
+//
+static inline void cleared_for_alloc(atomic<COM_BUFFER_STATE> *read_marker) {
+    auto p = read_marker;
+    auto current_marker = p->load();
+    while(!p->compare_exchange_weak(current_marker,CLEARED_FOR_ALLOC)
+                    && ((COM_BUFFER_STATE)(p->load()) != CLEARED_FOR_ALLOC));
+}
+
+//
+static inline void claim_for_alloc(atomic<COM_BUFFER_STATE> *read_marker) {
+    auto p = read_marker;
+    auto current_marker = p->load();
+    while(!p->compare_exchange_weak(current_marker,LOCKED_FOR_ALLOC)
+                    && ((COM_BUFFER_STATE)(p->load()) != LOCKED_FOR_ALLOC));
+}
+
+//
+static inline void clear_for_copy(atomic<COM_BUFFER_STATE> *read_marker) {
+    auto p = read_marker;
+    auto current_marker = p->load();
+    while(!p->compare_exchange_weak(current_marker,CLEARED_FOR_COPY)
+                    && ((COM_BUFFER_STATE)(p->load()) != CLEARED_FOR_COPY));
+}
+
+
+static inline void indicate_error(atomic<COM_BUFFER_STATE> *read_marker) {
+    auto p = read_marker;
+    auto current_marker = p->load();
+    while(!p->compare_exchange_weak(current_marker,FAILED_ALLOCATOR)
+                    && ((COM_BUFFER_STATE)(p->load()) != FAILED_ALLOCATOR));
+}
+
+//
+
 static inline void useless_wait() {}
 
 // only one process/thread should own this position. 
@@ -62,31 +104,6 @@ inline bool wait_to_write(atomic<COM_BUFFER_STATE> *read_marker,uint16_t loops =
     return true;
 }
 
-//
-static inline void clear_for_write(atomic<COM_BUFFER_STATE> *read_marker) {   // first and last
-    auto p = read_marker;
-    auto current_marker = p->load();
-    while(!p->compare_exchange_weak(current_marker,CLEAR_FOR_WRITE)
-                    && ((COM_BUFFER_STATE)(*read_marker) != CLEAR_FOR_WRITE));
-}
-
-//
-static inline void cleared_for_alloc(atomic<COM_BUFFER_STATE> *read_marker) {
-    auto p = read_marker;
-    auto current_marker = p->load();
-    while(!p->compare_exchange_weak(current_marker,CLEARED_FOR_ALLOC)
-                    && ((COM_BUFFER_STATE)(*read_marker) != CLEARED_FOR_ALLOC));
-}
-
-//
-static inline void claim_for_alloc(atomic<COM_BUFFER_STATE> *read_marker) {
-    auto p = read_marker;
-    auto current_marker = p->load();
-    while(!p->compare_exchange_weak(current_marker,LOCKED_FOR_ALLOC)
-                    && ((COM_BUFFER_STATE)(*read_marker) != LOCKED_FOR_ALLOC));
-}
-
-//
 
 // MAX_WAIT_LOOPS
 // await_write_offset(read_marker,MAX_WAIT_LOOPS,4)
@@ -111,21 +128,4 @@ static inline bool await_write_offset(atomic<COM_BUFFER_STATE> *read_marker,uint
         delay_func();
     }
     return true;
-}
-
-
-//
-static inline void clear_for_copy(atomic<COM_BUFFER_STATE> *read_marker) {
-    auto p = read_marker;
-    auto current_marker = p->load();
-    while(!p->compare_exchange_weak(current_marker,CLEARED_FOR_COPY)
-                    && ((COM_BUFFER_STATE)(*read_marker) != CLEARED_FOR_COPY));
-}
-
-
-static inline void indicate_error(atomic<COM_BUFFER_STATE> *read_marker) {
-    auto p = read_marker;
-    auto current_marker = p->load();
-    while(!p->compare_exchange_weak(current_marker,FAILED_ALLOCATOR)
-                    && ((COM_BUFFER_STATE)(*read_marker) != FAILED_ALLOCATOR));
 }

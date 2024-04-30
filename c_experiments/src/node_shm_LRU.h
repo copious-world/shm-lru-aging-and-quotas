@@ -343,6 +343,13 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 
+		void set_random_bits(void *shared_bit_region) {
+			if ( _hmap ) {
+				_hmap->set_random_bits(shared_bit_region);
+			}
+		}
+
+
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -507,7 +514,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 
 		/**
-		 * claim_free_mem
+		 *	claim_free_mem
 		 * 
 		 * 		The free memory is a stack that is shared.
 		 * 		A number of items are requested. This method takes as many requested
@@ -527,8 +534,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				_reason = "out of free memory: free count == 0";
 				return(UINT32_MAX);
 			}
-			//
-			_count_free->fetch_sub(ready_msg_count, std::memory_order_relaxed);
 
 			// If the request cuts into reserves, then the handling thread will 
 			// be flagged with a state indicating that some offline eviction should be starting 
@@ -558,7 +563,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		/**
-		 * attach_to_lru_list
+		 *	attach_to_lru_list
 		 * 
 		 * 		Those elements being added are stored in data structure that manages the presence of the data 
 		 * 		relative to preconfigured periods of time for them to remain locally. 
@@ -578,14 +583,14 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 		/**
-		 * check_free_mem -- checks to see if there is enough memory for the request.
+		 * check_and_maybe_request_free_mem -- checks to see if there is enough memory for the request.
 		 * 		Threads learn of the requested amount by examining the `_memory_requested` atomic variable.
 		 * 		Serves to increment free memory the *add* flag is true. 
 		*/
-		bool 			check_free_mem(uint32_t msg_count,bool add) {
+		bool 			check_and_maybe_request_free_mem(uint32_t msg_count,bool add) {
 			//
 			// using _prev to count the free elements... it is not updated in this check (just inspected)
-			auto count_free = _count_free->load();
+			auto count_free = _count_free->load(std::memory_order_acquire);
 			//
 			auto total_requested = _memory_requested->load(std::memory_order_relaxed);
 			if ( add ) {
@@ -771,7 +776,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			_reserve_evictor->wait(true,std::memory_order_acquire);
 #endif
 			uint8_t thread_id = this->_thread_id;
-			if ( _Tier+1 < _max_tiers ) {
+			if ( (_Tier+1) < _max_tiers ) {
 				uint32_t req_count = _Procs;
 				LRU_cache *next_tier = this->_all_tiers[_Tier+1];
 				this->transfer_hashes(next_tier,req_count,thread_id);
@@ -965,9 +970,10 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		uint16_t						_max_count;  // max possible number of records
 		//
 		uint8_t							_Tier;
-		uint8_t							_reserve;
 		uint8_t							_max_tiers;
 		uint8_t							_thread_id;
+		//
+		uint16_t						_reserve;
 		//
 		uint32_t						_configured_tier_cooling;
 		double							_configured_shrinkage;
@@ -987,7 +993,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		atomic<uint32_t>				*_lb_time;
 		atomic<uint32_t>				*_ub_time;
 		atomic<uint32_t>				*_memory_requested;
-		atomic<uint32_t>				*_free_count;
 		atomic_flag						*_reserve_evictor;
 		//
 };

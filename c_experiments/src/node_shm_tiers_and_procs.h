@@ -92,7 +92,7 @@ class TierAndProcManager : public LRU_Consts {
 				size_t seg_sz = seg_sizes[key];
 				//
 				_tiers[tier] = new LRU_c_impl(lru_region, max_obj_size, seg_sz, els_per_tier, _reserve_size, _Procs, _am_initializer, tier);
-				_tiers[tier]->set_tier_table(_tiers,_NTiers);
+				_tiers[tier]->set_tier_table((LRU_cache **)_tiers,_NTiers);
 				// initialize hopscotch
 				tier++;
 				if ( tier > _NTiers ) break;
@@ -111,7 +111,7 @@ class TierAndProcManager : public LRU_Consts {
 				if ( lru != nullptr ) {
 					lru->set_hash_impl(hh_region,hh_seg_sz,els_per_tier);
 					if ( random_seg_ref != nullptr ) {
-						lru->_hmap->set_random_bits(*random_seg_ref++);
+						lru->set_random_bits(*random_seg_ref++);
 					}
 				}
 				// initialize hopscotch
@@ -172,7 +172,7 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * set_reader_atomic_tags
 		*/
-		void 		set_reader_atomic_tags() {
+		void 		set_reader_atomic_tags(void) {
 			if ( _com_buffer != nullptr ) {
 				atomic_flag *af = (atomic_flag *)_com_buffer;
 				for ( uint32_t tier = 0; tier < _NTiers; tier++ ) {
@@ -190,7 +190,7 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * set_removal_atomic_tags
 		*/
-		void		set_removal_atomic_tags() {
+		void		set_removal_atomic_tags(void) {
 			if ( _com_buffer != nullptr ) {
 				atomic_flag *af = ((atomic_flag *)_com_buffer) + _NTiers;
 				for ( uint32_t i = 0; i < _NTiers; i++ ) {
@@ -204,7 +204,7 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * get_proc_entries
 		*/
-		Com_element	*get_proc_entries() {
+		Com_element	*get_proc_entries(void) {
 			return (Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *));
 		}
 
@@ -347,7 +347,7 @@ class TierAndProcManager : public LRU_Consts {
 				// out of this tier's data region. Stuff in reserve will end up in the primary (non-reserve) buffer.
 				// The data is shifting out of spots from a previous eviction.  
 
-			if ( lru->check_free_mem(ready_msg_count,false) ) return true;  // check if the situation changed on the way here
+			if ( lru->check_and_maybe_request_free_mem(ready_msg_count,false) ) return true;  // check if the situation changed on the way here
 
 			//
 			LRU_c_impl *next_tier = this->access_tier(source_tier+1);
@@ -548,7 +548,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 
 		// At the app level obtain the LRU for the tier and work from there
 		//
-		int 		second_phase_write_handler(uint16_t proc_count, char **messages_reserved, char **duplicate_reserved, uint8_t assigned_tier = 0) {
+		int 		second_phase_write_handler(uint16_t proc_count, com_or_offset **messages_reserved, com_or_offset **duplicate_reserved, uint8_t assigned_tier = 0) {
 			//
 			if ( _com_buffer == NULL  ) {    // com buffer not intialized
 				return -5; // plan error numbers: this error is huge problem cannot operate
@@ -568,8 +568,8 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 				second_phase_waiter(ready_procs, proc_count, assigned_tier);
 				//
 				//
-				com_or_offset **messages = (com_or_offset **)messages_reserved;  // get this many addrs if possible...
-				com_or_offset **accesses = (com_or_offset **)duplicate_reserved;
+				com_or_offset **messages = messages_reserved;  // get this many addrs if possible...
+				com_or_offset **accesses = duplicate_reserved;
 				//
 				// 
 				// FIRST: gather messages that are aready for addition to shared data structures.
@@ -581,7 +581,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 				//
 				uint32_t ready_msg_count = 0;  // ready_msg_count should end up less than or equal to proc_count
 				//
-				while ( !ready_procs.empty() ) {
+				while ( !(ready_procs.empty()) ) {
 					//
 					uint32_t proc = ready_procs.front();
 					ready_procs.pop();
@@ -648,11 +648,12 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 						// Is there enough memory?							--- CHECK FREE MEMORY
 						// there is enough free memory even if this tier cuts into reserves.
 						bool add = true;
-						while ( !(lru->check_free_mem(additional_locations,add)) ) {
+						while ( !(lru->check_and_maybe_request_free_mem(additional_locations,add)) ) {
 							// stop until there is space... getting to this point means 
 							// that aggressive and immediate action has to be taken before proceeding.
-							// A deterministic outcome is required.
-							if ( !run_evictions(lru,assigned_tier,additional_locations) ) {
+							// A deterministic outcome is required. This also means that limit checking 
+							// and also time interval checking for aging out data have both failed elsewhere.
+							if ( !run_evictions(lru,assigned_tier,additional_locations) ) {  // last ditch
 								return(-1);			// failed to move of old entries
 							}
 							add = false;  // this process should not add the same amount to the global free mem request more than once.

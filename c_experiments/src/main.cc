@@ -74,7 +74,7 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 
 #include "node_shm_tiers_and_procs.h"
 
-static TierAndProcManager<4> *g_tiers_procs = nullptr;
+[[maybe_unused]] static TierAndProcManager<4> *g_tiers_procs = nullptr;
 
 using namespace node_shm;
 
@@ -3628,6 +3628,91 @@ void stack_threads_test(void) {
 
 
 
+
+class LRU_cache_mock : public LRU_cache  {
+
+	public:
+
+		// LRU_cache -- constructor
+		LRU_cache_mock(void *region, size_t record_size, size_t seg_sz, size_t els_per_tier, size_t reserve, uint16_t num_procs, bool am_initializer, uint8_t tier) 
+                        : LRU_cache(region, record_size, seg_sz, els_per_tier, reserve, num_procs, am_initializer, tier) {
+			//
+		}
+
+		virtual ~LRU_cache_mock() {}
+
+	public:
+
+    // 
+		uint32_t		filter_existence_check(com_or_offset **messages,com_or_offset **accesses,uint32_t ready_msg_count,[[maybe_unused]] uint8_t thread_id) {
+			uint32_t new_msgs_count = 0;
+			while ( --ready_msg_count >= 0 ) {  // walk this list backwards...
+				//
+				[[maybe_unused]] uint64_t hash = (uint64_t)(messages[ready_msg_count]->_cel->_hash);
+				uint32_t data_loc = _test_data_loc++; // _hmap->get(hash,thread_id);  // random locaton for test....
+				//
+				if ( data_loc != UINT32_MAX ) {    // check if this message is already stored
+					messages[ready_msg_count]->_offset = data_loc;  // just putting in an offset... maybe something better
+				} else {
+					new_msgs_count++;							// the hash has not been found
+					accesses[ready_msg_count]->_offset = 0;		// the offset is not yet known (the space will claimed later)
+				}
+			}
+			return new_msgs_count;
+		}
+
+
+
+		uint64_t		get_augmented_hash_locking([[maybe_unused]] uint32_t full_hash, [[maybe_unused]] uint32_t *h_bucket_ref,[[maybe_unused]] uint8_t *which_table_ref,[[maybe_unused]] uint8_t thread_id = 1) {
+			// [[maybe_unused]] HMap_interface *T = this->_hmap;
+			uint64_t result = UINT64_MAX;
+			//
+
+			return result;
+		}
+
+
+
+		//  ----
+		void			store_in_hash_unlocking([[maybe_unused]] uint32_t full_hash, [[maybe_unused]] uint32_t h_bucket,[[maybe_unused]] uint32_t offset,[[maybe_unused]] uint8_t which_table,[[maybe_unused]] uint8_t thread_id) {
+
+		}
+
+
+		uint32_t		getter([[maybe_unused]] uint32_t full_hash,[[maybe_unused]] uint32_t h_bucket,[[maybe_unused]] uint8_t thread_id,[[maybe_unused]] uint32_t timestamp = 0) {
+			// can check on the limits of the timestamp if it is not zero
+			return _test_data_loc;
+		}
+
+
+		/**
+		 * update_in_hash
+		*/
+
+		uint64_t		update_in_hash([[maybe_unused]] uint32_t full_hash,[[maybe_unused]] uint32_t hash_bucket,[[maybe_unused]] uint32_t new_el_offset,[[maybe_unused]] uint8_t thread_id = 1) {
+      uint64_t result =  (uint64_t)full_hash << HALF | hash_bucket;
+			return result;
+		}
+
+
+		/**
+		 * remove_key
+		*/
+
+		void 			remove_key([[maybe_unused]] uint32_t full_hash, [[maybe_unused]] uint32_t h_bucket,[[maybe_unused]] uint8_t thread_id, [[maybe_unused]] uint32_t timestamp) {
+			//_timeout_table->remove_entry(timestamp);
+
+		}
+
+
+
+    uint32_t _test_data_loc{10};
+
+ };
+
+
+
+
 void test_tiers_and_procs() {
   //
   SharedSegmentsManager *ssm = new SharedSegmentsManager();
@@ -3686,30 +3771,175 @@ void test_tiers_and_procs() {
   }
 
 
-  g_tiers_procs = new TierAndProcManager<4>(com_buffer,lru_segs,
+  TierAndProcManager<4,3,LRU_cache_mock> *g_tiers_procs_mock = nullptr;
+
+
+  g_tiers_procs_mock = new TierAndProcManager<4,3,LRU_cache_mock>(com_buffer,lru_segs,
                                               hh_table_segs,seg_sizes,am_initializer,proc_number,
                                                 num_procs,num_tiers,els_per_tier,max_obj_size,random_segs);
 
-  uint32_t P = g_tiers_procs->_Procs;
+  uint32_t P = g_tiers_procs_mock->_Procs;
   com_or_offset **messages_reserved = new com_or_offset *[P];
   com_or_offset **duplicate_reserved = new com_or_offset *[P];
 
   for ( uint8_t j = 0; j < num_tiers; j++ ) {
-		g_tiers_procs->_thread_running[j] = true;
+		g_tiers_procs_mock->_thread_running[j] = true;
   }
 
   thread ender([&](){
     usleep(1);
     cout << "hit em now" << endl;
-    g_tiers_procs->wake_up_write_handlers(0);
+    g_tiers_procs_mock->wake_up_write_handlers(0);
   });
 
-  if ( g_tiers_procs->status() ) {
-    g_tiers_procs->wait_for_data_present_notification(0);
+  if ( g_tiers_procs_mock->status() ) {
+    g_tiers_procs_mock->wait_for_data_present_notification(0);
   }
 
   ender.join();
   cout << "done" << endl;
+
+  // second_phase_waiter(queue<uint32_t> &ready_procs,uint16_t proc_count,uint8_t assigned_tier)
+/*
+    CLEAR_FOR_WRITE,	// unlocked - only one process will write in this spot, so don't lock for writing. Just indicate that reading can be done
+    CLEARED_FOR_ALLOC,	// the current process will set the atomic to CLEARED_FOR_ALLOC
+    LOCKED_FOR_ALLOC,	// a thread (process) that picks up the reading task will block other readers from this spot
+    CLEARED_FOR_COPY,	// now let the writer copy the message into storage
+
+*/
+  atomic<COM_BUFFER_STATE> *read_marker = g_tiers_procs_mock->get_read_marker(0, 0);
+  auto rm = read_marker->load();
+  cout << "read marker: " << rm << " " << ((rm == CLEAR_FOR_WRITE) ? "CLEAR_FOR_WRITE" : "mismatch") << endl;
+  //
+  cleared_for_alloc(read_marker);
+  rm = read_marker->load();
+  cout << "read marker: " << rm << " " << ((rm == CLEARED_FOR_ALLOC) ? "CLEARED_FOR_ALLOC" : "mismatch") << endl;
+  //
+  claim_for_alloc(read_marker);
+  rm = read_marker->load();
+  cout << "read marker: " << rm << " " << ((rm == LOCKED_FOR_ALLOC) ? "LOCKED_FOR_ALLOC" : "mismatch") << endl;
+  //
+  clear_for_copy(read_marker);
+  rm = read_marker->load();
+  cout << "read marker: " << rm << " " << ((rm == CLEARED_FOR_COPY) ? "CLEARED_FOR_COPY" : "mismatch") << endl;
+  //
+  clear_for_write(read_marker);
+  rm = read_marker->load();
+  cout << "read marker: " << rm << " " << ((rm == CLEAR_FOR_WRITE) ? "CLEAR_FOR_WRITE" : "mismatch") << endl;
+  //
+
+
+
+  thread ender2([&](){
+    usleep(10);
+    cout << "hit em with cleared_for_alloc" << endl;
+    cleared_for_alloc(read_marker);
+
+    atomic<COM_BUFFER_STATE> *read_marker_1 = g_tiers_procs_mock->get_read_marker(1, 0);
+    atomic<COM_BUFFER_STATE> *read_marker_2 = g_tiers_procs_mock->get_read_marker(2, 0);
+    atomic<COM_BUFFER_STATE> *read_marker_3 = g_tiers_procs_mock->get_read_marker(3, 0);
+
+    cleared_for_alloc(read_marker_1);
+    cleared_for_alloc(read_marker_2);
+    cleared_for_alloc(read_marker_3);
+
+    g_tiers_procs_mock->wake_up_write_handlers(0);
+  });
+
+  if ( g_tiers_procs_mock->status() ) {
+    queue<uint32_t> ready_procs;
+    g_tiers_procs_mock->second_phase_waiter(ready_procs,num_procs,0);
+    cout << "ready_procs: sz: " << ready_procs.size() << endl;
+    while ( !ready_procs.empty() ) {
+      cout << "\t" << ready_procs.front() << endl;
+      ready_procs.pop();
+    }
+  }
+
+  ender2.join();
+  cout << "done again" << endl;
+
+  rm = read_marker->load();
+  cout << "read marker: " << rm << " " << ((rm == CLEARED_FOR_ALLOC) ? "CLEARED_FOR_ALLOC" : "mismatch") << endl;
+
+  clear_for_write(read_marker);
+  rm = read_marker->load();
+  cout << "read marker: " << rm << " " << ((rm == CLEAR_FOR_WRITE) ? "CLEAR_FOR_WRITE" : "mismatch") << endl;
+
+
+
+	LRU_cache_mock *lru = g_tiers_procs_mock->access_tier(0);
+
+
+  cout << "LRU :: reserve: "  << lru->_reserve << endl;
+
+  uint32_t msg_count = 4;
+  // bool add;
+
+  cout << "free count: " << lru->free_count() << endl;
+  cout << "current count: " << lru->current_count() << endl;
+
+  lru->check_and_maybe_request_free_mem(msg_count,true);    // when add is set to true _memory_requested increments
+
+  cout << "after req free mem" << endl;
+  cout << "free count: " << lru->free_count() << endl;
+  cout << "current count: " << lru->current_count() << endl;
+
+
+  auto memreq = lru->free_mem_requested();
+
+  cout << "mem requested: " << memreq << endl;
+
+  // should be on stack
+  uint32_t lru_element_offsets[msg_count+1];
+  // clear the buffer
+  memset((void *)lru_element_offsets,0,sizeof(uint32_t)*(msg_count+1)); 
+
+  // the next thing off the free stack.
+  //
+  bool mem_claimed = (UINT32_MAX != lru->claim_free_mem(msg_count,lru_element_offsets));
+
+  if ( mem_claimed ) cout << "mem_claimed" << endl;
+  else cout << "no mem_claimed" << endl;
+
+  cout << "after mem claimed" << endl;
+  cout << "free count: " << lru->free_count() << endl;
+  cout << "current count: " << lru->current_count() << endl;
+
+
+
+  /*
+
+  thread ender3([&](){
+    usleep(10);
+    cout << "hit em with cleared_for_alloc" << endl;
+    cleared_for_alloc(read_marker);
+
+    atomic<COM_BUFFER_STATE> *read_marker_1 = g_tiers_procs_mock->get_read_marker(1, 0);
+    atomic<COM_BUFFER_STATE> *read_marker_2 = g_tiers_procs_mock->get_read_marker(2, 0);
+    atomic<COM_BUFFER_STATE> *read_marker_3 = g_tiers_procs_mock->get_read_marker(3, 0);
+
+    cleared_for_alloc(read_marker_1);
+    cleared_for_alloc(read_marker_2);
+    cleared_for_alloc(read_marker_3);
+
+    g_tiers_procs_mock->wake_up_write_handlers(0);
+  });
+
+  if ( g_tiers_procs_mock->status() ) {
+    queue<uint32_t> ready_procs;
+    g_tiers_procs_mock->second_phase_write_handler(num_procs,messages_reserved,duplicate_reserved,0);
+    cout << "ready_procs: sz: " << ready_procs.size() << endl;
+    while ( !ready_procs.empty() ) {
+      cout << "\t" << ready_procs.front() << endl;
+      ready_procs.pop();
+    }
+  }
+
+  ender2.join();
+  cout << "done again" << endl;
+*/
+
 
   delete[] messages_reserved;
   delete[] duplicate_reserved;
