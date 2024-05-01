@@ -3951,6 +3951,143 @@ void test_tiers_and_procs() {
 
 
 
+//
+/*
+static inline void cleared_for_alloc(atomic<COM_BUFFER_STATE> *read_marker) {
+    auto p = read_marker;
+    auto current_marker = p->load();
+    while(!p->compare_exchange_weak(current_marker,CLEARED_FOR_ALLOC)
+                    && ((COM_BUFFER_STATE)(p->load()) != CLEARED_FOR_ALLOC));
+}
+*/
+
+
+
+class Spinlock{
+public:
+  Spinlock(): flag{ATOMIC_FLAG_INIT} {}
+
+  virtual ~Spinlock(void) { unlock(); }
+
+  void lock(){
+    while( flag.test_and_set() ) __libcpp_thread_yield();
+  }
+
+  void unlock(){
+    flag.clear();
+  }
+
+ private:
+   std::atomic_flag flag;
+ };
+
+
+
+
+void tryout_cpp_example(void) {
+    //
+    //
+    const int N = 16; // four concurrent readers are allowed
+    const int loop_n = 40;
+    std::atomic<int> cnt(0);
+    std::vector<int> data;
+    vector<int> what_read_saw;
+
+
+
+    Spinlock w_spin;
+
+    bool start = false;
+    bool read_start = false;
+    
+    auto reader = [&](int id) {
+      while ( !read_start ) std::this_thread::sleep_for(1ms);
+      while (true) {
+          //
+          auto count = cnt.fetch_sub(1,std::memory_order_acquire);
+          if ( count <= 0 ) {
+            count = 0;
+            cnt.store(0,std::memory_order_release);
+          }
+
+          w_spin.lock();
+
+          //if ( count > 0 ) {
+            what_read_saw.push_back(count);
+          //}
+
+          // std::cout << ("reader " + std::to_string(id) +
+          //               " sees " + std::to_string(*data.rbegin()) + '\n');
+
+          if ( data.size() >= ((loop_n*N) - 1) && ( count <= 0 ) ) {
+            w_spin.unlock();
+            break;
+          }
+
+          w_spin.unlock();
+          if ( count == 0 ) {
+            __libcpp_thread_yield();
+            //std::this_thread::sleep_for(1ms);
+          }
+  
+          // pause
+          //std::this_thread::sleep_for(1ms);
+      }
+    
+    };
+
+    auto writer = [&](int id) {
+        while ( !start ) std::this_thread::sleep_for(1ms);
+        for (int n = 0; n < loop_n; ++n) {
+
+          w_spin.lock();
+          data.push_back(n);
+          cnt.fetch_add(N + 1);
+          std::cout << "writer " << id << " pushed back " << n << '\n';
+          w_spin.unlock();
+
+          // pause
+          std::this_thread::sleep_for(1ms);
+        }
+    };
+
+    auto starter = [&]() {
+      std::this_thread::sleep_for(1ms);
+      read_start = true;
+      std::this_thread::sleep_for(10ms);
+      start = true;
+    };
+
+
+    std::vector<std::thread> v;
+    for (int n = 0; n < N; ++n) {
+      v.emplace_back(reader, 2*n+1);
+      v.emplace_back(writer, 2*n+2);
+    }
+    v.emplace_back(starter);
+
+
+ 
+    for (auto& t : v)
+        t.join();
+
+
+    cout << "SIZES: " << data.size() << " " << (N*loop_n) << endl;
+    cout << "CNT: " << cnt.load() << endl;
+
+    for ( uint32_t j = 0; j < data.size(); j++ ) {
+      cout << data[j] << ", "; cout.flush();
+    }
+    cout << endl;
+
+    cout << "what_read_saw" << endl;
+    for ( uint32_t j = 0; j < what_read_saw.size(); j++ ) {
+      cout << what_read_saw[j] << ", "; cout.flush();
+    }
+    cout << endl;
+
+}
+
 /*
 
 
@@ -4042,7 +4179,9 @@ int main(int argc, char **argv) {
 
     // stack_threads_test();
 
-    test_tiers_and_procs();
+    // test_tiers_and_procs();
+
+    tryout_cpp_example();
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

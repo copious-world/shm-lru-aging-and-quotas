@@ -101,6 +101,12 @@ class AtomicStack {
 				uint32_t hdr_offset = head->load(std::memory_order_relaxed);
 				el->_next = hdr_offset;
 				while(!head->compare_exchange_weak(hdr_offset, el_offset));
+				auto cnt = _count_free->load(std::memory_order_acquire);
+				if ( cnt < _max_free->load() ) {
+					// auto current = cnt++;
+					_count_free->fetch_add(1, std::memory_order_relaxed);
+					//while ( !(_count->compare_exchange_weak(current,cnt,std::memory_order_release)) );
+				}
 			}
 		}
 

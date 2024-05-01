@@ -555,7 +555,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		void			return_to_free_mem(LRU_element *el) {			// a versions of push
 			uint8_t *start = this->start();
 			_atomic_stack_push(start,el);
-			_count_free->fetch_add(1, std::memory_order_relaxed);
 		}
 
 
