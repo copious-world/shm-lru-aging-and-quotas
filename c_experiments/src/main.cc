@@ -3994,7 +3994,6 @@ void tryout_cpp_example(void) {
     vector<int> what_read_saw;
 
 
-
     Spinlock w_spin;
 
     bool start = false;
@@ -4085,6 +4084,115 @@ void tryout_cpp_example(void) {
       cout << what_read_saw[j] << ", "; cout.flush();
     }
     cout << endl;
+
+}
+
+
+
+
+
+
+
+void tryout_atomic_counter(void) {
+  //
+
+  std::random_device rd;  // a seed source for the random number engine
+  std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
+  std::uniform_int_distribution<uint32_t> ud(1, 64);
+
+  //
+  const int N = 16; // four concurrent readers are allowed
+  const int loop_n = 200;
+  const uint32_t max_cnt = 1000;
+
+  std::atomic<uint32_t> cnt(0);
+  vector<int> what_read_saw;
+
+  Spinlock w_spin;
+
+  bool start = false;
+  bool read_start = false;
+  
+  auto returner = [&](int id) {
+    while ( !read_start ) std::this_thread::sleep_for(1ms);
+    while (true) {
+        //
+        auto count = cnt.fetch_add(1,std::memory_order_acquire);
+        if ( count >= max_cnt ) {
+          count = max_cnt;
+          cnt.store(count,std::memory_order_release);
+        }
+
+        w_spin.lock();
+          what_read_saw.push_back((int)(-id));
+          what_read_saw.push_back((int)count);
+        w_spin.unlock();
+        //
+        if ( count >= max_cnt ) {
+          cout << "Thread id (" << id << ") quitting" << endl;
+          break;
+          //std::this_thread::sleep_for(1ms);
+        }
+
+        // pause
+        //std::this_thread::sleep_for(1ms);
+    }
+  
+  };
+
+  auto requester = [&](int id) {
+    while ( !start ) std::this_thread::sleep_for(1ms);
+    uint32_t breakout = 0;
+    for (int n = 0; n < loop_n; n++ ) {
+      //
+      uint32_t decr = ud(gen);
+      //
+      uint32_t current = cnt.load(std::memory_order_acquire);
+      if ( (decr > 0) && ( current >= decr ) ) {
+        auto stored = current;
+        do {
+          if ( current >= decr ) {
+            stored = current - decr;
+          } else break;
+          while ( !(cnt.compare_exchange_weak(current,stored,std::memory_order_acq_rel)) && (current != stored) );
+        } while ( current != stored );
+      } else {
+        if ( ++breakout > 50000 ) break;
+        __libcpp_thread_yield();
+      }
+      // pause
+      std::this_thread::sleep_for(1ms);
+    }
+  };
+
+  auto starter = [&]() {
+    std::this_thread::sleep_for(1ms);
+    read_start = true;
+    std::this_thread::sleep_for(10ms);
+    start = true;
+  };
+
+
+  std::vector<std::thread> v;
+  for (int n = 0; n < N; ++n) {
+    v.emplace_back(returner, 2*n+1);
+    v.emplace_back(requester, 2*n+2);
+  }
+  v.emplace_back(starter);
+
+
+
+  for (auto& t : v)
+      t.join();
+
+
+  cout << "CNT: " << cnt.load() << endl;
+
+  // cout << "what_read_saw" << endl;
+  // for ( uint32_t j = 0; j < what_read_saw.size(); j++ ) {
+  //   cout << what_read_saw[j] << ", "; cout.flush();
+  // }
+  // cout << endl;
 
 }
 
@@ -4181,13 +4289,16 @@ int main(int argc, char **argv) {
 
     // test_tiers_and_procs();
 
-    tryout_cpp_example();
+    // tryout_cpp_example();
+
+    tryout_atomic_counter();
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 
   cout << "Duration test 1: " << dur_t1.count() << " seconds" << endl;
   cout << "Duration test 2: " << dur_t2.count() << " seconds" << endl;
 
+  cout << (UINT32_MAX - 4294916929) << endl;
 
   return(0);
 }

@@ -32,7 +32,7 @@ class AtomicStack {
 			//
 			auto head = (atomic<uint32_t>*)(&(_ctrl_free->_next));
 			uint32_t hdr_offset = head->load(std::memory_order_relaxed);
-
+			//
 			if ( hdr_offset == UINT32_MAX ) {
 				_status = false;
 				_reason = "out of free memory: free count == 0";
@@ -49,18 +49,8 @@ class AtomicStack {
 				return(UINT32_MAX);			/// failed memory allocation...
 			}
 
-			bool modified=false;
-			auto modification = fc;
-			do {
-				if (fc == 0) break;
-				modification = fc;
-				if ( fc < n ) {
-					modification = 0;
-				} else {
-					modification -= n;
-				}
-			} while (!(modified = _count_free->compare_exchange_weak(fc, modification, std::memory_order_relaxed)) && (modification == fc));
-
+			reduce_free_count(fc,n);
+			//
 			std::atomic_thread_fence(std::memory_order_acquire);
 			
 			// ----
@@ -101,14 +91,58 @@ class AtomicStack {
 				uint32_t hdr_offset = head->load(std::memory_order_relaxed);
 				el->_next = hdr_offset;
 				while(!head->compare_exchange_weak(hdr_offset, el_offset));
-				auto cnt = _count_free->load(std::memory_order_acquire);
-				if ( cnt < _max_free->load() ) {
-					// auto current = cnt++;
-					_count_free->fetch_add(1, std::memory_order_relaxed);
-					//while ( !(_count->compare_exchange_weak(current,cnt,std::memory_order_release)) );
+				increment_free_count();
+			}
+		}
+
+
+
+/*
+ 
+		auto cnt = _count_free->load(std::memory_order_acquire);
+		if ( cnt < _max_free->load() ) {
+			// auto current = cnt++;
+			_count_free->fetch_add(1, std::memory_order_relaxed);
+			//while ( !(_count->compare_exchange_weak(current,cnt,std::memory_order_release)) );
+		}
+
+*/
+		void increment_free_count(void) {
+			auto count = _count_free->fetch_add(1,std::memory_order_acquire);
+			if ( count >= _max_free_local ) {
+				count++;
+				while ( !(_count_free->compare_exchange_weak(count,_max_free_local,std::memory_order_acq_rel)) && (count > _max_free_local) );
+				if ( count < _max_free_local ) {
+					_count_free->fetch_sub(1,std::memory_order_acq_rel);  // remove the unseen extra
 				}
 			}
 		}
+
+
+/*
+    uint32_t current = cnt.load(std::memory_order_acquire);
+	auto store_this = fc;
+	do {
+		if ( fc >= decr ) {
+			store_this = current - decr;
+		} else break;
+		while ( !(cnt.compare_exchange_weak(current,store_this,std::memory_order_acq_rel)) && (current != fc) );
+	} while ( fc != store_this );
+*/
+
+		void reduce_free_count(uint32_t fc,uint32_t n) {
+			auto store_this = fc;
+			do {
+				if (fc == 0) break;
+				if ( fc < n ) {
+					store_this = 0;
+				} else {
+					store_this = (fc - n);
+				}
+				while ( !(_count_free->compare_exchange_weak(fc, store_this, std::memory_order_relaxed)) && (store_this != fc) );
+			} while ( store_this != fc );
+		}
+
 
 		/**
 		 * full
