@@ -18,6 +18,8 @@
 #include <chrono>
 #include <iostream>
 
+#include <atomic>
+
 using namespace std;
 
 
@@ -189,6 +191,25 @@ bin_search_with_blackouts_increasing(uint32_t key,pair<uint32_t,uint32_t> *key_v
 
 // KeyValueManager
 // 
+/**
+ * KeyValueManager
+ * 
+ * The KeyValueManager keeps track of two lists which are stored in the same region and which are often merged during 
+ * their usage. The bottom of memory list is a sorted list of values, which may acquire holes over time. The top of memory list
+ * grows by appendation and is expected to be nearly sorted as a result of key incrementation over time. In most cases, the key 
+ * will be a timestamp. And, in the case of the time stamp, the key will almost surely be sorted, except that since more than one process 
+ * may enter a key, there will be races that put the keys out of sort locally for a small bucket (basket) of values.
+ * 
+ * M measures number of elements in the lower memory list. And, N measuret the number of entries beyond it. 
+ * When a new element is added, it may grow M if N is zero (N=0). If it N=0, it can be assumed that the lower list have been 
+ * resorted and that no race condition has violated the order of addition. At some point, prior to a sorting, merging, and compression 
+ * of the lists, the M will become fixed and new additions will be added to the end. 
+ * 
+ * Conditions that fix M can be entries set out of order by race conditions, by an update or by a deletion of an older entry.
+ * 
+ * 
+ * 
+*/
 
 class KeyValueManager {
 
@@ -198,6 +219,7 @@ class KeyValueManager {
 							uint32_t count_size, pair<uint32_t,uint32_t> *shared_queue, uint16_t expected_proc_max) 
 			: _proc_queue(shared_queue,expected_proc_max) {
 			_key_val = primary_storage;
+			_end_key_val = _key_val + expected_proc_max;
 			_MAX = count_size;
 			_N = 0;
 			_M = 0;
@@ -211,9 +233,19 @@ class KeyValueManager {
 			_regions_option = false;
 			_regions = nullptr;				// for future use
 		}
-	
+
 	public:
 		// 
+
+
+		/**
+		 * add_entry -- application facing method. 
+		 * 
+		 * Call `entry_add`, which returns an update of `_M`, the number of elements in the lower memory list.
+		 * `_M` does not necessarily update, but should reflect the size of the surely sorted elements. 
+		 * The upper and lower bounds of all the entries are updated as well. 
+		 * 
+		*/
 
 		inline bool add_entry(uint32_t key,uint32_t value) {
 			if ( _N + _M >= _MAX ) return false;
@@ -227,12 +259,29 @@ class KeyValueManager {
 			return true;
 		}
 
+
+		/**
+		 * update_entry  -- application facing method. 
+		 * 
+		 * updates an entry by changing the key (timestamp) and moving it from the sorted region the 
+		 * upper memory list. The two region sizes need enough space for a new element, since the 
+		 * update will create a hole at the position where the entry presided and add the upate to the end 
+		 * with a new increment (timestamp).
+		 * 
+		 * 
+		*/
 		inline bool update_entry(uint32_t key,uint32_t old_key,uint32_t maybe_value = UINT32_MAX) {
-			if ( _N + _M >= _MAX ) return false;
+			if ( _N + _M >= (_MAX-1) ) return false;
 			manage_update(old_key,key,maybe_value);
 			return true;
 		}
 
+
+		/**
+		 * remove_entry -- application facing method. 
+		 * 
+		 * 
+		*/
 		inline bool remove_entry(uint32_t key) {
 			if ( _N ==0 && _M == 0 ) return false;
 			if ( (_blackout_count == 0) && (_M > 0) ) {
@@ -291,19 +340,28 @@ class KeyValueManager {
 			return false;  // no changes
 		}
 
+
+		/**
+		 * rectify_blackout_count
+		*/
 		void rectify_blackout_count(uint32_t tolerance) {
 			if ( tolerance >= _blackout_count ) {
 				_N = merge_sort_with_blackouts_increasing(_key_val,_N,_M,_nouveau_min,_proc_queue);
 			}
 		}
 
+		/**
+		 * set_procs_participating
+		*/
 		void set_procs_participating(uint32_t P) {
 			_proc_count = P;
 		}
 
-
-
-
+		//
+		/**
+		 * displace_lowest_value_threshold
+		 * 
+		*/
 		void displace_lowest_value_threshold(list<uint32_t> &deposit, uint32_t min_max, uint32_t max_count) {
 			//
 			pair<uint32_t,uint32_t> *p = _key_val;
@@ -333,6 +391,9 @@ class KeyValueManager {
 		}
 
 
+		/**
+		 * least_time_key
+		*/
 		uint32_t least_time_key() {
 			pair<uint32_t,uint32_t> *p = _key_val;
 			pair<uint32_t,uint32_t> *eo_everything = p + _N + _M;
@@ -366,6 +427,9 @@ class KeyValueManager {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+		/**
+		 * manage_update
+		*/
 		void manage_update(uint32_t key,uint32_t key_update,uint32_t maybe_value = UINT32_MAX) {
 			pair<uint32_t,uint32_t> new_hole_offset{UINT32_MAX,UINT32_MAX};
 			uint32_t maybe_M = UINT32_MAX;
@@ -401,7 +465,7 @@ class KeyValueManager {
 			_nouveau_max = max(key_update,_nouveau_max);
 			_nouveau_min = min(key_update,_nouveau_min);
 			//
-			if ( _proc_count <= _M ) {
+			if ( _proc_count <= _M ) {  // Try to keep this last sort very small, within the number of procs sharing this buffer.
 				_N = merge_sort_with_blackouts_increasing(_key_val,_N,_M,_nouveau_min,_proc_queue);
 			}
 			if ( new_hole_offset.first != UINT32_MAX ) {
@@ -411,6 +475,9 @@ class KeyValueManager {
 
 
 	// ----
+		/**
+		 * sort_small_mostly_increasing
+		*/
 		void sort_small_mostly_increasing(pair<uint32_t,uint32_t> *beg,pair<uint32_t,uint32_t> *end) {
 			pair<uint32_t,uint32_t> *start = beg;
 			while ( start < (end-1) ) {
@@ -496,7 +563,7 @@ class KeyValueManager {
 					}
 					//
 				} else {
-					sort_small_mostly_increasing(new_vals,new_vals_end);	
+					sort_small_mostly_increasing(new_vals,new_vals_end);
 				}
 				// now the two regions should be contiguous and in sorted order, 
 				// but there may still be holes below the sort
@@ -549,6 +616,10 @@ class KeyValueManager {
 		}
 
 
+		/**
+		 * merge_sort_with_blackouts_increasing
+		*/
+
 		uint32_t merge_sort_with_blackouts_increasing(pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M,uint32_t new_min,UpdateSource &us)  {
 			//
 			uint32_t result = _merge_sort_with_blackouts_increasing(key_val, N, M, new_min, us);
@@ -562,26 +633,34 @@ class KeyValueManager {
 		}
 
 
+		/**
+		 * entry_add
+		*/
 		inline uint32_t entry_add(uint32_t key,uint32_t value,pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M) {
-			if ( N == 0 ) {
+			if ( N == 0 ) {   // append
 				pair<uint32_t,uint32_t> *p = key_val + M;
 				p->first = key;
 				p->second = value;
 				return (M+1);
 			} else {
-				pair<uint32_t,uint32_t> *check = key_val + N - 1;
-				if ( key < check->first ) {
+				pair<uint32_t,uint32_t> *check = key_val + N - 1;  // look at the last stored element
+				if ( key < check->first ) {  // require the new elements to have a greater time stamp than the fixed lower region largest stamp.
 					return UINT32_MAX;
 				}
-				pair<uint32_t,uint32_t> *p = key_val + N + M;
-				p->first = key;
+				pair<uint32_t,uint32_t> *p = key_val + N + M;  // end of everything (M lower and N upper)
+				p->first = key;			// set key and value
 				p->second = value;
-				return (M+1);
+				return (M+1);  // one more
 			}
 		}
 
 
 		// makes a hole where the old entry is...
+		/**
+		 * entry_key_upate
+		 * 
+		 * binary search to find the item that will be updated...
+		*/
 		inline uint32_t entry_key_upate(uint32_t key,uint32_t key_update,pair<uint32_t,uint32_t> *key_val,uint32_t &N,uint32_t M,pair<uint32_t,uint32_t> &new_hole_offset,uint32_t maybe_value = UINT32_MAX,bool has_holes = true) {
 			if ( key_update < key ) return UINT32_MAX; // it is assumed the keys will arrive in monotonic increasing order
 			//
@@ -687,13 +766,13 @@ class KeyValueManager {
 			return false;
 		}
 
-
-
 	public:
 
 		UpdateSource			_proc_queue;
 		//
 		pair<uint32_t,uint32_t> *_key_val;
+		pair<uint32_t,uint32_t> *_end_key_val;
+		//
 		uint32_t				_MAX;
 		uint32_t				_N;
 		uint32_t				_M;
@@ -705,11 +784,293 @@ class KeyValueManager {
 		pair<uint32_t,uint32_t> _min_hole_offset;
 		pair<uint32_t,uint32_t> _max_hole_offset;
 		//
+
+		//
 		uint16_t				_proc_count;
 		bool					_regions_option;
 		pair<uint32_t,uint32_t> *_regions;
 };
 
 
+
+
+
+
+class SpinlockNonReaders {
+public:
+  SpinlockNonReaders(): flag{ATOMIC_FLAG_INIT} {}
+
+  virtual ~SpinlockNonReaders(void) { unlock(); }
+
+  void lock(bool reader){
+    while( flag.test_and_set() && !reader ) __libcpp_thread_yield();
+  }
+
+  void unlock(){
+    flag.clear();
+  }
+
+ private:
+   std::atomic_flag flag;
+
+};
+
+
+class SpinlockWriters {
+public:
+  SpinlockWriters(): flag{ATOMIC_FLAG_INIT} {}
+
+  virtual ~SpinlockWriters(void) { unlock(); }
+
+  void lock(void){
+    while( flag.test_and_set() ) __libcpp_thread_yield();
+  }
+
+  void unlock(){
+    flag.clear();
+  }
+
+ private:
+   std::atomic_flag flag;
+
+};
+
+
+
+class Shared_KeyValueManager : public KeyValueManager {
+
+	public:
+
+		Shared_KeyValueManager(pair<uint32_t,uint32_t> *primary_storage,
+									uint32_t count_size, pair<uint32_t,uint32_t> *shared_queue, uint16_t expected_proc_max)
+											: KeyValueManager(primary_storage,count_size,shared_queue,expected_proc_max)
+								 {
+		}
+
+		virtual ~Shared_KeyValueManager() {
+		}
+
+
+
+	protected:
+
+		void enter_shared_mode_ops() {
+			_N = _share_N->load();
+			_M = _share_M->load();
+			_blackout_count = _share_blackout_count->load();
+			_nouveau_max = _share_nouveau_max->load();
+			_nouveau_min = _share_nouveau_min->load();
+			_min_hole_offset.first = _share_min_hole_offset_first->load();
+			_min_hole_offset.second = _share_min_hole_offset_second->load();
+			_max_hole_offset.first = _share_max_hole_offset_first->load();
+			_max_hole_offset.second = _share_max_hole_offset_first->load();
+		}
+
+		void exit_shared_mode_ops() {
+			_share_N->store(_N);
+			_share_M->store(_M);
+			_share_blackout_count->store(_blackout_count);
+			_share_nouveau_max->store(_nouveau_max);
+			_share_nouveau_min->store(_nouveau_min);
+			//
+			_share_min_hole_offset_first->store(_min_hole_offset.first);
+			_share_min_hole_offset_second->store(_min_hole_offset.second);
+			_share_max_hole_offset_first->store(_max_hole_offset.first);
+			_share_max_hole_offset_first->store(_max_hole_offset.second);
+		}
+
+
+
+		/**
+		 * lock_position --
+		 * The offset value being stored should never reach UINT32_MAX.
+		 * By design the number of elements being stored times size is less than 4 billion.
+		*/
+		bool lock_position(pair<uint32_t,uint32_t> *p) {
+			auto *p_val = (atomic<uint32_t> *)(&(p->second));
+			auto pval = p_val->exchange(UINT32_MAX);
+			if ( pval == UINT32_MAX ) {
+				return false;
+			}
+			return true;
+		}
+
+		/**
+		 * unlock_position --
+		 * 
+		*/
+		void unlock_position(pair<uint32_t,uint32_t> *p,uint32_t value) {
+			auto *p_val = (atomic<uint32_t> *)(&(p->second));
+			p_val->store(value,std::memory_order_release);
+		}
+
+
+		/**
+		 * entry_add
+		 * 
+		 * Allow some cooperation among readers of the data structure (also, these are writers of data).
+		 * But, other operations which alter the sorting of the buffers, can lock. Locking may be further reduced 
+		 * at some later date. For now, given some time constraints a larger region of operation can be locked.
+		 * So, update and remove will be given exclusive access to the data structure. Readers (those adding) will be held out 
+		 * while update and remove operate. Threads adding will lock out the other operations except for other adders 
+		 * and some no-lock style of buffer access will be allowed. 
+		 * 
+		*/
+		inline uint32_t entry_add(uint32_t key,uint32_t value,pair<uint32_t,uint32_t> *key_val,uint32_t N,uint32_t M) {
+			if ( N == 0 ) {   // append
+				pair<uint32_t,uint32_t> *p = key_val + M;
+				uint32_t r = 1;
+				while ( !(lock_position(p)) ) {
+					r++;
+					p++;
+					if ( p >= _end_key_val ) {
+						return UINT32_MAX;
+					}
+				}
+				p->first = key;
+				unlock_position(p,value);
+				return (M+r);
+			} else {
+				pair<uint32_t,uint32_t> *check = key_val + N - 1;  // look at the last stored element
+				if ( key < check->first ) {  // require the new elements to have a greater time stamp than the fixed lower region largest stamp.
+					return UINT32_MAX;
+				}
+				pair<uint32_t,uint32_t> *p = key_val + N + M;  // end of everything (M lower and N upper)
+				uint32_t r = 1;
+				while ( !(lock_position(p)) ) {
+					r++;
+					p++;
+					if ( p >= _end_key_val ) {
+						return UINT32_MAX;
+					}
+				}
+				p->first = key;			// set key and value
+				unlock_position(p,value);
+				return (M+r);  // one more
+			}
+		}
+
+
+	public:
+
+		/**
+		 * add_entries - add a number of entries at once...
+		*/
+		inline bool add_entries(uint32_t *lru_element_offsets,uint32_t *entry_times,uint32_t ready_msg_count) {
+			//
+			_writer_lock.lock();
+			_reader_lock.lock(true);
+
+			_N = _share_N->load();
+			_M = _share_M->load();
+			// 
+			bool any_ok = false;
+			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
+				uint32_t value = lru_element_offsets[i];
+				uint32_t key = entry_times[i];
+				any_ok |= this->add_entry(key, value);
+			}
+			//
+			if ( any_ok ) {
+				_share_N->store(_N);
+				_share_N->store(_M);
+				_share_nouveau_max->store(_nouveau_max);
+				_share_nouveau_min->store(_nouveau_min);
+			}
+			_reader_lock.unlock();
+			_writer_lock.unlock();
+			//
+			return any_ok;
+		}
+
+		/**
+		 * update_entry
+		 * 
+		*/
+		inline bool update_entry(uint32_t key,uint32_t old_key,uint32_t maybe_value = UINT32_MAX) {
+			//
+			_reader_lock.lock(false);
+			_writer_lock.lock();
+			//
+			enter_shared_mode_ops();
+			if ( _N + _M >= (_MAX-1) ) {
+				_writer_lock.unlock();
+				_reader_lock.unlock();
+				return false;
+			}
+
+			manage_update(old_key,key,maybe_value);
+
+			exit_shared_mode_ops();
+
+			_writer_lock.unlock();
+			_reader_lock.unlock();
+			//
+			return true;
+		}
+
+
+
+		inline bool update_entries(uint32_t *old_times,uint32_t *new_times,uint8_t count_updates) {
+			_reader_lock.lock(false);
+			_writer_lock.lock();
+			//
+			enter_shared_mode_ops();
+
+			for ( uint8_t i = 0; i < count_updates; i++ ) {
+				manage_update(old_times[i],new_times[i]);  // retain the current value...
+			}
+			
+			exit_shared_mode_ops();
+
+			_writer_lock.unlock();
+			_reader_lock.unlock();
+			//
+			return true;
+		}
+
+
+		/**
+		 * remove_entry -- application facing method. 
+		 * 
+		 * 
+		*/
+		inline bool remove_entry(uint32_t key) {
+			//
+			_reader_lock.lock(false);
+			_writer_lock.lock();
+			//
+			enter_shared_mode_ops();
+			//
+			KeyValueManager *vkm = (KeyValueManager *)this;
+			bool status = vkm->remove_entry(key);
+
+			exit_shared_mode_ops();
+
+			_writer_lock.unlock();
+			_reader_lock.unlock();
+
+			return status;
+		}
+
+
+
+	public:
+
+		atomic<uint32_t>		*_share_N;
+		atomic<uint32_t>		*_share_M;
+		atomic<uint32_t>		*_share_blackout_count;
+		atomic<uint32_t>		*_share_nouveau_max;
+		atomic<uint32_t>		*_share_nouveau_min;
+		//
+		atomic<uint32_t>		*_share_min_hole_offset_first;
+		atomic<uint32_t>		*_share_min_hole_offset_second;
+		atomic<uint32_t>		*_share_max_hole_offset_first;
+		atomic<uint32_t>		*_share_max_hole_offset_second;
+		//
+		SpinlockNonReaders		_reader_lock;
+		SpinlockWriters			_writer_lock;
+		//
+};
 
 

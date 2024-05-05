@@ -560,7 +560,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-
+		/**
+		 * slice_bucket_lock
+		*/
 		atomic<uint32_t> *slice_bucket_lock(atomic<uint32_t> *controller,uint8_t which_table, uint8_t thread_id = 1) {
 			if ( controller == nullptr ) return nullptr;
 			//

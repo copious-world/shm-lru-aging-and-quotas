@@ -236,25 +236,28 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 			// time lower bound and upper bound for a tier...
-			_count_free->store(_max_count);	
-			_lb_time->store(UINT32_MAX);
-			_ub_time->store(UINT32_MAX);
-			_memory_requested->store(0);
-			_reserve_evictor->clear();
+			if ( am_initializer ) {
+				_count_free->store(_max_count);	
+				_lb_time->store(UINT32_MAX);
+				_ub_time->store(UINT32_MAX);
+				_memory_requested->store(0);
+				_reserve_evictor->clear();
+				//
+				initialize_com_area(num_procs);
+				//
+				_timeout_table = new Shared_KeyValueManager(holey_buffer, _max_count, shared_queue, num_procs);
+				_configured_tier_cooling = ONE_HOUR;
+				_configured_shrinkage = 0.3333;
 
-			initialize_com_area(num_procs);
+				//
+				// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+				auto count_free = setup_region_free_list(_start, _step,(_end - _start));
 
-			//
-			_timeout_table = new KeyValueManager(holey_buffer, _max_count, shared_queue, num_procs);
-			_configured_tier_cooling = ONE_HOUR;
-			_configured_shrinkage = 0.3333;
-
-			//
-			// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-			auto count_free = setup_region_free_list(_start, _step,(_end - _start));
-
-			if ( count_free != _count_free->load() ) {
-				_count_free->store(count_free);
+				if ( count_free != _count_free->load() ) {
+					_count_free->store(count_free);
+				}
+			} else {
+				attach_region_free_list(_start, _step,(_end - _start));
 			}
 			//
 		}
@@ -377,6 +380,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				}
 			}
 		}
+
 
 
 
@@ -572,13 +576,29 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * 
 		*/
 		void 			attach_to_lru_list(uint32_t *lru_element_offsets, uint32_t ready_msg_count) {
-			// 
+			//
+			uint32_t entry_times[ready_msg_count];
 			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
-				uint32_t value = lru_element_offsets[i];
-				uint32_t key = current_time_next();
-				_timeout_table->add_entry(key, value);
+				entry_times[i] = current_time_next();
+			}
+			_timeout_table->add_entries(lru_element_offsets,entry_times,ready_msg_count);
+			//
+		}
+
+
+		void			timestamp_update(uint32_t *updating_offsets,uint8_t count_updates) {
+			//
+			uint32_t entry_times[count_updates];
+			uint32_t old_times[count_updates];
+			//
+			for ( uint32_t i = 0; i < count_updates; i++ ) {
+				entry_times[i] = current_time_next();
+				auto offset = *updating_offsets++;
+				LRU_element *lrue = (LRU_element *)data_info_location(offset);
+				old_times[i++] = lrue->_when;
 			}
 			//
+			_timeout_table->update_entries(old_times,entry_times,count_updates);
 		}
 
 		/**
@@ -733,7 +753,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 					LRU_element *el = (LRU_element *)(start + offset);
 					uint64_t hash64  = el->_hash;
 					time_t update_time = el->_when;
-					uint8_t *data = this->data_location(offset);
+					uint8_t *data = this->data_info_location(offset);  /// pointer to the header info before data block
 					//
 					tuple<uint64_t,time_t,uint8_t *> dat{hash64,update_time,data};
 					move_data.push_back(dat);
@@ -875,10 +895,19 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		uint8_t 		*data_location(uint32_t write_offset) {
 			uint8_t *strt = this->start();
 			if ( strt != nullptr ) {
+				return (this->start() + write_offset + sizeof(LRU_element));
+			}
+			return nullptr;
+		}
+
+		uint8_t 		*data_info_location(uint32_t write_offset) {
+			uint8_t *strt = this->start();
+			if ( strt != nullptr ) {
 				return (this->start() + write_offset);
 			}
 			return nullptr;
 		}
+
 
 		/**
 		 * getter
@@ -980,7 +1009,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
  		HMap_interface 					*_hmap;
- 		KeyValueManager					*_timeout_table;
+ 		Shared_KeyValueManager			*_timeout_table;
 		//
 		LRU_cache 						**_all_tiers;		// set by caller
 		//

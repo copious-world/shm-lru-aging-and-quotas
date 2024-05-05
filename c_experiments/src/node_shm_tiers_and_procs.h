@@ -624,7 +624,9 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 					//	Change the state of its location to allow the client sider being served to write
 					//	and later the client sider will clear the position for other writers.
 					//
-					while ( tmp_dups < end_dups ) {			/// update ops cleared first (nothing new in the hash table)
+					uint32_t maybe_update[ready_msg_count];
+					uint8_t count_updates = 0;
+					while ( tmp_dups < end_dups ) {			/// UPDATE ops cleared first (nothing new in the hash table)
 						com_or_offset *dup_access = *tmp_dups++;
 						//
 						// this element has been found and this is actually a data_loc...
@@ -632,6 +634,7 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 							com_or_offset *to = *tmp;
 							uint32_t data_loc = to->_offset;		// offset is in the messages buffer
 							to->_offset = 0; 						// clear position
+							maybe_update[count_updates++] = data_loc;
 							Com_element *cel = dup_access->_cel;	// duplicate was not clear... ref to com element
 							cel->_offset = data_loc;				// to the com element ... output the known offset
 							// now get the control word location
@@ -641,6 +644,11 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 						}
 						tmp++;
 					}
+					// 
+					if ( count_updates > 0 ) {
+						lru->timestamp_update(maybe_update,count_updates);
+					}
+					//
 					//	additional_locations
 					//		new items go into memory -- hence new allocation (or taking) of positions
 					if ( additional_locations > 0 ) {  // new (additional) locations have been allocated 

@@ -208,6 +208,15 @@ class AtomicStack {
 			return free_count;
 		}
 
+
+		void attach_region_free_list(uint8_t *start, size_t step, size_t region_size) {
+			_stack_region_end = start + region_size;
+			_count_free = (atomic<uint32_t>*)(start);		// whereever this is pointing now (may be UINT32_MAX)
+			_max_free = (atomic<uint32_t>*)(start + sizeof(atomic<uint32_t>*));		// whereever this is pointing now (may be UINT32_MAX)
+			_ctrl_free = (StackEl *)(start + 2*sizeof(atomic<uint32_t>*));
+			_max_free_local = _max_free->load();
+		}
+
 		// ok ----
 
 		bool ok(void) {
