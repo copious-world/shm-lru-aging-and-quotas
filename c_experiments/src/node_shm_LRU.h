@@ -511,9 +511,11 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		*/
 		void 			notify_evictor([[maybe_unused]] uint32_t reclaim_target) {
 			while( !( _reserve_evictor->test_and_set() ) );
-			#ifndef __APPLE__
+#ifndef __APPLE__
 			_reserve_evictor->notify_one();					// NOTIFY FOR LINUX  (can ony test on an apple)
-			#endif
+#else
+			_evictor_spinner.signal();
+#endif
 		}
 
 
@@ -793,6 +795,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			//
 #ifndef __APPLE__
 			_reserve_evictor->wait(true,std::memory_order_acquire);
+#else
+			_evictor_spinner.wait();
 #endif
 			uint8_t thread_id = this->_thread_id;
 			if ( (_Tier+1) < _max_tiers ) {
@@ -1023,6 +1027,11 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		atomic<uint32_t>				*_memory_requested;
 		atomic_flag						*_reserve_evictor;
 		//
+
+#ifdef __APPLE__
+		Spinners						_evictor_spinner;
+#endif
+
 };
 
 

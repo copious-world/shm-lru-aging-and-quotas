@@ -362,6 +362,8 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
 
 		// Stop the process on a futex until notified...
 		void		wait_for_data_present_notification(uint8_t tier) {
@@ -369,8 +371,9 @@ class TierAndProcManager : public LRU_Consts {
 			_readerAtomicFlag[tier]->clear();
 			_readerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
 #else
-cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier << endl;
+//cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier << endl;
 //cout << "waiting..."; cout.flush();
+			// FOR MAC OSX
 			while ( _readerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) && this->_thread_running[tier] ) {
 //cout << "+"; cout.flush();
 				microseconds us = microseconds(100);
@@ -401,6 +404,11 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 			return true;
 		}
 
+
+		/**
+		 * wait_for_removal_notification
+		*/
+
 		void 		wait_for_removal_notification(uint8_t tier) {
 #ifndef __APPLE__
 			_removerAtomicFlag[tier]->clear();
@@ -421,6 +429,8 @@ cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier <<
 			_removerAtomicFlag[tier]->test_and_set();
 #ifndef __APPLE__
 			_removerAtomicFlag[tier]->notify_all();
+#else
+			_removerAtomicFlag[tier]->clear();
 #endif
 			return true;
 		}

@@ -4196,9 +4196,76 @@ void tryout_atomic_counter(void) {
 
 }
 
+
+
+
+void try_out_relaxed_atomic_counter(void) {
+  //
+  std::atomic<int> cnt = {0};
+  //
+  auto f = [&]() {
+    for (int n = 0; n < 100; ++n) {
+        cnt.fetch_add(1, std::memory_order_relaxed);
+    }
+  };
+
+  std::vector<std::thread> v;
+  for (int n = 0; n < 100; ++n) {
+      v.emplace_back(f);
+  }
+  for (auto& t : v) {
+      t.join();
+  }
+  cout << "Final counter value is " << cnt << endl;
+
+  cout << "..." << endl;
+
+    
+  int x[500];
+  
+  std::atomic<bool> done{false};
+  
+  auto f1 = [&]() {
+    for (int i = 0; i<500; i++) {  x[i]=i; std::cout << "R"; }
+    
+    //atomic_thread_fence(std::memory_order_release);
+    done.store(true, std::memory_order_relaxed);
+  };
+  
+  auto f2 = [&]() {
+    while( !done.load(std::memory_order_relaxed) ) {
+    // do operations not related with tasks
+    }
+    atomic_thread_fence(std::memory_order_acquire);
+
+    bool chck = false;
+    for (int i = 0; i<500; i++) { std::cout << "A"; }
+    // for (int i = 0; i<500; i++) { 
+    //   if ( !chck ) { chck = done.load(std::memory_order_relaxed); i--; cout << "."; cout.flush(); }
+    //   else { std::cout << "A" << i; }
+    //   }
+  };
+
+  thread t1 (f1);
+  thread t2 (f2);
+
+  t1.join();
+  t2.join();
+
+
+  cout << endl;
+  
+
+}
+
+
+
+void test_atomic_stack_and_timeout_buffer(void) {
+  //
+}
+
+
 /*
-
-
 
 */
 
@@ -4291,7 +4358,9 @@ int main(int argc, char **argv) {
 
     // tryout_cpp_example();
 
-    tryout_atomic_counter();
+    // tryout_atomic_counter();
+
+    try_out_relaxed_atomic_counter();
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

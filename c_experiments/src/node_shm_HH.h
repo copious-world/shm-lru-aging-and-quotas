@@ -239,9 +239,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			// ----
 			uint8_t *start = _region;
 
-			_random_gen_thread_lock = (atomic_flag *)start;
-			_random_share_lock = (atomic_flag *)(_random_gen_thread_lock + 1);
+			_rand_gen_thread_waiting_spinner = (atomic_flag *)start;
+			_random_share_lock = (atomic_flag *)(_rand_gen_thread_waiting_spinner + 1);
 			_random_gen_region = (atomic<uint32_t> *)(_random_share_lock + 1);
+
+			_rand_gen_thread_waiting_spinner->clear();
+			_random_share_lock->clear();
 
 			// start is now passed the atomics...
 			start = (uint8_t *)(_random_gen_region + 1);
@@ -443,8 +446,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-		void thread_sleep([[maybe_unused]] uint8_t ticks) {
-
+		void thread_sleep(uint8_t ticks) {
+			microseconds us = microseconds(ticks);
+			auto start = high_resolution_clock::now();
+			auto end = start + us;
+			do {
+				std::this_thread::yield();
+			} while ( high_resolution_clock::now() < end );
 		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -454,18 +462,24 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * share_lock 
 		 * 
 		 * override the lock for shared random bits (in parent this is a no op)
+		 * 
+		 * This version of critical region protection may not be needed if only one thread ever
+		 * fills up the random buffers for other the whole system. However, the region being regenerated
+		 * may be read by other threads. Yet, it may be possible to ensure that the region being filled is
+		 * managed ahead of any reads first by generating a region as soon as is used up. Also, it is expected
+		 * that the usage of a region will be improbible enough that buffer generation will always finished before the currently 
+		 * available buffer is used up.
 		*/
 		void share_lock(void) {
 #ifndef __APPLE__
-				while ( _random_gen_thread_lock->test() ) {  // if not cleared, then wait
-					_random_gen_thread_lock->wait(true);
+				while ( _random_share_lock->test() ) {  // if not cleared, then wait
+					_random_share_lock->wait(true);
 				};
-				while ( !_random_gen_thread_lock->test_and_set() );
+				while ( !_random_share_lock->test_and_set() );
 #else
-				while ( _random_gen_thread_lock->test() ) {
+				while ( _random_share_lock->test_and_set() ) {
 					thread_sleep(10);
 				};
-				while ( !_random_gen_thread_lock->test_and_set() );
 #endif			
 		}
 
@@ -482,7 +496,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			};
 			_random_share_lock->notify_one();
 #else
-			while ( _random_share_lock->test() ) {
+			while ( _random_share_lock->test() ) {   // make sure it clears
 				_random_share_lock->clear();
 			};
 #endif
@@ -499,16 +513,15 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			while ( true ) {
 #ifndef __APPLE__
 				do {
-					_random_gen_thread_lock->wait(true);
-				} while ( !_random_gen_thread_lock->test() );
+					_rand_gen_thread_waiting_spinner->wait(false);
+				} while ( !_rand_gen_thread_waiting_spinner->test() );
 #else
-				do {
+				while ( _rand_gen_thread_waiting_spinner->test_and_set() ) {
 					thread_sleep(10);
-				} while ( !_random_gen_thread_lock->test() );
+				}
 #endif
 				bool which_region = _random_gen_region->load(std::memory_order_acquire);
 				this->regenerate_shared(which_region);		
-				_random_gen_thread_lock->clear();		
 			}
 		}
 
@@ -521,10 +534,10 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			//
 			_random_gen_region->store(which_region);
 #ifndef __APPLE__
-			while ( !(_random_gen_thread_lock->test_and_set()) );
-			_random_gen_thread_lock->notify_one();
+			while ( !(_rand_gen_thread_waiting_spinner->test_and_set()) );
+			_rand_gen_thread_waiting_spinner->notify_one();
 #else
-			while ( !(_random_gen_thread_lock->test_and_set()) );
+			_rand_gen_thread_waiting_spinner->clear(std::memory_order_release);
 #endif
 		}
 
@@ -1257,6 +1270,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			do {
 				_sleeping_reclaimer.wait(false);
 			} while ( _sleeping_reclaimer.test(std::memory_order_acquire) );
+#else
+			while ( _sleeping_reclaimer.test_and_set() ) __libcpp_thread_yield();
 #endif
 		}
 
@@ -1270,6 +1285,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				_sleeping_reclaimer.test_and_set();
 			} while ( !(_sleeping_reclaimer.test(std::memory_order_acquire)) );
 			_sleeping_reclaimer.notify_one();
+#else
+			_sleeping_reclaimer.clear();
 #endif
 		}
 
@@ -2154,8 +2171,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		proc_descr						*_process_table;						
 		proc_descr						*_end_procs;						
 
-		atomic_flag		 				*_random_gen_thread_lock;
+		atomic_flag		 				*_rand_gen_thread_waiting_spinner;
 		atomic_flag		 				*_random_share_lock;
+
 		atomic<uint32_t>				*_random_gen_region;
 
 		QueueEntryHolder<>				_process_queue;

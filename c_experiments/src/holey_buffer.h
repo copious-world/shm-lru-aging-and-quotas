@@ -723,36 +723,37 @@ class KeyValueManager {
 			//
 			pair<uint32_t,uint32_t> *p = has_holes ? bin_search_with_blackouts_increasing(key,key_val, N) : 
 											b_search(key,key_val,N);
-			if ( (p == nullptr) && (M > 0) ) {
+
+			if ( (p == nullptr) && (M > 0) ) {  // If it was not found in the lower buffer, then linearly scan the small upper buffer.
 				p = key_val + N;
 				pair<uint32_t,uint32_t> *end = p + M;
 				while ( p < end ) {
 					if ( p->first == key ) {		// going on the assumption that the 'late' added elements are not sorted, generally.
-						p->first = (end-1)->first;
+						p->first = (end-1)->first;  // shorten the upper buffer copy the previously appended element into the element leaving.
 						p->second = (end-1)->second;
-						return M-1;
+						return M-1;  // the list got shorter by one
 					}
 				}
 			}
 			//
-			if ( p != nullptr ) {
+			if ( p != nullptr ) {  // a position, p, has been located in the lower buffer
 				pair<uint32_t,uint32_t> *end = (key_val + N);
-				if ( p == (end - 1) ) {  // handle this end case that keep a hole out of the last position.
-					if ( M > 0 ) {
+				if ( p == (end - 1) ) {  // handle this end case that keeps a hole out of the last position.
+					if ( M > 0 ) {  // there are elements that have been appended
 						pair<uint32_t,uint32_t> *q = (end + M - 1);
-						p->first = q->first;
+						p->first = q->first;    // shorten the top by moving it to replace the end of the lower region.
 						p->second = q->second;
-						N--;
-						return M-1;
+						N--; 					// make the lower region smaller (the upper now stars at the old lower end of list)
+						return M;				//  M has not decreased in size...  
 					} else {
-						N--;
+						N--;		// no elements were appended ... just shrink the lower bufer
 						return 0;
 					}
 				}
-				if ( p->first == key ) {
-					new_hole_offset.first = key;
-					p->first = UINT32_MAX;
+				if ( p->first == key ) { 	// this is a double check... p < (end - 1)
+					p->first = UINT32_MAX;			// make a hole where the element was.
 					p->second = UINT32_MAX;
+					new_hole_offset.first = key;	// update the keeper of the list of holes...
 					new_hole_offset.second = (p - key_val);
 					return M;
 				}
@@ -993,6 +994,7 @@ class Shared_KeyValueManager : public KeyValueManager {
 			_writer_lock.lock();
 			//
 			enter_shared_mode_ops();
+
 			if ( _N + _M >= (_MAX-1) ) {
 				_writer_lock.unlock();
 				_reader_lock.unlock();

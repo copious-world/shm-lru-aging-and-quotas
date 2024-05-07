@@ -11,6 +11,7 @@
 #include <sstream>
 
 #include <bit>
+#include <atomic>
 
 using namespace std;
 
@@ -292,6 +293,38 @@ typedef struct HHASH {
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 } HHash;
+
+
+
+
+class Spinners {
+
+	public:
+		Spinners(): _flag(ATOMIC_FLAG_INIT) {}
+
+		virtual ~Spinners(void) { unlock(); }
+
+		void lock(){
+			while ( _flag.test_and_set() ) __libcpp_thread_yield();
+		}
+
+		void unlock(){
+			_flag.clear();
+		}
+
+		void wait() {
+			while ( _flag.test(std::memory_order_acquire) ) __libcpp_thread_yield();
+			_flag.test_and_set();
+		}
+
+		void signal() {
+			_flag.clear();
+		}
+
+	private:
+		atomic_flag _flag;
+};
+
 
 
 
