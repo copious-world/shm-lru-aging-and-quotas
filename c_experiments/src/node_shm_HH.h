@@ -458,8 +458,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
+	
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
 		/**
-		 * share_lock 
+		 * share_lock -- implement Random_bits_generator locks
 		 * 
 		 * override the lock for shared random bits (in parent this is a no op)
 		 * 
@@ -712,7 +717,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			controls = controls | ((thread_id & THREAD_ID_BASE) << THREAD_ID_SHIFT);
 			return controls;
 		}
-		
+
 		/**
 		 * check_thread_id
 		*/
@@ -743,8 +748,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		 * bitp_partner_thread -- make the thread pattern that this will have if it were to be the last to a partnership.
 		*/
 		uint32_t bitp_partner_thread(uint32_t thread_id,uint32_t controls) {  
-			auto p_controls = controls | HOLD_BIT_SET | SHARED_BIT_SET;
-			p_controls = bitp_stamp_thread_id(controls,thread_id);
+			auto p_controls = bitp_stamp_thread_id(controls,thread_id);
+			p_controls = controls | HOLD_BIT_SET | SHARED_BIT_SET;	
 			return p_controls;
 		}
 
@@ -778,6 +783,18 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 						}
 					}
 				}
+			}
+			return false;
+		}
+
+
+		bool partnered_at_all(uint32_t ctrl_thread, uint32_t &partner_thrd_id) {
+			if ( _process_table[ctrl_thread].partner_thread == 0 ) {
+				return false;
+			}
+			partner_thrd_id =  _process_table[ctrl_thread].partner_thread;  // output partner id
+			if ( _process_table[partner_thrd_id].partner_thread == ctrl_thread ) {
+				return true;  // there was a thread id and the relationship is not broken
 			}
 			return false;
 		}
@@ -871,7 +888,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		atomic<uint32_t> * bucket_lock(atomic<uint32_t> *controller,uint32_t &ret_control,uint8_t thread_id) {   // where are the bucket counts??
 			//
-			uint32_t controls = controller->load(std::memory_order_acquire);
+			uint32_t controls = controller->load(std::memory_order_acquire);  // one controller for two slices
 			//
 			uint32_t lock_on_controls = 0;  // used after the outter loop
 			uint8_t thread_salvage = 0;
@@ -891,9 +908,12 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 							// or (2) remove thread_id from a partnership. 
 							controls = store_unlock_controller(controller,thread_id);
 						} else {  // another thread is in charge. But, thread_id may still be blocking
-							// thread_id is partnered if the shared bit is set and crtr_thread indicates thread_id
+							// thread_id is partnered if the shared bit is set and crtl_thread indicates thread_id
 							// in the process table.
-							if ( partnered(controls,ctrl_thread,thread_id) ) {
+							uint32_t partner_thread = 0;
+							if ( !(partnered_at_all(ctrl_thread,partner_thread)) ) {
+								controls = controls & FREE_BIT_MASK;  // clear the hold bit
+							} else if ( partner_thread == thread_id ) {
 								// the thread found leads to information indicating thread_id as being 
 								// present in the bucket. So, quit the partnership thereby clearing the hold bit.
 								store_relinquish_partnership(controller,thread_id);
@@ -915,7 +935,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 					lock_on_controls = bitp_partner_thread(thread_id,controls) | HOLD_BIT_SET; // 
 				} else {
 					lock_on_controls = bitp_stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;  // make sure that this is the thread that sets the bit high
-					controls = bitp_clear_thread_stamp_unlock(controls);   // desire that the controller is in this state (0s)
+					controls = bitp_clear_thread_stamp_unlock(controls);   // desire (expect) that the controller is in this state (0s)
 				}
 				// (cew) returns true if the value changes ... meaning the lock is acquired by someone since the last load
 				// i.e. loop exits if the value changes from no thread id and clear bit to at least the bit
@@ -923,6 +943,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				while ( !(controller->compare_exchange_weak(controls,lock_on_controls,std::memory_order_release,std::memory_order_relaxed)) );  //  && (count_loops_2++ < 1000)  && !(controls & HOLD_BIT_SET)
 				// but we care if this thread is the one that gets the bit.. so check to see that `controls` contains 
 				// this thread id and the `HOLD_BIT_SET`
+				controls = controller->load();  // guarding against suprious completion of storage...
 			} while ( !(check_thread_id(controls,lock_on_controls)) );  // failing this, we wait on the other thread to give up the lock..
 			//
 			if ( controls & SHARED_BIT_SET ) {  // at this point thread_id is stored in controls, and if shared bit, then partnership
@@ -1032,7 +1053,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 		/**
-		 * update_count_incr
+		 * update_count_incr -- updates the counter grand total over segments
 		*/
 
 		uint32_t update_count_incr(uint32_t controls) {

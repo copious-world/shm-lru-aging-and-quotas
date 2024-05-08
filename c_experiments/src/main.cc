@@ -1217,17 +1217,6 @@ void test_hh_map_operation_initialization_linearization_many_buckets() {
     }
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
     
-    if ( noisy_test ) {
-      cout << "reading bucket counts" << endl;
-      uint32_t nn = els_per_tier/2;
-      for ( uint32_t i = 0; i < nn; i++ ) {
-        uint8_t count1;
-        count1 = test_hh->get_buckt_count(i);
-        cout << "combined count: " << (int)count1 << endl;
-        pair<uint8_t,uint8_t> p = sg_share_test_hh->get_bucket_counts(i);
-        cout << "odd bucket: " << (int)(p.first) << " :: " << (int)(p.second) << endl;
-      }
-    }
   
 
   } catch ( const char *err ) {
@@ -4259,6 +4248,146 @@ void try_out_relaxed_atomic_counter(void) {
 }
 
 
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+void test_hh_map_methods_collisions_and_randoms(void) {
+
+  int status = 0;
+
+  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  //
+  SharedSegmentsManager *ssm = new SharedSegmentsManager();
+
+  g_ssm_catostrophy_handler = ssm;
+
+  uint32_t max_obj_size = 128;
+
+  uint32_t els_per_tier = 1024;
+  uint8_t num_tiers = 3;
+  uint8_t num_threads = THREAD_COUNT;
+  uint32_t num_procs = num_threads;
+
+  cout << "test_hh_map_methods3: # els: " << els_per_tier << endl;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  key_t com_key = ftok(paths[0],0);
+  key_t randoms_key = ftok(paths[1],0);
+
+  list<uint32_t> lru_keys;
+  list<uint32_t> hh_keys;
+
+  for ( uint8_t i = 0; i < num_tiers; i++ ) {
+    key_t t_key = ftok(paths[2],i);
+    key_t h_key = ftok(paths[3],i);
+    lru_keys.push_back(t_key);
+    hh_keys.push_back(h_key);
+  }
+
+  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
+                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
+  //
+  key_t hh_key = hh_keys.front();
+  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
+  uint32_t seg_sz = ssm->get_size(hh_key);
+
+  try {
+    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
+    cout << test_hh->ok() << endl;
+
+
+    cout << test_hh->_region_C << " " << ((test_hh->_region_C == nullptr )? "false" : "true" ) << endl;
+
+    hh_element test_buffer[128];
+    memset(test_buffer,0,sizeof(hh_element)*128);
+
+    hh_element test_buffer_copy[128];
+    memset(test_buffer_copy,0,sizeof(hh_element)*128);
+
+    hh_element *hash_ref = &test_buffer[64];
+    hh_element *buffer = test_buffer;
+    hh_element *end = test_buffer + 128;
+    //
+    uint32_t hole = 0;
+    uint32_t counter = 0xFFFD;
+
+
+    uint8_t test_base_offset = 3;
+
+    /* test 3 */
+    hash_ref->c_bits = 0b00010101111100111101010111110111;
+    hash_ref->taken_spots = 0xFFFFFFFF;
+    //   
+    auto tester = (hash_ref + test_base_offset);  
+    tester->c_bits = ~(hash_ref->c_bits >> test_base_offset);
+    tester->taken_spots = 0xFFFFFFFF;
+
+    cout << "hash ref and test base: " << bitset<32>(hash_ref->c_bits) << " :: " << endl;
+    cout << "hash ref and test base: " << bitset<32>(tester->c_bits  << test_base_offset) << " :: " << endl;
+    cout << "hash ref and test base: " << bitset<32>(tester->c_bits) << " :: " << endl;
+
+    auto q = hash_ref->c_bits;
+    auto r = tester->c_bits;
+    cout << "hash ref and test base: " << bitset<32>((r << test_base_offset) & q) << " :: " <<  bitset<32>((r << test_base_offset) | q) << endl;
+
+
+    uint64_t B = hash_ref->c_bits;
+    uint64_t C = tester->c_bits;
+    uint64_t VV = C;
+    VV = B | (VV << test_base_offset);
+    VV &= UINT32_MAX;
+
+    uint32_t c = (uint32_t)VV;
+    uint8_t offset = countr_one(c);
+
+    HMap_interface *T = test_hh;
+
+    uint32_t h_bucket = 2;
+    uint32_t full_hash = ((UINT16_MAX - 230) << 16) | 2;
+    uint8_t which_table = 1;
+    uint8_t thread_id = 1;
+    uint8_t thread_id_2 = 2;
+
+    T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table);
+    cout << "which_table: " << (int)which_table << endl;
+    T->wait_if_unlock_bucket_counts(h_bucket,thread_id_2,which_table);
+    cout << "which_table: " << (int)which_table << endl;
+
+    // for ( uint8_t k = 0; k < 4; k++ ) {
+    //   uint64_t result = UINT64_MAX;
+    //   //
+    //   uint8_t seletor_bit = 0;
+
+    //   // a bit for being entered and one or more for which slab...
+    //   if ( !(selector_bit_is_set(h_bucket,seletor_bit)) ) {
+    //     uint8_t which_table = 0;
+    //     if ( T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table) ) {
+    //       h_bucket = stamp_key(h_bucket,which_table);   // in LRU hash ... store in the reference to h_bucket...
+    //       result = h_bucket | ((uint64_t)full_hash << HALF);
+    //     }
+    //   }
+
+    //   T->add_key_value_known_slice(full_hash,h_bucket,offset,which_table,thread_id);
+
+    // }
+
+
+
+  } catch ( const char *err ) {
+    cout << err << endl;
+  }
+
+  //
+  pair<uint16_t,size_t> p = ssm->detach_all(true);
+  cout << p.first << ", " << p.second << endl;
+
+}
+
+
 
 void test_atomic_stack_and_timeout_buffer(void) {
   //
@@ -4360,7 +4489,9 @@ int main(int argc, char **argv) {
 
     // tryout_atomic_counter();
 
-    try_out_relaxed_atomic_counter();
+    // try_out_relaxed_atomic_counter();
+
+    test_hh_map_methods_collisions_and_randoms();//
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

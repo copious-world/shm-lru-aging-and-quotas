@@ -872,9 +872,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			HMap_interface *T = this->_hmap;
 			uint64_t result = UINT64_MAX;
 
-			uint8_t seletor_bit = 0;
+			uint8_t selector_bit = 0;
 			// a bit for being entered and one or more for which slab...
-			if ( !(selector_bit_is_set(hash_bucket,seletor_bit)) ) {
+			if ( !(selector_bit_is_set(hash_bucket,selector_bit)) ) {
 				result = T->add_key_value(full_hash,hash_bucket,new_el_offset,thread_id); //UINT64_MAX
 			} else {
 				result = T->update(hash_bucket,full_hash,new_el_offset,thread_id);
@@ -958,14 +958,15 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			HMap_interface *T = this->_hmap;
 			uint64_t result = UINT64_MAX;
 			//
-			uint8_t seletor_bit = 0;
+			uint8_t selector_bit = 0;
 			auto h_bucket = *h_bucket_ref;
 			// a bit for being entered and one or more for which slab...
-			if ( !(selector_bit_is_set(h_bucket,seletor_bit)) ) {
+			if ( !(selector_bit_is_set(h_bucket,selector_bit)) ) {
 				uint8_t which_table = 0;
 				if ( T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table) ) {
 					*which_table_ref = which_table;
 					h_bucket = stamp_key(h_bucket,which_table);
+					*h_bucket_ref = h_bucket;
 					result = h_bucket | ((uint64_t)full_hash << HALF);
 				}
 			}
