@@ -4344,6 +4344,10 @@ void test_hh_map_methods_collisions_and_randoms(void) {
     uint32_t c = (uint32_t)VV;
     uint8_t offset = countr_one(c);
 
+
+    uint8_t shared_bit_region[4096];
+    test_hh->set_random_bits(shared_bit_region);
+
     HMap_interface *T = test_hh;
 
     uint32_t h_bucket = 2;
@@ -4351,10 +4355,13 @@ void test_hh_map_methods_collisions_and_randoms(void) {
     uint8_t which_table = 1;
     uint8_t thread_id = 1;
     uint8_t thread_id_2 = 2;
+    uint8_t thread_id_3 = 3;
 
     T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table);
     cout << "which_table: " << (int)which_table << endl;
     T->wait_if_unlock_bucket_counts(h_bucket,thread_id_2,which_table);
+    cout << "which_table: " << (int)which_table << endl;
+    T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table);
     cout << "which_table: " << (int)which_table << endl;
 
     // for ( uint8_t k = 0; k < 4; k++ ) {

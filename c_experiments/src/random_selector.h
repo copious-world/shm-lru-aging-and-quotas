@@ -26,6 +26,13 @@ using namespace std;
 
 #define RNDMS_CONTROL_WD_CNT (4)
 
+typedef enum _rtcli_ {
+	rtcli_SHARED_INDEX,
+	rtcli_SHARED_BIT_COUNT,
+	rtcli_SHARED_LAST_BIT,
+	rtcli_SHARED_WORDS_USED
+} randoms_ctl_indecies;
+
 
 template<const uint32_t NbitWords = 256,const uint8_t SELECTOR_MAX = 4>
 class Random_bits_generator {
@@ -157,12 +164,12 @@ public:
 			_current_shared_region = selector;
 		}
 		//
-		shared_bit_area[0] = 0; // shared index
-		shared_bit_area[1] = 0; // shared bit count
-		shared_bit_area[2] = 0; // shared last bit (being shifted 32-1 times)
+		shared_bit_area[rtcli_SHARED_INDEX] = 0; // shared index
+		shared_bit_area[rtcli_SHARED_BIT_COUNT] = 0; // shared bit count
+		shared_bit_area[rtcli_SHARED_LAST_BIT] = 0; // shared last bit (being shifted 32-1 times)
 		//
 		_shared_bits = shared_bit_area;
-		uint32_t *area_w = shared_bit_area + RNDMS_CONTROL_WD_CNT;
+		uint32_t *area_w = (shared_bit_area + RNDMS_CONTROL_WD_CNT);
 		uint32_t *end = area_w + size;
 		for ( auto bword : _bits ) {
 			*area_w++ = bword;
@@ -171,7 +178,7 @@ public:
 	}
 
 
-	void wakeup_random_genator([[maybe_unused]] uint8_t which_region) {
+	void wakeup_random_generator([[maybe_unused]] uint8_t which_region) {
 		// regenerate_shared(which_region);
 	}
 
@@ -186,27 +193,27 @@ public:
 		if ( _shared_bits == nullptr ) return 0;  // get nothing.... not random
 		//
 		share_lock();
-		uint32_t shared_bcount = _shared_bits[1];
+		uint32_t shared_bcount = _shared_bits[rtcli_SHARED_BIT_COUNT];
 		if ( _shared_bcount == 0 ) {
-			uint32_t index = _shared_bits[0];
-			_shared_bits[2] = _shared_bits[index];
+			uint32_t index = _shared_bits[rtcli_SHARED_INDEX];
+			_shared_bits[rtcli_SHARED_LAST_BIT] = _shared_bits[index + RNDMS_CONTROL_WD_CNT];
 			//
 			if ( index < _bits.size() ) {
-				_shared_bits[0] = ++index;
+				_shared_bits[rtcli_SHARED_INDEX] = ++index;
 			} else {
-				_shared_bits[0] = 0; // wraps (client might need to keep track...)
+				_shared_bits[rtcli_SHARED_INDEX] = 0; // wraps (client might need to keep track...)
 				swap_prepped_bit_regions(true);
 			}
 		}
 		//
-		uint32_t shared_last_bits = _shared_bits[2];
+		uint32_t shared_last_bits = _shared_bits[rtcli_SHARED_LAST_BIT];
 		uint8_t the_bit = (shared_last_bits & 0x1);
 		//
 		shared_last_bits = (shared_last_bits >> 1);
 		shared_bcount = shared_bcount++ % 32;
 		//
-		_shared_bits[1] = shared_bcount;
-		_shared_bits[2] = shared_last_bits;
+		_shared_bits[rtcli_SHARED_BIT_COUNT] = shared_bcount;
+		_shared_bits[rtcli_SHARED_LAST_BIT] = shared_last_bits;
 		share_unlock();
 		//
 		return the_bit;
@@ -220,7 +227,7 @@ public:
 
 	void swap_prepped_bit_regions(bool gen_wakes_up = false) {
 		if ( gen_wakes_up ) {
-			wakeup_random_genator(_current_shared_region);
+			wakeup_random_generator(_current_shared_region);
 		}
 		_current_shared_region = (_current_shared_region + 1) % SELECTOR_MAX;
 		_shared_bits = _shared_bits_regions[_current_shared_region];

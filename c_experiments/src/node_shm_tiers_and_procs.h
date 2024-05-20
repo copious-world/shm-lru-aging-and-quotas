@@ -477,14 +477,15 @@ class TierAndProcManager : public LRU_Consts {
 					_tier_evictor_threads[i] = new thread(evictor_runner,i,tier_lru);
 					//
 					// hash_table_value_restore_thread
-					auto restore_runner = [this](uint8_t tier,LRU_c_impl *lru) {
-						this->_restores_running[tier] = true;
-						while ( this->_restores_running[tier] ) {
-	            			lru->hash_table_value_restore_thread();
+					auto restore_runner = [this](uint8_t slice_for_thread,uint8_t tier,LRU_c_impl *lru) {
+						this->_restores_running[tier][slice_for_thread] = true;
+						while ( this->_restores_running[tier][slice_for_thread] ) {
+	            			lru->hash_table_value_restore_thread(slice_for_thread);
 						}
         			};
 					//
-					_tier_value_restore_for_hmap_threads[i] = new thread(restore_runner,i,tier_lru);
+					_tier_value_restore_for_hmap_threads_0[i] = new thread(restore_runner,0,i,tier_lru);
+					_tier_value_restore_for_hmap_threads_1[i] = new thread(restore_runner,1,i,tier_lru);
 					//
 
 					// hash_table_value_restore_thread
@@ -511,13 +512,15 @@ class TierAndProcManager : public LRU_Consts {
 				this->_thread_running[tier] = false;
 				this->_removals_running[tier] = false;
 				this->_evictors_running[tier] = false;
-				this->_restores_running[tier] = false;
+				this->_restores_running[tier][0] = false;
+				this->_restores_running[tier][1] = false;
 			}
 			for ( uint8_t i = 0; i < this->_NTiers; i++  ) {
 				_tier_threads[i]->join();
 				_tier_removal_threads[i]->join();
 				_tier_evictor_threads[i]->join();
-				_tier_value_restore_for_hmap_threads[i]->join();
+				_tier_value_restore_for_hmap_threads_0[i]->join();
+				_tier_value_restore_for_hmap_threads_1[i]->join();
 			}
 		}
 
@@ -1089,8 +1092,9 @@ class TierAndProcManager : public LRU_Consts {
 		thread					*_tier_evictor_threads[MAX_TIERS];
 		bool					_evictors_running[MAX_TIERS];
 		//
-		thread					*_tier_value_restore_for_hmap_threads[MAX_TIERS];
-		bool					_restores_running[MAX_TIERS];
+		thread					*_tier_value_restore_for_hmap_threads_0[MAX_TIERS];
+		thread					*_tier_value_restore_for_hmap_threads_1[MAX_TIERS];
+		bool					_restores_running[MAX_TIERS][2];
 		//
 		thread					*_tier_random_generator_for_hmap_threads[MAX_TIERS];
 		bool					_random_generator_running[MAX_TIERS];

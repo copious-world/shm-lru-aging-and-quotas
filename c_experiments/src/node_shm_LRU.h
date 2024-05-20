@@ -390,8 +390,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * 	This in spite of the fact that the calling class provides the reference. 
 		*/
 
-		void hash_table_value_restore_thread(void) {  // a wrapper (parent must call a while loop... )
-			_hmap->value_restore_runner();
+		void hash_table_value_restore_thread(uint8_t slice_for_thread) {  // a wrapper (parent must call a while loop... )
+			_hmap->value_restore_runner(slice_for_thread);
 		}
 
 
@@ -402,9 +402,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			_hmap->random_generator_thread_runner();
 		}
 
-
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-		//
 
 		/**
 		 * Gets the current free count from the `_count_free` atomic.
@@ -963,7 +961,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			// a bit for being entered and one or more for which slab...
 			if ( !(selector_bit_is_set(h_bucket,selector_bit)) ) {
 				uint8_t which_table = 0;
-				if ( T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table) ) {
+				if ( T->prepare_add_key_value_known_slice(h_bucket,thread_id,which_table) ) {
 					*which_table_ref = which_table;
 					h_bucket = stamp_key(h_bucket,which_table);
 					*h_bucket_ref = h_bucket;

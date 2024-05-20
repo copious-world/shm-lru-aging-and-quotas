@@ -81,6 +81,7 @@
         "stop_token": "cpp",
         "thread": "cpp",
         "cinttypes": "cpp",
-        "version": "cpp"
+        "version": "cpp",
+        "__memory": "cpp"
     }
 }

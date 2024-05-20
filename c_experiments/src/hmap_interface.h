@@ -108,7 +108,8 @@ const uint64_t HASH_MASK = (((uint64_t)0) | LOW_WORD);  // 32 bits
 //
 
 // HH control buckets
-const uint32_t SHARED_BIT_SHIFT = 31;
+const uint32_t RESIDENT_BIT_SHIFT = 31;
+const uint32_t PARTNERED_BIT_SHIFT = 31;
 const uint32_t THREAD_ID_SHIFT = 24;
 const uint32_t HOLD_BIT_SHIFT = 23;
 const uint32_t DBL_COUNT_MASK_SHIFT = 16;
@@ -116,15 +117,17 @@ const uint32_t DBL_COUNT_MASK_SHIFT = 16;
 const uint32_t DOUBLE_COUNT_MASK_BASE = 0x3F;  // up to (64-1)
 const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE << DBL_COUNT_MASK_SHIFT);
 const uint32_t HOLD_BIT_SET = (0x1 << HOLD_BIT_SHIFT);
-const uint32_t FREE_BIT_MASK = ~HOLD_BIT_SET;
+const uint32_t FREE_HOLD_BIT_MASK = ~HOLD_BIT_SET;
 
-const uint32_t SHARED_BIT_SET = (0x1 << SHARED_BIT_SHIFT);
-const uint32_t QUIT_SHARE_BIT_MASK = ~SHARED_BIT_SET;   // if 0 then thread_id == 0 means no thread else one thread. If 1, the XOR is two.
+const uint32_t RESIDENT_BIT_SET = (0x1 << RESIDENT_BIT_SHIFT);
+const uint32_t PARTNERED_BIT_SET = (0x1 << PARTNERED_BIT_SHIFT);
+const uint32_t QUIT_SHARE_BIT_MASK = ~RESIDENT_BIT_SET;   // if 0 then thread_id == 0 means no thread else one thread. If 1, the XOR is two.
+const uint32_t QUIT_PARTNERED_BIT_MASK = ~PARTNERED_BIT_SET;   // if 0 then thread_id == 0 means no thread else one thread. If 1, the XOR is two.
 
-const uint32_t THREAD_ID_BASE = (uint32_t)0x07F;
+const uint32_t THREAD_ID_BASE = (uint32_t)0x03F;
 const uint32_t THREAD_ID_SECTION = (THREAD_ID_BASE << THREAD_ID_SHIFT);
-const uint32_t THREAD_ID_SECTION_CLEAR_MASK = (~THREAD_ID_SECTION & ~SHARED_BIT_SET);
-
+const uint32_t THREAD_ID_SECTION_CLEAR_MASK = (~THREAD_ID_SECTION & ~RESIDENT_BIT_SET);
+//
 const uint32_t COUNT_MASK = 0x1F;  // up to (32-1)
 const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
 //
@@ -203,8 +206,8 @@ static inline uint32_t add_thread_id(uint32_t target, uint32_t thread_id) {
 	if ( rethread_id != thread_id ) return 0;
 	rethread_id = (rethread_id << THREAD_ID_SHIFT);
 	if ( target & HOLD_BIT_SET ) {
-		if ( target & SHARED_BIT_SET ) return 0;
-		target = target | SHARED_BIT_SET;
+		if ( target & RESIDENT_BIT_SET ) return 0;
+		target = target | RESIDENT_BIT_SET;
 		target = (target & THREAD_ID_SECTION_CLEAR_MASK) | ((target & THREAD_ID_SECTION) ^ rethread_id);
 	} else {
 		target = target | rethread_id;
@@ -218,7 +221,7 @@ static inline uint32_t remove_thread_id(uint32_t target, uint32_t thread_id) {
 	if ( rethread_id != thread_id ) return 0;
 	if ( target & HOLD_BIT_SET ) {
 		rethread_id = rethread_id << THREAD_ID_SHIFT;
-		if ( target & SHARED_BIT_SET ) {
+		if ( target & RESIDENT_BIT_SET ) {
 			target = target & QUIT_SHARE_BIT_MASK;
 			target = (target & THREAD_ID_SECTION_CLEAR_MASK) | ((target & THREAD_ID_SECTION) ^ rethread_id);
 		} else {
@@ -235,7 +238,7 @@ static inline uint32_t get_partner_thread_id(uint32_t target, uint32_t thread_id
 	auto rethread_id = thread_id & THREAD_ID_BASE;
 	if ( rethread_id != thread_id ) return 0;
 	if ( target & HOLD_BIT_SET ) {
-		if ( target & SHARED_BIT_SET ) {
+		if ( target & RESIDENT_BIT_SET ) {
 			uint32_t partner_id = target & THREAD_ID_SECTION;
 			partner_id = (partner_id >> THREAD_ID_SHIFT) & THREAD_ID_BASE;
 			partner_id = (partner_id ^ rethread_id);
@@ -331,7 +334,7 @@ class Spinners {
 
 class HMap_interface {
 	public:
-		virtual void 		value_restore_runner(void) = 0;
+		virtual void 		value_restore_runner(uint8_t slice_for_thread) = 0;
 		virtual void		random_generator_thread_runner(void) = 0;
 		virtual uint64_t	update(uint32_t el_match_key, uint32_t hash_bucket, uint32_t v_value,uint8_t thread_id = 1) = 0;
 		virtual uint32_t	get(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
@@ -342,6 +345,7 @@ class HMap_interface {
 		virtual uint64_t	add_key_value(uint32_t el_match_key,uint32_t hash_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 		//
+		virtual bool		prepare_add_key_value_known_slice(uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table) = 0;
 		virtual bool		wait_if_unlock_bucket_counts(uint32_t h_bucket, uint8_t thread_id, uint8_t &which_table) = 0;
 		virtual uint64_t	add_key_value_known_slice(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id = 1) = 0;
 };

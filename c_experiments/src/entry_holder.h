@@ -28,6 +28,8 @@
 using namespace std;
 // 
 
+// This queue shares in process... 
+
 
 template<class Entry, uint16_t const ExpectedMax = 100>
 class SharedQueue_SRSW {    // single reader, single writer
@@ -50,7 +52,7 @@ class SharedQueue_SRSW {    // single reader, single writer
 				return false;
 			}
 
-			entry = *rr++;  // can only get here if the read pointer does not meet the write pointer
+			entry = *rr++;  // (instead of memset) can only get here if the read pointer does not meet the write pointer
 
 			if ( rr >= _end ) {		// read aprises the writer of its update
 				_r.store(_beg,std::memory_order_release);
@@ -124,6 +126,25 @@ class SharedQueue_SRSW {    // single reader, single writer
 			_w.store(_beg);
 
 			memset(_entries,0,sizeof(Entry)*ExpectedMax);
+		}
+
+
+		void		search(uint32_t key,uint32_t &value) {
+			auto wrt = _w.load(std::memory_order_relaxed);
+			auto rd = _r.load(std::memory_order_relaxed);
+			value = UINT32_MAX;
+			if ( wrt == _end ) wrt = _beg;
+			while ( rd != wrt ) {
+				if ( rd == _end ) rd = _beg;
+				if ( compare_key(key,_beg + rd,value) ) {
+					return;
+				}
+				rd++;
+			}
+		}
+
+		bool		compare_key(uint32_t key,Entry *el,uint32_t &value) {
+			return false;
 		}
 
 
