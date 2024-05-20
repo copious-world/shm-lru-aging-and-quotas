@@ -1896,44 +1896,52 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 		void total_swappy_read(hh_element *base,uint32_t c) {
 			hh_element *next = base;
-			while ( c ) {
-				next = base;
-				uint8_t offset = get_b_offset_update(c);
-				next += offset;
-				next = el_check_end_wrap(next,buffer,end);
-				// is this being usurped or swapped or deleted at this moment? Search on this range is locked
-				//
-				atomic<uint32_t> *a_ky = (atomic<uint32_t> *)(&next->_kv.key);
-				
-				uint32_t real_ky = (UINT32_MAX-1);
-				while ( a_ky->compare_exchange_weak(real_ky,(UINT32_MAX-1)) && (real_ky == (UINT32_MAX-1)));
-				auto ky = real_ky;
-				//
-				if ( (ky == UINT32_MAX) && c ) {
-					auto use_next_c = c;
-					uint8_t offset_follow = get_b_offset_update(use_next_c);  // chops off the next position
-					hh_element *f_next += offset_follow;
-					f_next = el_check_end_wrap(f_next,buffer,end);
+			uint8_t blocker_count = 1;
+			auto save_c = c;
+			while ( blocker_count-- > 0 ) {  // sweep for each blocker until they are at the end..
+				c = save_c;
+				while ( c ) {
+					next = base;
+					uint8_t offset = get_b_offset_update(c);
+					next += offset;
+					next = el_check_end_wrap(next,buffer,end);
+					// is this being usurped or swapped or deleted at this moment? Search on this range is locked
 					//
-					atomic<uint32_t> *a_f_ky = (atomic<uint32_t> *)(&f_next->_kv.key);
-					auto fky = a_f_ky->load(std::memory_order_acquire);
-					auto value = f_next->_kv.value;
-					auto taken = f_next->taken_spots;
+					atomic<uint32_t> *a_ky = (atomic<uint32_t> *)(&next->_kv.key);
+					
+					uint32_t real_ky = (UINT32_MAX-1);
+					while ( a_ky->compare_exchange_weak(real_ky,(UINT32_MAX-1)) && (real_ky == (UINT32_MAX-1)));
+					auto ky = real_ky;
 					//
-					uint32_t f_real_ky = (UINT32_MAX-1);
-					while ( a_f_ky->compare_exchange_weak(f_real_ky,(UINT32_MAX-1)) && (f_real_ky == (UINT32_MAX-1)));
-					auto ky = f_real_ky;
-					f_next->_V = next->_V;
-					if ( f_real_ky != UINT32_MAX ) {
-						next->_kv.value = value;
-						next->_kv.key = f_real_ky;
-						next->taken_spots = taken;
-						a_ky->store(f_real_ky);
-						a_f_ky->store(UINT32_MAX);
+					if ( (ky == UINT32_MAX) && c ) {
+						auto use_next_c = c;
+						uint8_t offset_follow = get_b_offset_update(use_next_c);  // chops off the next position
+						hh_element *f_next += offset_follow;
+						f_next = el_check_end_wrap(f_next,buffer,end);
+						//
+						atomic<uint32_t> *a_f_ky = (atomic<uint32_t> *)(&f_next->_kv.key);
+						auto fky = a_f_ky->load(std::memory_order_acquire);
+						auto value = f_next->_kv.value;
+						auto taken = f_next->taken_spots;
+						//
+						uint32_t f_real_ky = (UINT32_MAX-1);
+						while ( a_f_ky->compare_exchange_weak(f_real_ky,(UINT32_MAX-1)) && (f_real_ky == (UINT32_MAX-1)));
+						auto ky = f_real_ky;
+						f_next->_V = next->_V;
+						if ( f_real_ky != UINT32_MAX ) {
+							next->_kv.value = value;
+							next->_kv.key = f_real_ky;
+							next->taken_spots = taken;
+							a_ky->store(f_real_ky);
+							a_f_ky->store(UINT32_MAX);
+						} else {
+							if ( blocker_count == 0 ) save_c = c;  // ???
+							blocker_count++;
+						}
+						//
+					} else {
+						a_ky->store(ky);
 					}
-					//
-				} else {
-					a_ky->store(ky);
 				}
 			}
 		}
