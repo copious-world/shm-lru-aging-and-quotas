@@ -1910,7 +1910,8 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 				auto ky = real_ky;
 				//
 				if ( (ky == UINT32_MAX) && c ) {
-					uint8_t offset_follow = get_b_offset_update(c);
+					auto use_next_c = c;
+					uint8_t offset_follow = get_b_offset_update(use_next_c);  // chops off the next position
 					hh_element *f_next += offset_follow;
 					f_next = el_check_end_wrap(f_next,buffer,end);
 					//
@@ -1923,12 +1924,13 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 					while ( a_f_ky->compare_exchange_weak(f_real_ky,(UINT32_MAX-1)) && (f_real_ky == (UINT32_MAX-1)));
 					auto ky = f_real_ky;
 					f_next->_V = next->_V;
-
-					next->_kv.value = value;
-					next->_kv.key = fky;
-					next->taken_spots = taken;
-					a_ky->store(f_real_ky);
-					a_f_ky->store(UINT32_MAX);
+					if ( f_real_ky != UINT32_MAX ) {
+						next->_kv.value = value;
+						next->_kv.key = f_real_ky;
+						next->taken_spots = taken;
+						a_ky->store(f_real_ky);
+						a_f_ky->store(UINT32_MAX);
+					}
 					//
 				} else {
 					a_ky->store(ky);
@@ -1967,15 +1969,17 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 					while ( a_f_ky->compare_exchange_weak(f_real_ky,(UINT32_MAX-1)) && (f_real_ky == (UINT32_MAX-1)));
 					f_next->_V = next->_V;
 
-					next->_kv.value = value;
-					next->_kv.key = f_real_ky;
-					next->taken_spots = taken;
-					a_ky->store(f_real_ky);
-					a_f_ky->store(UINT32_MAX);
-					//
-					if ( f_real_ky == el_key  ) {  // opportunistic reader helps delete with on swap and returns on finding its value
-						return value;
+					if ( f_real_ky != UINT32_MAX ) {
+						next->_kv.value = value;
+						next->_kv.key = f_real_ky;
+						next->taken_spots = taken;
+						a_ky->store(f_real_ky);
+						a_f_ky->store(UINT32_MAX);
+						if ( f_real_ky == el_key  ) {  // opportunistic reader helps delete with on swap and returns on finding its value
+							return value;
+						}
 					}
+					//
 					// else resume with the nex position being the hole blocker... 
 				} else if ( el_key == ky ) {
 					auto value = next->_kv.value;
