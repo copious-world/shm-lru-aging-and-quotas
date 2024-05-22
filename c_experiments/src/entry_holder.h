@@ -31,6 +31,12 @@ using namespace std;
 // This queue shares in process... 
 
 
+/**
+ * The Shared Queue -- in process task queue being used between threads in a single process.
+ * 
+*/
+
+
 template<class Entry, uint16_t const ExpectedMax = 100>
 class SharedQueue_SRSW {    // single reader, single writer
 	//

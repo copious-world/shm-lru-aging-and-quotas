@@ -131,6 +131,20 @@ const uint32_t THREAD_ID_SECTION_CLEAR_MASK = (~THREAD_ID_SECTION & ~RESIDENT_BI
 const uint32_t COUNT_MASK = 0x1F;  // up to (32-1)
 const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
 //
+// EDITOR BIT and READER BIT
+const uint32_t EDITOR_BIT_SET = ((1 << 6) & 0x7F);
+const uint32_t READER_BIT_SET = ((1 << 7) & 0xFF);
+const uint32_t READER_BIT_RESET = ~(READER_BIT_SET);
+const uint32_t CBIT_THREAD_SHIFT = 8;
+const uint32_t CBIT_READER_SEMAPHORE_CLEAR = 0x00FFFFFF;
+const uint32_t CBIT_READER_SEMAPHORE_WORD = 0xFF000000;
+const uint32_t CBIT_READER_SEMAPHORE_SHIFT = 24;
+
+inline uint32_t cbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
+	cbits = cbits | ((thread_id << CBIT_THREAD_SHIFT) & 0x0000FFFF);
+	return cbits;
+}
+//
 
 const uint32_t HOLD_BIT_ODD_SLICE = (0x1 << (7+8));
 const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
