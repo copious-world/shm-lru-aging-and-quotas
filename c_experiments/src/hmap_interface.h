@@ -139,12 +139,34 @@ const uint32_t CBIT_THREAD_SHIFT = 8;
 const uint32_t CBIT_READER_SEMAPHORE_CLEAR = 0x00FFFFFF;
 const uint32_t CBIT_READER_SEMAPHORE_WORD = 0xFF000000;
 const uint32_t CBIT_READER_SEMAPHORE_SHIFT = 24;
+const uint32_t CBIT_READ_MAX_SEMAPHORE = 31;
+const uint32_t CBIT_BACK_REF_BITS = 0x3E;
 
 inline uint32_t cbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
 	cbits = cbits | ((thread_id << CBIT_THREAD_SHIFT) & 0x0000FFFF);
 	return cbits;
 }
 //
+inline uint32_t cbits_thread_id_of(uint32_t cbits) {
+	auto thread_id = (cbits >> CBIT_THREAD_SHIFT) & 0xFF;
+	return thread_id;
+}
+
+inline bool base_in_operation(uint32_t cbits) {
+	auto chk = EDITOR_BIT_SET | READER_BIT_SET;
+	return ((chk & cbits) != 0) && ((cbits & CBIT_BACK_REF_BITS) == 0);
+}
+
+class hh_element;
+template<class HHE>
+HHE *cbits_base_from_backref(uint32_t cbits,uint8_t &backref,HHE *from,HHE *begin,HHE *end) {
+	backref = ((cbits & CBIT_BACK_REF_BITS) >> 1);
+	from -= backref;
+	if ( backref < begin ) {
+		from = end - (begin - from);
+	}
+	return from;
+}
 
 const uint32_t HOLD_BIT_ODD_SLICE = (0x1 << (7+8));
 const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
@@ -360,8 +382,10 @@ class HMap_interface {
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 		//
 		virtual bool		prepare_add_key_value_known_slice(uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table) = 0;
+		virtual bool		prepare_add_key_value_known_slice(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table,uint32_t &cbits,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) = 0;
 		virtual bool		wait_if_unlock_bucket_counts(uint32_t h_bucket, uint8_t thread_id, uint8_t &which_table) = 0;
 		virtual uint64_t	add_key_value_known_slice(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id = 1) = 0;
+		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id,uint32_t cbits,hh_element *bucket,hh_element *buffer,hh_element *end_buffer) = 0;
 };
 
 

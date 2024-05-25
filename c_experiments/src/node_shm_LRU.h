@@ -952,7 +952,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			this->remove_key(hash_bucket,full_hash,process,timestamp);
 		}
 
-		uint64_t		get_augmented_hash_locking(uint32_t full_hash, uint32_t *h_bucket_ref,uint8_t *which_table_ref,uint8_t thread_id = 1) {
+		uint64_t		get_augmented_hash_locking(uint32_t full_hash, atomic<uint32_t> **control_bits_ref, uint32_t *h_bucket_ref,uint8_t *which_table_ref,uint32_t *cbits_ref,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t thread_id = 1) {
 			HMap_interface *T = this->_hmap;
 			uint64_t result = UINT64_MAX;
 			//
@@ -961,26 +961,22 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			// a bit for being entered and one or more for which slab...
 			if ( !(selector_bit_is_set(h_bucket,selector_bit)) ) {
 				uint8_t which_table = 0;
-				if ( T->prepare_add_key_value_known_slice(h_bucket,thread_id,which_table) ) {
+				uint32_t cbits = 0;
+				if ( T->prepare_add_key_value_known_slice(control_bits_ref,h_bucket,thread_id,which_table,cbits,bucket_ref,buffer_ref,end_buffer_ref) ) {
 					*which_table_ref = which_table;
 					h_bucket = stamp_key(h_bucket,which_table);
 					*h_bucket_ref = h_bucket;
+					*cbits_ref = cbits;
 					result = h_bucket | ((uint64_t)full_hash << HALF);
 				}
 			}
 			return result;
 		}
 
-		uint64_t		get_augmented_hash_locking(uint64_t hash64,uint8_t *which_table_ref,uint8_t thread_id = 1) {
-			uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
-			uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
-			return this->get_augmented_hash_locking(full_hash,&hash_bucket,which_table_ref,thread_id);
-		}
-
 		//  ----
-		void			store_in_hash_unlocking(uint32_t full_hash, uint32_t h_bucket,uint32_t offset,uint8_t which_table,uint8_t thread_id) {
+		void			store_in_hash_unlocking(atomic<uint32_t> *control_bits,uint32_t full_hash, uint32_t h_bucket,uint32_t offset,uint8_t which_table,uint32_t cbits,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,uint8_t thread_id) {
 			HMap_interface *T = this->_hmap;
-			T->add_key_value_known_slice(full_hash,h_bucket,offset,which_table,thread_id);
+			T->add_key_value_known_refs(control_bits,full_hash,h_bucket,offset,which_table,thread_id,cbits,bucket,buffer,end_buffer);
 		}
 		
 

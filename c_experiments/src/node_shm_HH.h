@@ -32,6 +32,7 @@
 
 
 
+#define MAX_THREADS (64)
 
 
 
@@ -215,6 +216,18 @@ static inline hh_element *el_check_end_wrap(hh_element *ptr, hh_element *buffer,
 static inline uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset) {
 	return time;
 }
+
+
+
+
+typedef enum {
+	HH_OP_NOOP,
+	HH_OP_CREATION,
+	HH_OP_USURP,
+	HH_OP_MEMBER_IN,
+	HH_OP_MEMBER_OUT,
+	HH_ALL_OPS
+} hh_creation_ops;
 
 
 // ---- ---- ---- ---- ---- ----  HHash
@@ -972,7 +985,7 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 							return controller;
 						}
 					}
-					__libcpp_thread_yield(); // OK to let other things run 
+					tick(); // OK to let other things run 
 					// else continue waiting for something to release the hold...
 				}
 
@@ -2441,6 +2454,19 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 	public:
 
+
+		uint32_t c_bits_temporary_store[MAX_THREADS];
+
+		uint32_t fetch_real_cbits(uint32_t cbit_carrier) {
+			auto thrd = cbits_thread_id_of(cbit_carrier);
+			return c_bits_temporary_store[thrd];
+		}
+
+		void store_real_cbits(uint32_t cbits,uint8_t thrd) {
+			c_bits_temporary_store[thrd] = cbits;
+		}
+ 
+
 		hh_element *select_bucket_for_slice(uint32_t h_bucket,uint8_t &which_table,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) {
 			//
 			if ( h_bucket >= _max_n ) {
@@ -2531,8 +2557,9 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		uint8_t select_insert_buffer(uint8_t count0,uint8_t count1) {
+			uint8_t = which_table = 0;
 			if ( (count_0 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
-				return nullptr;
+				return 0xFF;
 			}
 			if ( count_0 >= COUNT_MASK ) {
 				which_table = 1;
@@ -2572,6 +2599,11 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			auto c0 = cbits0->load(std::memory_order_acquire);
 			if ( c0 & 0x1 ) {
 				count0 = popcount(c0);
+			} else {
+				if ( base_in_operation(c0) ) {
+					auto real_bits = fetch_real_cbits(c0);
+					count0 = popcount(real_bits);
+				}
 			}
 			//
 			hh_element *buffer1		= _region_HV_1;
@@ -2582,9 +2614,15 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			auto c1 = cbits1->load(std::memory_order_acquire);
 			if ( c1 & 0x1 ) {
 				count1 = popcount(c1);
+			} else {
+				if ( base_in_operation(c1) ) {
+					auto real_bits = fetch_real_cbits(c1);
+					count1 = popcount(real_bits);
+				}
 			}
 			//
 			auto selector = select_insert_buffer(count0,count1);
+			if ( selector == 0xFF ) return nullptr;
 			//
 			which_table = selector;
 			if ( selector == 0 ) {
@@ -2604,23 +2642,36 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
-/*
-   void wait()
-    {
-        auto oldValue = s_.load();
-        while (oldValue == 0 || !s_.compare_exchange_strong(oldValue, oldValue - 1))
-           oldValue = s_.load();
-    }
-*/
-
-		uint32_t cbits_add_reader(atomic<uint32_t> *a_cbits) {
+		uint32_t cbits_add_reader(atomic<uint32_t> *a_cbits,uint8_t thread_id) {
+			//
 			auto cbits = a_cbits->load(std::memory_order_acquire);
-			if ( cbits & 0x1 ) {
-
-				// READER_BIT_SET
-
+			if ( cbits == 0 ) return 0;
+			//
+			if ( cbits & 0x1 ) {   // This thread now knows
+				//
+				while ( cbits & 0x1 ) {
+					auto save_cbits = cbits;
+					uint32_t cbits_reader = 0;
+					cbits_reader = (1 << CBIT_READER_SEMAPHORE_SHIFT)
+									| cbit_thread_stamp(cbits_reader,thread_id)
+									| READER_BIT_SET;
+					while ( !(a_cbits->compare_exchange_weak(cbits,a_cbits)) && !(cbits & READER_BIT_SET) );
+					if ( !(cbits & 0x1) ) {
+						if ( (cbits_thread_id_of(cbits) != thread_id) && (cbits & READER_BIT_SET) ) {
+							return cbits_add_reader(a_cbits,thread_id);
+						} else {
+							stash_reader_cbits(thead_id,save_cbits);
+							return save_cbits;
+						}
+					}
+				}
+				//
 			} else if ( (cbits & READER_BIT_SET )!= 0 ) {
 				auto semcount = (cbits & CBIT_READER_SEMAPHORE_WORD) >> CBIT_READER_SEMAPHORE_SHIFT;
+				while ( semcount >= CBIT_READ_MAX_SEMAPHORE ) {
+					spin_wait();
+					semcount = a_cbits->load(std::memory_order_acquire);
+				}
 				semcount++;
 				semcount = (semcount << CBIT_READER_SEMAPHORE_SHIFT);
 				auto cbits_update = (semcount | (CBIT_READER_SEMAPHORE_CLEAR & cbits) | READER_BIT_SET);
@@ -2631,51 +2682,236 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 					cbits_update = (semcount | (CBIT_READER_SEMAPHORE_CLEAR & cbits) | READER_BIT_SET);
 				}
 			}
+			//
+			return cbits;
 		}
 
 		uint32_t cbits_remove_reader(atomic<uint32_t> *a_cbits) {
-				auto semcount = (cbits & CBIT_READER_SEMAPHORE_WORD) >> CBIT_READER_SEMAPHORE_SHIFT;
+			//
+			auto cbits = a_cbits->load(std::memory_order_acquire);
+			if ( (cbits & READER_BIT_SET) == 0 ) return UINT32_MAX;			//
+			//
+			auto semcount = (cbits & CBIT_READER_SEMAPHORE_WORD) >> CBIT_READER_SEMAPHORE_SHIFT;
+			if ( semcount > 0 ) {
+				semcount--;
+			}
+			semcount = (semcount << CBIT_READER_SEMAPHORE_SHIFT);
+			auto cbits_update = (semcount | (CBIT_READER_SEMAPHORE_CLEAR & cbits)) & READER_BIT_RESET;
+			while ( !(a_cbits->compare_exchange_weak(cbits,cbits_update,std::memory_order_acq_rel)) ) {
+				semcount = (cbits & CBIT_READER_SEMAPHORE_WORD) >> CBIT_READER_SEMAPHORE_SHIFT;
 				if ( semcount > 0 ) {
 					semcount--;
+					if ( semcount == 0 ) break;
 				}
 				semcount = (semcount << CBIT_READER_SEMAPHORE_SHIFT);
-				auto cbits_update = (semcount | (CBIT_READER_SEMAPHORE_CLEAR & cbits)) & READER_BIT_RESET;
-				while ( !(a_cbits->compare_exchange_weak(cbits,cbits_update,std::memory_order_acq_rel)) ) {
-					semcount = (cbits & CBIT_READER_SEMAPHORE_WORD) >> CBIT_READER_SEMAPHORE_SHIFT;
-					if ( semcount > 0 ) {
-						semcount--;
-					}
-					semcount = (semcount << CBIT_READER_SEMAPHORE_SHIFT);
-					cbits_update = (semcount | (CBIT_READER_SEMAPHORE_CLEAR & cbits)) & READER_BIT_RESET;
+				cbits_update = (semcount | (CBIT_READER_SEMAPHORE_CLEAR & cbits)) & READER_BIT_RESET;
+			}
+			if ( semcount == 0 ) {
+				if ( !(cbits_update & EDITOR_BIT_SET) ) {
+					auto thread_id = cbits_thread_id_of(cbits_update);
+					auto cbits_restore = unstash_cbits(thread_id);
+					while ( !(a_cbits->compare_exchange_weak(cbits,cbits_restore,std::memory_order_acq_rel)) );
+					cbits = cbits_restore;
 				}
+			}
+			//
+			return cbits;
 		}
 
 
 		void cbits_wait_for_readers(atomic<uint32_t> *a_cbits,uint8_t thread_id) {
 			auto cbits = a_cbits->load(std::memory_order_acquire);
 			while ( (cbits & READER_BIT_SET) != 0 ) {
-				__libcpp_thread_yield();
+				tick();
 				cbits = cbits & (~READER_BIT_SET & CBIT_READER_SEMAPHORE_CLEAR);
 				auto ownership_control = cbit_thread_stamp(cbits,thread_id) | EDITOR_BIT_SET;
 				//
 				while ( a_c_bits->compare_exchange_weak(cbits,ownership_control,std::memory_order_acq_rel) && (cbits != ownership_control) ) {
-					__libcpp_thread_yield();  // do a faster timed spin
+					tick();  // do a faster timed spin
 				}
 			}
 		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		void add_this(uint32_t h_bucket,uint8_t thread_id) {
-			uint8_t which_table{0};
-			HHash *T = nullptr;
-			hh_element *buffer = nullptr;
-			hh_element *end_buffer = nullptr;
-			hh_element *el = nullptr;
-			uint32_t cbits{0};
+
+
+
+
+
+		//
+		/**
+		 * prepare_add_key_value_known_slice  ALIAS for wait_if_unlock_bucket_counts
+		*/
+		bool prepare_add_key_value_known_slice(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table,uint32_t &cbits,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) {
 			//
-			atomic<uint32_t> *a_c_bits = get_member_bits_slice_info(h_bucket,which_table,cbits,&el,&buffer,&end_buffer);
+			atomic<uint32_t> *a_c_bits = get_member_bits_slice_info(h_bucket,which_table,cbits,bucket_ref,buffer_ref,end_buffer_ref);
 			//
+			if ( a_c_bits == nullptr ) return false;
+			*control_bits_ref = a_c_bits;
+
+			return true;
+		}
+
+
+
+
+
+		/**
+		 * configure_taken_spots
+		*/
+
+		void configure_taken_spots(hh_element *hash_ref, uint32_t value, uint32_t el_key) {
+			hash_ref->_kv.value = value;
+			hash_ref->_kv.key = el_key;
+			hash_ref->c_bits = 0x1;  // locked position
+			hh_element *base_ref = hash_ref;
+			uint32_t c = 1;				// c will be the new base element map of taken positions
+			for ( uint8_t i = 1; i < NEIGHBORHOOD; i++ ) {
+				hash_ref++;								// keep walking forward to the end of the window
+				if ( hash_ref->c_bits & 0x1 ) {			// this is a base bucket with information beyond the window
+					atomic<uint32_t> *hn_t_bits = (atomic<uint32_t> *)(&base_ref->taken_spots);
+					auto taken = hn_t_bits->load(std::memory_order_acquire);
+					c |= (taken << i); // this is the record, but shift it....
+					break;								// don't need to get more information at this point
+				} else if ( hash_ref->c_bits != 0 ) {
+					SET(c,i);							// this element belongs to a base below the new base
+				}
+			}
+			base_ref->taken_spots = c; // finally save the taken spots.
+		}
+
+
+
+		/**
+		 * add_key_value_known_slice
+		 * 
+		 * This method should be caled after `prepare_add_key_value_known_slice` which locks the bucket found from `h_bucket`.
+		*/
+		uint64_t add_key_value_known_slice(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id = 1) {
+			uint8_t selector = 0x3;
+			//
+			if ( (offset_value != 0) &&  selector_bit_is_set(h_bucket,selector) ) {
+				auto N = this->_max_n;
+				//
+				HHash *T = _T0;
+				hh_element *buffer = _region_HV_0;
+				hh_element *end	= _region_HV_0_end;
+				//
+				this->set_thread_table_refs(which_table,&T,&buffer,&end);
+				//
+				return place_in_bucket(el_key, h_bucket, offset_value, which_table, thread_id, N, buffer, end);
+			}
+			//
+			return UINT64_MAX;
+		}
+
+
+		void enqueue_taken_spots(atomic<uint32_t> *control_bits,uint8_t thread_id,uint32_t cbits,hh_element *bucket,hh_element *buffer,hh_element *end_buffer) {
+
+		}
+
+		void wakeup_memmap_manager() {
+
+		}
+
+
+		atomic<uint32_t>  *load_stable_key(hh_element *bucket,uint32_t &save_key) {
+			atomic<uint32_t>  *stable_key = (atomic<uint32_t>  *)bucket->_kv.key);
+			save_key = stable_key->load(std::memory_order_acquire);
+			return stable_key;
+		}
+
+
+
+
+		uint64_t first_level_bucket_ops(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table ,uint8_t thread_id,uint32_t cbits,hh_element *bucket,hh_element *buffer,hh_element *end_buffer) {
+			//
+			auto prev_bits = cbits;
+			do {
+				prev_bits = cbits;
+				//
+				if ( cbits == 0 ) {   // this happens if the bucket is completetly empty and not a member of any other bucket
+					// if this fails to stay zero, then either another a hash collision has immediately taken place or another
+					// bucket created a member.
+					auto locking_bits = cbit_thread_stamp(cbits,thread_id) | EDITOR_BIT_SET;
+					if ( control_bits->compare_exchange_weak(cbits,locking_bits,std::memory_order_acq_rel) ) {
+						cbits = control_bits->load(std::memory_order_acquire);
+						if ( cbits != locking_bits ) continue;
+						else {
+							// OWN THIS BUCKET
+							store_real_cbits(0x1,thread_id);
+							bucket->_kv.key = el_key;
+							bucket->_kv.value = offset_value;
+							enqueue_taken_spots(control_bits,thread_id,cbits,bucket,buffer,end_buffer,HH_OP_CREATION);
+							wakeup_memmap_manager();
+						}
+					}
+				} else if ( (cbits & 0x1) || base_in_operation(cbits) ) {  // This is a base bucket (the new element should become a member)
+					auto locking_bits = cbit_thread_stamp(cbits,thread_id) | EDITOR_BIT_SET;
+					if ( cbits & 0x1 ) { // can capture this bucket to do an insert...
+						if ( control_bits->compare_exchange_weak(cbits,locking_bits,std::memory_order_acq_rel) ) {
+							cbits = control_bits->load(std::memory_order_acquire);
+							if ( cbits != locking_bits ) continue;
+							else {
+								// OWN THIS BUCKET
+								prev_bits = reserve_membership(control_bits,prev_bits,thread_id,bucket->taken_spots,buffer,end_buffer);
+								store_real_cbits(prev_bits,thread_id);   // reserve a spot using prev bits and take spots
+								uint32_t tmp_value = bucket->_kv.value;
+								uint32_t tmp_key = bucket->_kv.key;
+								//
+								bucket->_kv.key = el_key;
+								bucket->_kv.value = offset_value;
+								//
+								uint64_t current_loaded_value = (((uint64_t)tmp_key) << HALF) | tmp_value;
+								wakeup_value_restore(control_bits,bucket, h_bucket, current_loaded_value, which_table, thread_id, buffer, end);
+							}
+						}
+					} else {  // THIS BUCKET IS ALREADY BEING EDITED
+						auto current_thread = cbits_thread_id_of(cbits);
+						auto current_membership = fetch_real_cbits(cbits);
+						current_membership = reserve_membership(control_bits,prev_bits,current_thread,bucket->taken_spots,buffer,end_buffer);
+						store_real_cbits(prev_bits,current_thread);   // reserve a spot using prev bits and take spots
+						uint64_t current_loaded_value = (((uint64_t)el_key) << HALF) | offset_value;
+						wakeup_value_restore(control_bits,bucket, h_bucket, current_loaded_value, which_table, thread_id, buffer, end);						
+					}
+				} else {  // this bucket is a member and cbits carries a back_ref. (this should be usurped)
+					auto locking_bits = cbit_thread_stamp(cbits,thread_id) | EDITOR_BIT_SET;
+					if ( control_bits->compare_exchange_weak(cbits,locking_bits,std::memory_order_acq_rel) ) {
+						cbits = control_bits->load(std::memory_order_acquire);
+						if ( cbits != locking_bits ) continue;
+						else {
+							//
+							uint8_t backref = 0;
+							hh_element *cells_base = cbits_base_from_backref(prev_bits,backref,bucket,buffer,end_buffer);
+							// load key
+							// is the value to be reinserted changing? 
+							// otherwise save it...
+							uint32_t save_key = 0;
+							atomic<uint32_t>  *stable_key = load_stable_key(bucket,save_key);
+							uint32_t save_value = bucket->_kv.value;
+
+							// OWN THIS BUCKET
+							store_real_cbits(0x1,thread_id);
+							bucket->_kv.value = offset_value;
+
+							stable_key->store(el_key);
+							control_bits->store(fetch_real_cbits(prev_bits));							
+
+							uint64_t current_loaded_value = (((uint64_t)save_key) << HALF) | save_value;
+							control_bits = (atomic<uint32_t> *)(&cells_base->c_bits);
+							wakeup_value_restore(control_bits, cells_base, (h_bucket-backref), current_loaded_value, which_table, thread_id, buffer, end);						
+						}
+					}
+				}
+			} while ( prev_bits != cbits );
+
+		}
+
+
+/*
+
+
 			if ( cbits & 0x1 ) {  // it is a based and is not being touched at the moment
 				//
 				uint32_t ownership_control = EDITOR_BIT_SET | READER_BIT_SET;
@@ -2689,27 +2925,63 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 							ownership_control = cbit_thread_stamp(prev_cbits,thread_id) | EDITOR_BIT_SET;
 						} else {
 							prev_cbits = cbits;
-							__libcpp_thread_yield(); // faster timed spin lock
+							tick(); // faster timed spin lock
 						}
 					}
 				}
-				cbits_wait_for_readers(a_c_bits,thread_id); // count down reader semaphore...
+				uint32_t new_cbits = cbits_add_writer(a_c_bits,thread_id);
+				cbits_wait_for_readers(new_cbits,thread_id); // count down reader semaphore...
+				//
+				// 
+				//
+				cbits_remove_writer(a_c_bits);
 				//
 			} else {
 				if ( cbits == 0 ) {   // adding a new element here. First one gets the spot (new one should not be different)
 					// two possibilities in play
 					// 1) lower bucket will find this spot,
 					// 2) this spot is being used for the first time
-				} else {
-					auto info_bits = (cbits >> 1);
-					if ( in_operation(info_bits) ) {
-						// and edit op is taking place
-					} else {
-						// this is a backref (it may be swappy at the moment)
+					uint32_t new_cbits = cbits_add_writer(a_c_bits,thread_id);
+					cbits_wait_for_readers(new_cbits,thread_id); // some small probability that readers will exist at this point
+					if ( is_back_ref(new_cbits) || another_base_slipped_in(new_cbits) ) {   // an element got added while trying to get the bucket
+						// try again... the element may end up in the other slice or as a member
+						cbits_remove_writer(a_c_bits);
+						add_key_value_known_refs(full_hash,h_bucket,offset,which_table,thread_id,cbits,bucket,buffer,end_buffer);
+						return;
+					} else { // this writer owns the bucket and will create a new base						
+						uint32_t update_cbits = 0x1;
+						update_taken_spots(el);
+						a_c_bits->store(update_cbits);
+						while ( !a_c_bits->compare_exchange_weak(update_cbits,update_cbits,std::memory_order_release) );
 					}
+					cbits_remove_writer(a_c_bits);
+				} else if ( is_back_ref(cbits) ) {
+					auto info_bits = (cbits >> 1);
+					// this is a backref (it may be swappy at the moment)
+					usurp_membership_position_hold_key(el,cbits,el_key,offset_value,which_table,buffer,end_buffer);
+					//
+				} else if ( base_in_operation(cbits) ) {
+					if ( no_duplicate_op(a_c_bits,cbits,thread_id) ) {
+						cbits_wait_for_writers(new_cbits,thread_id); 
+						cbits_wait_for_readers(new_cbits,thread_id); // some small probability that readers will exist at this point
+						
+					}
+					cbits_remove_writer(a_c_bits);
 				}
 			}
 			//
+*/
+
+		uint64_t add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id,uint32_t cbits,hh_element *bucket,hh_element *buffer,hh_element *end_buffer) {
+			//
+			uint8_t selector = 0x3;
+			//
+			if ( (offset_value != 0) &&  selector_bit_is_set(h_bucket,selector) ) {
+				//
+				return first_level_bucket_ops(atomic<uint32_t> *control_bits,full_hash,h_bucket,offset,which_table,thread_id,cbits,bucket,buffer,end_buffer);
+				//
+			}
+			return UINT64_MAX;
 		}
 
 
