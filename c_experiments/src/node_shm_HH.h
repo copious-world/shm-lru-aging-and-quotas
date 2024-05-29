@@ -1857,13 +1857,19 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 						auto a_n_key = (atomic<uint32_t> *)(&(next->_kv.key));
 						auto chk_key = a_n_key->load(std::memory_order_acquire);
 						if ( el_key == chk_key ) {
+							cbits_remove_reader(bucket_bits);
 							return next;
 						}
-					}										// H by reference against H constant  -- might be in the process of being entered
-				} while ( !(bucket_bits->compare_exchange_weak(H,H,std::memory_order_acq_rel))  );  // if it changes try again 
+					}
+					if ( no_cbit_change(bucket_bits,original_bits) ) {
+						return nullptr
+					}
+				} while ( true );  // if it changes try again 
 			} else {
 				auto original_cbits = fetch_real_cbits(cbits);
-				return swappy_search_ref(el_key, base, original_cbits);
+				auto ref = swappy_search_ref(el_key, base, original_cbits);
+				cbits_remove_reader(bucket_bits);
+				return ref;
 			}
 			return nullptr;
 		}
