@@ -102,60 +102,134 @@ inline T CLZ(T x) {		// count leading zeros -- make sure it is not bigger than t
 const uint32_t LOW_WORD = 0xFFFF;
 const uint64_t HASH_MASK = (((uint64_t)0) | LOW_WORD);  // 32 bits
 
-//
-// The control bit and the shared bit are mutually exclusive.
-// They can both be off at the same time, but not both on at the same time.
-//
 
-// HH control buckets
-const uint32_t RESIDENT_BIT_SHIFT = 31;
-const uint32_t PARTNERED_BIT_SHIFT = 31;
-const uint32_t THREAD_ID_SHIFT = 24;
-const uint32_t HOLD_BIT_SHIFT = 23;
-const uint32_t DBL_COUNT_MASK_SHIFT = 16;
 
-const uint32_t DOUBLE_COUNT_MASK_BASE = 0x3F;  // up to (64-1)
-const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE << DBL_COUNT_MASK_SHIFT);
-const uint32_t HOLD_BIT_SET = (0x1 << HOLD_BIT_SHIFT);
-const uint32_t FREE_HOLD_BIT_MASK = ~HOLD_BIT_SET;
+// CBIT LOCKING -- control bits fill the role of hopscotch membership patterns and an be swapped for 
 
-const uint32_t RESIDENT_BIT_SET = (0x1 << RESIDENT_BIT_SHIFT);
-const uint32_t PARTNERED_BIT_SET = (0x1 << PARTNERED_BIT_SHIFT);
-const uint32_t QUIT_SHARE_BIT_MASK = ~RESIDENT_BIT_SET;   // if 0 then thread_id == 0 means no thread else one thread. If 1, the XOR is two.
-const uint32_t QUIT_PARTNERED_BIT_MASK = ~PARTNERED_BIT_SET;   // if 0 then thread_id == 0 means no thread else one thread. If 1, the XOR is two.
+// a base root is a bucket to which some element has directly hashed without collision.
+// a base member is a bucket that stores an element that has collided with an existing base root and must be stored at an offset from the base
 
-const uint32_t THREAD_ID_BASE = (uint32_t)0x03F;
-const uint32_t THREAD_ID_SECTION = (THREAD_ID_BASE << THREAD_ID_SHIFT);
-const uint32_t THREAD_ID_SECTION_CLEAR_MASK = (~THREAD_ID_SECTION & ~RESIDENT_BIT_SET);
+const uint32_t CBIT_INACTIVE_BASE_ROOT_BIT = 0x1;
+const uint32_t CBIT_BASE_MEMBER_BIT = (0x1 << 31);
+const uint32_t CBIT_BASE_INOP_BITS = (CBIT_INACTIVE_BASE_ROOT_BIT | CBIT_BASE_MEMBER_BIT);
+
+const uint32_t CBIT_SEM_COUNTER_MASK = (0xFE);
+const uint32_t CBIT_SEM_COUNTER_CLEAR_MASK = (~((uint32_t)0x00FE));
 //
-const uint32_t COUNT_MASK = 0x1F;  // up to (32-1)
-const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
+const uint32_t CBIT_BACK_REF_BITS = 0x3E;
+const uint32_t CBIT_BACK_REF_CLEAR_MASK = (~((uint32_t)0x003E));
 //
+const uint32_t EDITOR_CBIT_SET =		((uint32_t)(0x0001) << 8);
+const uint32_t READER_CBIT_SET =		((uint32_t)(0x0001) << 9);
+const uint32_t USURPED_CBIT_SET =		((uint32_t)(0x0001) << 10);
+const uint32_t MOBILE_CBIT_SET =		((uint32_t)(0x0001) << 11);
+const uint32_t DELETE_CBIT_SET =		((uint32_t)(0x0001) << 12);
+
+// 
+const uint32_t READER_BIT_RESET = ~(READER_CBIT_SET);
+
+
+
 // EDITOR BIT and READER BIT
-const uint32_t EDITOR_BIT_SET = ((1 << 6) & 0x7F);
-const uint32_t READER_BIT_SET = ((1 << 7) & 0xFF);
-const uint32_t READER_BIT_RESET = ~(READER_BIT_SET);
-const uint32_t CBIT_THREAD_SHIFT = 8;
+
 const uint32_t CBIT_READER_SEMAPHORE_CLEAR = 0x00FFFFFF;
 const uint32_t CBIT_READER_SEMAPHORE_WORD = 0xFF000000;
 const uint32_t CBIT_READER_SEMAPHORE_SHIFT = 24;
 const uint32_t CBIT_READ_MAX_SEMAPHORE = 31;
-const uint32_t CBIT_BACK_REF_BITS = 0x3E;
 
-inline uint32_t cbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
-	cbits = cbits | ((thread_id << CBIT_THREAD_SHIFT) & 0x0000FFFF);
-	return cbits;
-}
+
+
+const uint32_t CBIT_THREAD_SHIFT = 16;
+
+
+// All the following bit operations occur in registers. Storage is handled atomically around them.
 //
+
+inline bool is_root_noop(uint32_t cbits) {
+	auto bit_state = (cbits & CBIT_INACTIVE_BASE_ROOT_BIT);
+	return (bit_state != 0);
+}
+
+inline bool is_root_in_ops(uint32_t cbits) {
+	return ((CBIT_BASE_MEMBER_BIT & cbits) == 0);
+}
+
+inline bool is_empty_bucket(uint32_t cbits) {
+	return (cbits == 0);
+}
+
+inline bool is_member_bucket(uint32_t cbits) {
+	auto chck = (cbits & CBIT_BASE_INOP_BITS);
+	return (chck == CBIT_BASE_MEMBER_BIT);
+}
+
+
+// THREAD OWNER ID CONTROL
+
 inline uint32_t cbits_thread_id_of(uint32_t cbits) {
-	auto thread_id = (cbits >> CBIT_THREAD_SHIFT) & 0xFF;
+	auto thread_id = (cbits >> CBIT_THREAD_SHIFT) & 0x00FF;
 	return thread_id;
 }
 
-inline bool base_in_operation(uint32_t cbits) {
-	auto chk = EDITOR_BIT_SET | READER_BIT_SET;
-	return ((chk & cbits) != 0) && ((cbits & CBIT_BACK_REF_BITS) == 0);
+inline uint32_t cbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
+	cbits = cbits | ((thread_id & 0x00FF) << CBIT_THREAD_SHIFT);
+	return cbits;
 }
+
+
+// HANDLE THE READER SEMAPHORE which is useful around deletes and some states of inserting.
+//
+inline uint8_t base_reader_sem_count(uint32_t cbits) {
+	if ( is_root_in_ops(cbits) ) {
+		auto semcnt = (cbits >> 1) & 0x7F; 
+		return semcnt;
+	}
+	return 0; // has to be greater than or equal to 1. 
+}
+
+
+inline uint32_t base_reader_sem_incr(uint32_t cbits) {
+	if ( is_root_in_ops(cbits) ) {
+		auto semcnt = (cbits >> 1) & 0x7F;
+		if ( semcnt < 0x7F) {
+			semcnt++;
+			cbits = (cbits & CBIT_SEM_COUNTER_CLEAR_MASK) | ((semcnt & 0x007F) << 1);
+		}
+	}
+	return cbits; // has to be greater than or equal to 1. 
+}
+
+
+inline uint32_t base_reader_sem_decr(uint32_t cbits) {
+	if ( is_root_in_ops(cbits) ) {
+		auto semcnt = (cbits >> 1) & 0x7F;
+		if ( semcnt > 0 ) {
+			semcnt--;
+			cbits = (cbits & CBIT_SEM_COUNTER_CLEAR_MASK) | ((semcnt & 0x007F) << 1);
+		}
+	}
+	return cbits; // has to be greater than or equal to 1. 
+}
+
+
+// MEMBER BACKREF to the base bucket
+
+inline uint8_t member_backref_offset(uint32_t cbits) {
+	if ( is_member_bucket(cbits) ) {
+		auto bkref = (cbits >> 1) & 0x1F; 
+		return bkref;
+	}
+	return 0; // has to be greater than or equal to 1. 
+}
+
+
+inline uint8_t set_member_backref_offset(uint32_t cbits,uint8_t bkref) {
+	if ( is_member_bucket(cbits) ) {
+		cbits = (CBIT_BACK_REF_CLEAR_MASK & cbits) | (bkref << 1);
+	}
+	return cbits; // has to be greater than or equal to 1. 
+}
+
 
 class hh_element;
 template<class HHE>
@@ -168,11 +242,117 @@ HHE *cbits_base_from_backref(uint32_t cbits,uint8_t &backref,HHE *from,HHE *begi
 	return from;
 }
 
-const uint32_t HOLD_BIT_ODD_SLICE = (0x1 << (7+8));
-const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
 
-const uint32_t HOLD_BIT_EVEN_SLICE = (0x1 << (7));
-const uint32_t FREE_BIT_EVEN_SLICE_MASK = ~HOLD_BIT_EVEN_SLICE;
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+inline bool base_in_operation(uint32_t cbits) {
+	if ( is_root_in_ops(cbits) ) {
+		return (cbits & EDITOR_CBIT_SET) || (cbits & READER_CBIT_SET);
+	}
+	return false;
+}
+
+
+// ---- ---- ---- 
+
+inline bool readers_are_active(uint32_t cbits) {
+	if ( is_root_in_ops(cbits) ) {
+		auto chck = (cbits & READER_CBIT_SET) && (base_reader_sem_count(cbits) > 0);
+		return chck;
+	}
+	return false;
+}
+
+inline uint32_t set_reader_active(uint8_t thread_id,uint32_t cbits = 0) {
+	auto rdr = (cbits | READER_CBIT_SET);
+	rdr = cbit_thread_stamp(rdr,thread_id);
+	return rdr;
+}
+
+
+inline bool editors_are_active(uint32_t cbits) {
+	if ( is_root_in_ops(cbits) ) {
+		auto chck = (cbits & EDITOR_CBIT_SET);
+		return chck;
+	}
+	return false;
+}
+
+inline uint32_t set_editor_active(uint8_t thread_id,uint32_t cbits = 0) {
+	auto rdr = (cbits | EDITOR_CBIT_SET);
+	rdr = cbit_thread_stamp(rdr,thread_id);
+	return rdr;
+}
+
+
+inline bool is_member_usurped(uint32_t cbits,uint8_t &thread_id) {
+	if ( is_member_bucket(cbits) ) {
+		if ( cbits & USURPED_CBIT_SET ) {
+			thread_id = cbits_thread_id_of(cbits);
+		}
+	}
+	return false;
+}
+
+
+inline uint32_t set_member_usurped(uint8_t thread_id,uint32_t cbits) {
+	if ( is_member_bucket(cbits) ) {
+		auto rdr = (cbits | USURPED_CBIT_SET);
+		rdr = cbit_thread_stamp(rdr,thread_id);
+		return rdr;
+	}
+}
+
+
+
+inline bool is_member_in_mobile_predelete(uint32_t cbits) {
+	if ( is_member_bucket(cbits) ) {
+		if ( cbits & MOBILE_CBIT_SET ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
+
+inline uint32_t set_member_in_mobile_predelete(uint8_t thread_id,uint32_t cbits) {
+	if ( is_member_bucket(cbits) ) {
+		auto rdr = (cbits | MOBILE_CBIT_SET);
+		rdr = cbit_thread_stamp(rdr,thread_id);
+		return rdr;
+	}
+}
+
+
+
+// is_deleted
+// cropped and unacessible but not yet clear in maps and memberships...
+// cropping clears the taken positions of leaving elements.
+//
+// after clearing the space has been reclaimed and buckets are empty
+
+
+inline bool is_deleted(uint32_t cbits) { 
+	if ( is_member_bucket(cbits) ) {
+		if ( cbits & DELETE_CBIT_SET ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
+inline uint32_t set_deleted(uint8_t thread_id,uint32_t cbits) {
+	auto rdr = (cbits | DELETE_CBIT_SET);
+	rdr = cbit_thread_stamp(rdr,thread_id);
+	return rdr;
+}
+
+
+
+// KEY (as returned to the user application will use selector bits to search)
 
 // select bits for the key
 const uint32_t HH_SELECT_BIT_SHIFT = 30;
@@ -235,56 +415,6 @@ static inline uint32_t clear_selector_bit(uint32_t h) {
 	return h;
 }
 
-
-
-static inline uint32_t add_thread_id(uint32_t target, uint32_t thread_id) {
-	auto rethread_id = thread_id & THREAD_ID_BASE;
-	if ( rethread_id != thread_id ) return 0;
-	rethread_id = (rethread_id << THREAD_ID_SHIFT);
-	if ( target & HOLD_BIT_SET ) {
-		if ( target & RESIDENT_BIT_SET ) return 0;
-		target = target | RESIDENT_BIT_SET;
-		target = (target & THREAD_ID_SECTION_CLEAR_MASK) | ((target & THREAD_ID_SECTION) ^ rethread_id);
-	} else {
-		target = target | rethread_id;
-	}
-	return target;
-}
-
-
-static inline uint32_t remove_thread_id(uint32_t target, uint32_t thread_id) {
-	auto rethread_id = thread_id & THREAD_ID_BASE;
-	if ( rethread_id != thread_id ) return 0;
-	if ( target & HOLD_BIT_SET ) {
-		rethread_id = rethread_id << THREAD_ID_SHIFT;
-		if ( target & RESIDENT_BIT_SET ) {
-			target = target & QUIT_SHARE_BIT_MASK;
-			target = (target & THREAD_ID_SECTION_CLEAR_MASK) | ((target & THREAD_ID_SECTION) ^ rethread_id);
-		} else {
-			target = target & QUIT_SHARE_BIT_MASK;
-			target = (target & THREAD_ID_SECTION_CLEAR_MASK);
-		}
-	}
-	return target;
-}
-
-
-
-static inline uint32_t get_partner_thread_id(uint32_t target, uint32_t thread_id) {
-	auto rethread_id = thread_id & THREAD_ID_BASE;
-	if ( rethread_id != thread_id ) return 0;
-	if ( target & HOLD_BIT_SET ) {
-		if ( target & RESIDENT_BIT_SET ) {
-			uint32_t partner_id = target & THREAD_ID_SECTION;
-			partner_id = (partner_id >> THREAD_ID_SHIFT) & THREAD_ID_BASE;
-			partner_id = (partner_id ^ rethread_id);
-			return partner_id;
-		} else {
-			return 0;
-		}
-	}
-	return 0;
-}
 
 
 
@@ -381,10 +511,8 @@ class HMap_interface {
 		virtual uint64_t	add_key_value(uint32_t el_match_key,uint32_t hash_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 		//
-		virtual bool		prepare_add_key_value_known_slice(uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table) = 0;
-		virtual bool		prepare_add_key_value_known_slice(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table,uint32_t &cbits,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) = 0;
+		virtual bool		prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table,uint32_t &cbits,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) = 0;
 		virtual bool		wait_if_unlock_bucket_counts(uint32_t h_bucket, uint8_t thread_id, uint8_t &which_table) = 0;
-		virtual uint64_t	add_key_value_known_slice(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id = 1) = 0;
 		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id,uint32_t cbits,hh_element *bucket,hh_element *buffer,hh_element *end_buffer) = 0;
 };
 

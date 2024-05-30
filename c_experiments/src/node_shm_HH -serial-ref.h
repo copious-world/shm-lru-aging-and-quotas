@@ -36,6 +36,133 @@ std::uint8_t padding[S_CACHE_PADDING - (sizeof(Object) % S_CACHE_PADDING)];
 
 
 
+
+// HH control buckets
+const uint32_t RESIDENT_BIT_SHIFT = 31;
+const uint32_t PARTNERED_BIT_SHIFT = 31;
+const uint32_t HOLD_BIT_SHIFT = 23;
+const uint32_t DBL_COUNT_MASK_SHIFT = 16;
+
+const uint32_t THREAD_ID_SECTION_CLEAR_MASK = (~THREAD_ID_SECTION & ~RESIDENT_BIT_SET);
+const uint32_t THREAD_ID_SHIFT = 16;
+
+const uint32_t DOUBLE_COUNT_MASK_BASE = 0x3F;  // up to (64-1)
+const uint32_t DOUBLE_COUNT_MASK = (DOUBLE_COUNT_MASK_BASE << DBL_COUNT_MASK_SHIFT);
+const uint32_t HOLD_BIT_SET = (0x1 << HOLD_BIT_SHIFT);
+const uint32_t FREE_HOLD_BIT_MASK = ~HOLD_BIT_SET;
+
+const uint32_t RESIDENT_BIT_SET = (0x1 << RESIDENT_BIT_SHIFT);
+const uint32_t PARTNERED_BIT_SET = (0x1 << PARTNERED_BIT_SHIFT);
+const uint32_t QUIT_SHARE_BIT_MASK = ~RESIDENT_BIT_SET;   // if 0 then thread_id == 0 means no thread else one thread. If 1, the XOR is two.
+const uint32_t QUIT_PARTNERED_BIT_MASK = ~PARTNERED_BIT_SET;   // if 0 then thread_id == 0 means no thread else one thread. If 1, the XOR is two.
+
+
+const uint32_t COUNT_MASK = 0x1F;  // up to (32-1)
+const uint32_t HI_COUNT_MASK = (COUNT_MASK<<8);
+//
+
+
+
+static inline uint32_t add_thread_id(uint32_t target, uint32_t thread_id) {
+	auto rethread_id = thread_id & THREAD_ID_BASE;
+	if ( rethread_id != thread_id ) return 0;
+	rethread_id = (rethread_id << CBIT_THREAD_SHIFT);
+	if ( target & HOLD_BIT_SET ) {
+		if ( target & RESIDENT_BIT_SET ) return 0;
+		target = target | RESIDENT_BIT_SET;
+		target = (target & THREAD_ID_SECTION_CLEAR_MASK) | ((target & THREAD_ID_SECTION) ^ rethread_id);
+	} else {
+		target = target | rethread_id;
+	}
+	return target;
+}
+
+
+static inline uint32_t remove_thread_id(uint32_t target, uint32_t thread_id) {
+	auto rethread_id = thread_id & THREAD_ID_BASE;
+	if ( rethread_id != thread_id ) return 0;
+	if ( target & HOLD_BIT_SET ) {
+		rethread_id = rethread_id << CBIT_THREAD_SHIFT;
+		if ( target & RESIDENT_BIT_SET ) {
+			target = target & QUIT_SHARE_BIT_MASK;
+			target = (target & THREAD_ID_SECTION_CLEAR_MASK) | ((target & THREAD_ID_SECTION) ^ rethread_id);
+		} else {
+			target = target & QUIT_SHARE_BIT_MASK;
+			target = (target & THREAD_ID_SECTION_CLEAR_MASK);
+		}
+	}
+	return target;
+}
+
+
+
+static inline uint32_t get_partner_thread_id(uint32_t target, uint32_t thread_id) {
+	auto rethread_id = thread_id & THREAD_ID_BASE;
+	if ( rethread_id != thread_id ) return 0;
+	if ( target & HOLD_BIT_SET ) {
+		if ( target & RESIDENT_BIT_SET ) {
+			uint32_t partner_id = target & THREAD_ID_SECTION;
+			partner_id = (partner_id >> CBIT_THREAD_SHIFT) & THREAD_ID_BASE;
+			partner_id = (partner_id ^ rethread_id);
+			return partner_id;
+		} else {
+			return 0;
+		}
+	}
+	return 0;
+}
+
+
+
+const uint32_t HOLD_BIT_ODD_SLICE = (0x1 << (7+8));
+const uint32_t FREE_BIT_ODD_SLICE_MASK = ~HOLD_BIT_ODD_SLICE;
+
+const uint32_t HOLD_BIT_EVEN_SLICE = (0x1 << (7));
+const uint32_t FREE_BIT_EVEN_SLICE_MASK = ~HOLD_BIT_EVEN_SLICE;
+
+
+//
+// The control bit and the shared bit are mutually exclusive.
+// They can both be off at the same time, but not both on at the same time.
+//
+
+const uint32_t THREAD_ID_BASE = (uint32_t)0x03F;
+const uint32_t THREAD_ID_SECTION = (THREAD_ID_BASE << CBIT_THREAD_SHIFT);
+//
+
+
+// thread id's must be one based... (from 1)
+
+/**
+ * thread_id_of
+*/
+inline uint32_t thread_id_of(uint32_t controls) {
+	uint32_t thread_id =  ((controls & THREAD_ID_SECTION) >> THREAD_ID_SHIFT);
+	return thread_id & 0xFF;
+}
+
+/**
+ * bitp_stamp_thread_id - bit partner stamp thread id
+*/
+
+inline uint32_t bitp_stamp_thread_id(uint32_t controls,uint32_t thread_id) {
+	controls = controls & THREAD_ID_SECTION_CLEAR_MASK; // CLEAR THE SECTION
+	controls = controls | ((thread_id & THREAD_ID_BASE) << THREAD_ID_SHIFT) | RESIDENT_BIT_SET;  // this thread is now resident
+	return controls;
+}
+
+/**
+ * check_thread_id
+*/
+inline bool check_thread_id(uint32_t controls,uint32_t lock_on_controls) {
+	uint32_t vCHECK_MASK = THREAD_ID_SECTION | HOLD_BIT_SET;
+	bool check = ((controls & vCHECK_MASK) == (lock_on_controls & vCHECK_MASK));
+	return check;
+}
+
+
+
+
 // USING
 using namespace std;
 // 
@@ -759,6 +886,113 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
+
+		/**
+		 * bitp_partner_thread -- make the thread pattern that this will have if it were to be the last to a partnership.
+		*/
+		uint32_t bitp_partner_thread(uint32_t thread_id,uint32_t controls,uint32_t &thread_salvage) {
+			thread_salvage = thread_id_of(controls);  //
+			// overwrite the stored thread id (effectively loses the currently resident thread, but yeilds that to the caller)
+			auto p_controls = bitp_stamp_thread_id(controls,thread_id) | PARTNERED_BIT_SET;  // both resident bit and partner
+			return p_controls;
+		}
+
+
+		/**
+		 * bitp_clear_thread_stamp_unlock
+		*/
+		uint32_t bitp_clear_thread_stamp_unlock(uint32_t controls) {
+			controls = (controls & (THREAD_ID_SECTION_CLEAR_MASK & FREE_HOLD_BIT_MASK)); // CLEAR THE SECTION
+			return controls;
+		}
+
+		/**
+		 * table_store_partnership -- 
+		*/
+		void table_store_partnership(uint32_t ctrl_thread,uint32_t thread_id) {
+			_process_table[ctrl_thread].partner_thread = thread_id;
+			_process_table[thread_id].partner_thread = ctrl_thread;
+		}
+
+		/**
+		 * table_store_partnership -- 
+		*/
+		bool partnered(uint32_t controls, uint32_t ctrl_thread, uint32_t thread_id) {
+			if ( controls & PARTNERED_BIT_SET ) {
+				auto t_check = thread_id_of(controls);
+				if ( (t_check == ctrl_thread) || (t_check == thread_id) ) {
+					if ( _process_table[ctrl_thread].partner_thread == thread_id ) {
+						if ( _process_table[thread_id].partner_thread == ctrl_thread ) {
+							return true;
+						}
+					}
+				}
+			}
+			return false;
+		}
+
+
+		bool threads_are_partnered(uint32_t ctrl_thread, uint32_t &partner_thrd_id) {
+			if ( _process_table[ctrl_thread].partner_thread == 0 ) {
+				return false;
+			}
+			partner_thrd_id =  _process_table[ctrl_thread].partner_thread;  // output partner id
+			if ( _process_table[partner_thrd_id].partner_thread == ctrl_thread ) {
+				return true;  // there was a thread id and the relationship is not broken
+			}
+			return false;
+		}
+
+
+		bool partnered_at_all(uint32_t controls, uint32_t ctrl_thread, uint32_t thread_id) {
+			if ( controls & RESIDENT_BIT_SET ) {
+				return ( partnered(controls, ctrl_thread, thread_id) );
+			}
+			return false;
+		}
+
+
+		uint32_t ensure_shared_bits_set_atomic(atomic<uint32_t> *controller, uint32_t set_bits) {
+			auto controls = controller->load(std::memory_order_acquire);
+			auto update_ctrls = controls | set_bits;
+			while ( !controller->compare_exchange_weak(controls,update_ctrls,std::memory_order_acq_rel) );
+			return controller->load();
+		}
+
+
+
+		/**
+		 * store_relinquish_partnership
+		 * 
+		 * the method, partnered, should have already been called 
+		*/
+		//
+		void store_relinquish_partnership(atomic<uint32_t> *controller, uint32_t controls, uint32_t thread_id) {
+			auto hold_bit = controls & HOLD_BIT_SET;
+			auto ctrl_thread = thread_id_of(controls);
+			if ( ctrl_thread == thread_id ) {
+				auto partner = _process_table[thread_id].partner_thread;  // this partner still has his slice.
+				auto partner_controls = bitp_stamp_thread_id(controls,partner);
+				if ( partner != 0 ) {
+					partner_controls = (partner_controls | RESIDENT_BIT_SET | hold_bit) & QUIT_PARTNERED_BIT_MASK;
+				} else {
+					partner_controls = (partner_controls & QUIT_PARTNERED_BIT_MASK & THREAD_ID_SECTION_CLEAR_MASK);
+				}
+				auto prev_controls = controls;
+				while ( !controller->compare_exchange_weak(controls,partner_controls,std::memory_order_acq_rel) && (prev_controls == controls) );
+			} else {
+				if ( _process_table[thread_id].partner_thread == thread_id ) {
+					_process_table[thread_id].partner_thread = 0;
+					auto partner_controls = (controls  | RESIDENT_BIT_SET | hold_bit) & QUIT_PARTNERED_BIT_MASK;
+					auto prev_controls = controls;
+					while ( !controller->compare_exchange_weak(controls,partner_controls,std::memory_order_acq_rel) && (prev_controls == controls) );
+				}
+			}
+		}
+
+/// 			auto controls = controller->load(std::memory_order_acquire);
+
+
 		/**
 		 * to_slice_transition
 		 * 
@@ -830,6 +1064,76 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			uint32_t *controllers = _region_C;
 			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
 			return bucket_lock(controller,ret_control,thread_id);
+		}
+
+
+		// interested parties might check if the tow following methods are the same.
+
+
+
+		atomic<uint32_t> * bucket_lock2(atomic<uint32_t> *controller,uint32_t &ret_control,uint8_t thread_id) {   // where are the bucket counts??
+			//
+			uint32_t controls = controller->load(std::memory_order_acquire);  // one controller for two slices
+			//
+			uint32_t lock_on_controls = 0;  // used after the outter loop
+			uint8_t thread_salvage = 0;
+			do {
+				while ( controls & HOLD_BIT_SET ) {  // while some other process is using this count bucket
+					//
+					controls = controller->load(std::memory_order_acquire);
+					//  -------------------
+					if ( controls & HOLD_BIT_SET ) {
+						auto ctrl_thread = thread_id_of(controls);
+						if ( (ctrl_thread == thread_id) && (controls & RESIDENT_BIT_SET) ) {  // this thread owns its part here..
+							// Clear the hold bit in any way possible (because thread_id is blocking itself)
+							// store_unlock_controller will either (1) clear the control word of any thread
+							// or (2) remove thread_id from a partnership. 
+							auto pbit = controls & PARTNERED_BIT_SET; // don't lose this information...
+							ret_control = ensure_shared_bits_set_atomic(controller, HOLD_BIT_SET | RESIDENT_BIT_SET | pbit);
+							return controller;
+						}
+						if ( partnered_at_all(controls, ctrl_thread, thread_id) ) {  // that is, still one of the residents (moved partner)
+							ret_control = ensure_shared_bits_set_atomic(controller, HOLD_BIT_SET | PARTNERED_BIT_SET | RESIDENT_BIT_SET );
+							return controller;
+						}
+					}
+					tick(); // OK to let other things run 
+					// else continue waiting for something to release the hold...
+				}
+
+				//  At this point the bucket is cleared of thread id. And the hold bit is not set.
+				// 	Make sure the expected pattern of storage makes sense. And, write the sensible pattern 
+				//	indicating pure lock or shared lock.  (Prepare to update the the controller in shared memory.)
+				// 
+				if ( !(controls & RESIDENT_BIT_SET) ) {  // no one is in the bucket
+					lock_on_controls = bitp_stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;  // make sure that this is the thread that sets the bit high
+				} else if ( !(controls & PARTNERED_BIT_SET) ) {   // Indicates that another thread (stored in controls) can share.
+					// This means there is a free slice and thread_id could access that slice.
+					// So, produce the bit pattern that will indicate sharing from this point,
+					// i.e., overwrite, thread_id will be in the control word while the current one will be moved to salvage (in tables later)
+					// pass the `controls` word (it has info that must be preserved) ... don't change the process tables yet
+					lock_on_controls = bitp_partner_thread(thread_id,controls,thread_salvage) | HOLD_BIT_SET; // SETS SHARED BIT
+				} // otherwise, the partner is someone else thread_id has to wait until one of them exists. But, those threads might have exited...
+				//
+				// (cew) returns true if the value changes ... meaning the lock is acquired by someone since the last load
+				// i.e. loop exits if the value changes from no thread id and clear bit to at least the bit
+				// or it changes from the partner thread and shared bit set to thread_id and hold bit set and shared bit still set.
+				auto prev_controls = controls;
+				while ( !(controller->compare_exchange_weak(controls,lock_on_controls,std::memory_order_release,std::memory_order_relaxed)) && (prev_controls == controls) );
+				// but we care if this thread is the one that gets the bit.. so check to see that `controls` contains 
+				// this thread id and the `HOLD_BIT_SET`
+				controls = controller->load();  // guarding against suprious completion of storage...
+			  // allow for the possibility that another thread got in
+			} while ( !(check_thread_id(controls,lock_on_controls)) );  // failing this, we wait on the other thread to give up the lock..
+			//
+			// The thread is locked and if partnered, the partnership can be stored without interference at this point.
+			if ( controls & PARTNERED_BIT_SET ) {  // at this point thread_id is stored in controls, and if shared bit, then partnership
+				// if here, then two threads are controlling the bucket but in different slices
+				table_store_partnership(thread_id,thread_salvage); // thread_salvage has to have been set.
+			}
+			// at this point this thread should own the bucket...
+			ret_control = lock_on_controls;  // return the control word that was loaded and change to carrying this thread id and lock bit
+			return controller;
 		}
 
 		atomic<uint32_t> * bucket_lock(atomic<uint32_t> *controller,uint32_t &ret_control,uint8_t thread_id) {   // where are the bucket counts??
@@ -1314,7 +1618,6 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		/**
 		 * add_key_value
 		 * 
-		*/
 
 		uint64_t add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t thread_id = 1) {
 			//
@@ -1393,6 +1696,116 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 			return loaded_key;
 		}
+
+		*/
+
+
+
+
+
+		hh_element *select_bucket_for_slice(uint32_t h_bucket,uint8_t &which_table,HHash **T_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) {
+			//
+			if ( h_bucket >= _max_n ) {
+				h_bucket -= _max_n;  // let it be circular...
+			}
+			//
+			uint8_t count_0;
+			uint8_t count_1;
+			//
+			get_member_bits_counts(h_bucket,count_0,count_1);
+			//
+			if ( (count_0 >= COUNT_MASK) && (count_1 >= COUNT_MASK) ) {
+				return nullptr;
+			}
+			if ( count_0 >= COUNT_MASK ) {
+				which_table = 1;
+			}
+			if ( count_1 >= COUNT_MASK ) {
+				which_table = 0;
+			} else {
+				if ( count_1 < count_0 ) {
+					which_table = 1;
+				} else if ( count_0 < count_1 ) {
+					which_table = 0;
+				} else {
+					uint8_t bit = pop_shared_bit();
+					if ( bit ) {
+						which_table = 1;
+					}
+				}
+			}
+			//
+			set_thread_table_refs(which_table, T_ref, buffer_ref, end_buffer_ref);
+			hh_element *el = *buffer_ref + h_bucket;
+			return el;
+		}
+
+
+
+		void get_member_bits_counts(uint32_t h_bucket,uint8_t &count0,uint8_t &count1) {
+			//
+			hh_element *buffer		= _region_HV_0;
+			hh_element *end_buffer	= _region_HV_0_end;
+			//
+			hh_element *el = buffer + h_bucket;
+			if ( el < end_buffer ) {
+				atomic<uint32_t> *cbits = (atomic<uint32_t> *)(&(el->c_bits));
+				auto c = cbits->load(std::memory_order_acquire);
+				if ( c & 0x1 ) {
+					count0 = popcount(c);
+				}
+ 			}
+			//
+			buffer		= _region_HV_1;
+			end_buffer	= _region_HV_1_end;
+			//
+			el = buffer + h_bucket;
+			if ( el < end_buffer ) {
+				atomic<uint32_t> *cbits = (atomic<uint32_t> *)(&(el->c_bits));
+				auto c = cbits->load(std::memory_order_acquire);
+				if ( c & 0x1 ) {
+					count1 = popcount(c);
+				}
+ 			}
+			//
+		}
+
+
+		uint64_t add_key_value(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t thread_id = 1) {
+			//
+			uint8_t selector = 0x3;
+			if ( selector_bit_is_set(h_bucket,selector) ) {
+				return UINT64_MAX;
+			}
+
+			//
+			// Threads from this process will not contend with each other.
+			// They will work on two different memory sections.
+			// The favored should set the value first. 
+			//			Check thread IDs in undecided state (can be atomic)
+
+			// About waiting on threads from the current process. Two threads are assigned to the current table.
+			// The process will lock a mutex for just those two threads for the tier that has been called upon. 
+			// The mutex will lock more globally. It will not interfere with other processes requesting a conversation 
+			// with the threads, just current process threads at the curren tier.
+			//
+			auto N = this->_max_n;
+			uint32_t h_start = h_bucket % N;  // scale the hash .. make sure it indexes the array...  (should not have to do this)
+			//
+			HHash *T = _T0;
+			hh_element *buffer	= _region_HV_0;
+			hh_element *end	= _region_HV_0_end;
+			uint8_t which_table = 0;
+			//
+			uint32_t *controllers = _region_C;
+			auto controller = (atomic<uint32_t>*)(&controllers[h_start]);
+			if ( (offset_value != 0) && wait_if_unlock_bucket_counts_refs(&controller,thread_id,h_start,&T,&buffer,&end,which_table) ) {
+				return place_in_bucket(el_key, h_bucket, offset_value, which_table, thread_id, N, buffer, end);
+			}
+
+			return UINT64_MAX;
+		}
+
 
 
 
@@ -1971,6 +2384,165 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
+
+
+
+
+
+
+		/**
+		 * place_in_bucket
+		 * 
+		 * Either puts a new element into a hash bucket or makes use of a previously established bucket in one of two ways.
+		 * One way is for the element to be placed in the bucket as a member, in which case newest element usurps the root 
+		 * of the bae and then arranges for the old root to be put back into the bucket. The second way is for the new element
+		 * to usurp the position of a member of some other bucket determined by the back reference from the member to the base 
+		 * bucket. The usurping thread arranges for the usurped element to be placed back into the bucket of its base.
+		*/
+
+		uint64_t place_in_bucket(uint32_t el_key, uint32_t h_bucket, uint32_t offset_value, uint8_t which_table, uint8_t thread_id, uint32_t N,hh_element *buffer,hh_element *end) {
+
+			uint32_t h_start = h_bucket % N;  // scale the hash .. make sure it indexes the array...  (should not have to do this)
+			// hash_base -- for the base of the bucket
+			hh_element *hash_base = bucket_at(buffer,h_start,end);  //  hash_base aleady locked (by counter)
+			//
+			uint32_t tmp_c_bits = hash_base->c_bits;
+			uint32_t tmp_value = hash_base->_kv.value;
+			//
+			if ( !(tmp_c_bits & 0x1) && (tmp_value == 0) ) {  // empty bucket  (this is a new base)
+				// put the value into the current bucket and forward
+				create_in_bucket_at_base(hash_base,offset_value,el_key);   // this bucket is locked 
+				// also set the bit in prior buckets....
+				place_back_taken_spots(hash_base, 0, buffer, end);
+				this->slice_bucket_count_incr_unlock(h_start,which_table,thread_id);
+			} else {
+				//	save the old value
+				atomic<uint32_t> *h_ky = (atomic<uint32_t> *)(&hash_base->_kv.key);
+				auto ky = obtain_cell_key(h_ky);
+				//
+				uint64_t current_loaded_value = (((uint64_t)ky) << HALF) | tmp_value;
+				// new values
+				//
+				if ( tmp_c_bits & 0x1 ) {  // (this is actually a base) don't touch c_bits (restore will)
+					// this base is for the new element's bucket where it belongs as a member.
+					// usurp the position of the current bucket head,
+					// then put the bucket head back into the bucket (allowing another thread to do the work)
+					hash_base->_kv.value = offset_value;  // put in the new values
+					h_ky->store(el_key,std::memory_order_release);  // hash_base->_kv.key = el_key;
+					//
+					wakeup_value_restore(hash_base, h_start, current_loaded_value, which_table, thread_id, buffer, end);
+					// Note: this is controller's bucket and this head is locked 
+				} else {   // `hash_base` is NOT A BASE 
+					// -- some other bucket controls this positions for the moment.
+					uint32_t *controllers = _region_C;
+					auto controller = (atomic<uint32_t>*)(&controllers[h_start]);
+					//
+					// usurp the position from a bucket that has this position as a member..
+					// 
+					uint8_t k = usurp_membership_position_hold_key(hash_base,tmp_c_bits,el_key,offset_value,which_table,buffer,end);
+					// k is the offset to the base in which `hash_base` WAS a member..
+					h_ky->store(el_key,std::memory_order_release);   // release the key... (now the new element)
+					//
+					this->slice_unlock_counter(controller,which_table,thread_id);
+					// hash the saved value back into its bucket if possible.
+					h_start = (h_start > k) ? (h_start - k) : (N - k + h_start);     // bucket of backref 
+					// PUT IT BACK ... try to put the element back...
+					HHash *T = _T0;
+					while ( !wait_if_unlock_bucket_counts_refs(&controller,thread_id,h_start,&T,&buffer,&end,which_table) );
+					hash_base = bucket_at(buffer,h_start,end);
+					// loaded_value was in the bucket before the usurp
+					wakeup_value_restore(hash_base, h_start, current_loaded_value, which_table, thread_id, buffer, end);
+				}
+			}
+			//
+			h_bucket = stamp_key(h_bucket,which_table);
+			uint64_t loaded_key = (((uint64_t)el_key) << HALF) | h_bucket; // LOADED
+			return loaded_key;
+		}
+
+
+
+		/**
+		 * create_in_bucket_at_base
+		*/
+
+		void create_in_bucket_at_base(hh_element *hash_ref, uint32_t value, uint32_t el_key) {
+			hash_ref->_kv.value = value;
+			hash_ref->_kv.key = el_key;
+			hash_ref->c_bits = 0x1;  // locked position
+			hh_element *base_ref = hash_ref;
+			uint32_t c = 1;				// c will be the new base element map of taken positions
+			for ( uint8_t i = 1; i < NEIGHBORHOOD; i++ ) {
+				hash_ref++;								// keep walking forward to the end of the window
+				if ( hash_ref->c_bits & 0x1 ) {			// this is a base bucket with information beyond the window
+					atomic<uint32_t> *hn_t_bits = (atomic<uint32_t> *)(&base_ref->taken_spots);
+					auto taken = hn_t_bits->load(std::memory_order_acquire);
+					c |= (taken << i); // this is the record, but shift it....
+					break;								// don't need to get more information at this point
+				} else if ( hash_ref->c_bits != 0 ) {
+					SET(c,i);							// this element belongs to a base below the new base
+				}
+			}
+			base_ref->taken_spots = c; // finally save the taken spots.
+		}
+
+
+
+		//
+		/**
+		 * prepare_add_key_value_known_slice  ALIAS for wait_if_unlock_bucket_counts
+		*/
+		bool prepare_add_key_value_known_slice(uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table) {
+			atomic<uint32_t> *controller = nullptr;
+			
+			return wait_if_unlock_bucket_counts(&controller,thread_id,h_bucket,which_table);
+		}
+
+
+		/**
+		 * add_key_value_known_slice
+		 * 
+		 * This method should be caled after `prepare_for_add_key_value_known_refs` which locks the bucket found from `h_bucket`.
+		*/
+		uint64_t add_key_value_known_slice(uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id = 1) {
+			uint8_t selector = 0x3;
+			//
+			if ( (offset_value != 0) &&  selector_bit_is_set(h_bucket,selector) ) {
+				auto N = this->_max_n;
+				//
+				HHash *T = _T0;
+				hh_element *buffer = _region_HV_0;
+				hh_element *end	= _region_HV_0_end;
+				//
+				this->set_thread_table_refs(which_table,&T,&buffer,&end);
+				//
+				return place_in_bucket(el_key, h_bucket, offset_value, which_table, thread_id, N, buffer, end);
+			}
+			//
+			return UINT64_MAX;
+		}
+
+
+
+		/**
+		 * set_thread_table_refs
+		*/
+		void set_thread_table_refs(uint8_t which_table, HHash **T_ref, hh_element **buffer_ref, hh_element **end_buffer_ref) {
+			HHash *T = _T0;
+			hh_element *buffer		= _region_HV_0;
+			hh_element *end_buffer	= _region_HV_0_end;
+			if ( which_table ) {
+				T = _T1;
+				buffer = _region_HV_1;
+				end_buffer = _region_HV_1_end;
+			}
+			*T_ref = T;
+			*buffer_ref = buffer;
+			*end_buffer_ref = end_buffer;
+		}
+
+
+
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 	public:
@@ -2024,3 +2596,70 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 #endif // _H_HOPSCOTCH_HASH_SHM_
+
+
+
+
+
+/*
+
+
+			if ( cbits & 0x1 ) {  // it is a based and is not being touched at the moment
+				//
+				uint32_t ownership_control = EDITOR_BIT_SET | READER_BIT_SET;
+				ownership_control = cbit_thread_stamp(ownership_control,thread_id);
+				//
+				auto prev_cbits = cbits;  // the actual memory pattern of membership
+				while ( !(a_c_bits->compare_exchange_weak(prev_cbits,ownership_control,std::memory_order_acq_rel)) ) {
+					if ( prev_cbits & 0x1 ) cbits = prev_cbits;
+					else {
+						if ( (prev_cbits & READER_BIT_SET) && !(prev_cbits & EDITOR_BIT_SET) ) {  // preserve reader semaphore
+							ownership_control = cbit_thread_stamp(prev_cbits,thread_id) | EDITOR_BIT_SET;
+						} else {
+							prev_cbits = cbits;
+							tick(); // faster timed spin lock
+						}
+					}
+				}
+				uint32_t new_cbits = cbits_add_writer(a_c_bits,thread_id);
+				cbits_wait_for_readers(new_cbits,thread_id); // count down reader semaphore...
+				//
+				// 
+				//
+				cbits_remove_writer(a_c_bits);
+				//
+			} else {
+				if ( cbits == 0 ) {   // adding a new element here. First one gets the spot (new one should not be different)
+					// two possibilities in play
+					// 1) lower bucket will find this spot,
+					// 2) this spot is being used for the first time
+					uint32_t new_cbits = cbits_add_writer(a_c_bits,thread_id);
+					cbits_wait_for_readers(new_cbits,thread_id); // some small probability that readers will exist at this point
+					if ( is_back_ref(new_cbits) || another_base_slipped_in(new_cbits) ) {   // an element got added while trying to get the bucket
+						// try again... the element may end up in the other slice or as a member
+						cbits_remove_writer(a_c_bits);
+						add_key_value_known_refs(full_hash,h_bucket,offset,which_table,thread_id,cbits,bucket,buffer,end_buffer);
+						return;
+					} else { // this writer owns the bucket and will create a new base						
+						uint32_t update_cbits = 0x1;
+						update_taken_spots(el);
+						a_c_bits->store(update_cbits);
+						while ( !a_c_bits->compare_exchange_weak(update_cbits,update_cbits,std::memory_order_release) );
+					}
+					cbits_remove_writer(a_c_bits);
+				} else if ( is_back_ref(cbits) ) {
+					auto info_bits = (cbits >> 1);
+					// this is a backref (it may be swappy at the moment)
+					usurp_membership_position_hold_key(el,cbits,el_key,offset_value,which_table,buffer,end_buffer);
+					//
+				} else if ( base_in_operation(cbits) ) {
+					if ( no_duplicate_op(a_c_bits,cbits,thread_id) ) {
+						cbits_wait_for_writers(new_cbits,thread_id); 
+						cbits_wait_for_readers(new_cbits,thread_id); // some small probability that readers will exist at this point
+						
+					}
+					cbits_remove_writer(a_c_bits);
+				}
+			}
+			//
+*/
