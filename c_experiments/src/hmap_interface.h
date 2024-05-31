@@ -223,7 +223,7 @@ inline uint8_t member_backref_offset(uint32_t cbits) {
 }
 
 
-inline uint8_t set_member_backref_offset(uint32_t cbits,uint8_t bkref) {
+inline uint8_t gen_bitsmember_backref_offset(uint32_t cbits,uint8_t bkref) {
 	if ( is_member_bucket(cbits) ) {
 		cbits = (CBIT_BACK_REF_CLEAR_MASK & cbits) | (bkref << 1);
 	}
@@ -264,7 +264,7 @@ inline bool readers_are_active(uint32_t cbits) {
 	return false;
 }
 
-inline uint32_t set_reader_active(uint8_t thread_id,uint32_t cbits = 0) {
+inline uint32_t gen_bitsreader_active(uint8_t thread_id,uint32_t cbits = 0) {
 	auto rdr = (cbits | READER_CBIT_SET);
 	rdr = cbit_thread_stamp(rdr,thread_id);
 	return rdr;
@@ -279,7 +279,7 @@ inline bool editors_are_active(uint32_t cbits) {
 	return false;
 }
 
-inline uint32_t set_editor_active(uint8_t thread_id,uint32_t cbits = 0) {
+inline uint32_t gen_bits_editor_active(uint8_t thread_id,uint32_t cbits = 0) {
 	auto rdr = (cbits | EDITOR_CBIT_SET);
 	rdr = cbit_thread_stamp(rdr,thread_id);
 	return rdr;
@@ -296,7 +296,7 @@ inline bool is_member_usurped(uint32_t cbits,uint8_t &thread_id) {
 }
 
 
-inline uint32_t set_member_usurped(uint8_t thread_id,uint32_t cbits) {
+inline uint32_t gen_bitsmember_usurped(uint8_t thread_id,uint32_t cbits) {
 	if ( is_member_bucket(cbits) ) {
 		auto rdr = (cbits | USURPED_CBIT_SET);
 		rdr = cbit_thread_stamp(rdr,thread_id);
@@ -317,7 +317,7 @@ inline bool is_member_in_mobile_predelete(uint32_t cbits) {
 
 
 
-inline uint32_t set_member_in_mobile_predelete(uint8_t thread_id,uint32_t cbits) {
+inline uint32_t gen_bitsmember_in_mobile_predelete(uint8_t thread_id,uint32_t cbits) {
 	if ( is_member_bucket(cbits) ) {
 		auto rdr = (cbits | MOBILE_CBIT_SET);
 		rdr = cbit_thread_stamp(rdr,thread_id);
@@ -344,7 +344,7 @@ inline bool is_deleted(uint32_t cbits) {
 }
 
 
-inline uint32_t set_deleted(uint8_t thread_id,uint32_t cbits) {
+inline uint32_t gen_bitsdeleted(uint8_t thread_id,uint32_t cbits) {
 	auto rdr = (cbits | DELETE_CBIT_SET);
 	rdr = cbit_thread_stamp(rdr,thread_id);
 	return rdr;
