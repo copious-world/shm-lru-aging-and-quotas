@@ -164,7 +164,7 @@ typedef struct PRODUCT_DESCR {
 	uint32_t						stats;
 	ThreadActivity::ta_ops			op;
 	QueueEntryHolder<>				_process_queue[2];
-	CropEntryHolder<>				_crop_entries[2];
+	CropEntryHolder<>				_to_cropping[2];
 
 } proc_descr;
 
@@ -917,6 +917,8 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 		/**
 		 * become_bucket_state_master
 		 * 
+		 * must preserve reader semaphore if it is in use
+		 * 
 		*/
 
 		bool become_bucket_state_master(atomic<uint32_t> *control_bits, uint32_t bits, uint32_t locking_bits, uint8_t thread_id) {
@@ -1490,6 +1492,18 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			// store... if here, it should be locked
 			//
 			uint32_t store_time = now_time(); // now
+
+/*
+	HH_FROM_EMPTY,
+	HH_FROM_BASE,
+	HH_FROM_BASE_AND_WAIT,
+	HH_FROM_BASE_USURP,
+	HH_FROM_USURP_AND_WAIT,
+	HH_ADDER_STATES
+*/
+
+
+
 			// hole -- try to gather all the work for a single bucket from the queue...
 			bool quick_put_ok = pop_until_oldest(hash_ref, loaded_value, store_time, which_table, buffer, end, thread_id);
 			//
@@ -1582,17 +1596,14 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-
-
-
 		/**
-		 * value_restore_runner   --- a thread method...
+		 * cropper_runner   --- a thread method...
 		 * 
 		 * One loop of the main thread for restoring values that have been replaced by a new value.
 		 * The element being restored may still be in play, but 
 		*/
-		void value_restore_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) {
-			hh_element *hash_ref = nullptr;
+		void cropper_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) {
+			hh_element *base = nullptr;
 			uint32_t cbits = 0;
 			uint8_t which_table = slice_for_thread;
 			hh_element *buffer = nullptr;
@@ -1600,18 +1611,16 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			//
 			while ( is_cropping_queue_empty(assigned_thread_id,slice_for_thread) ) wait_notification_cropping();
 			//
-			dequeue_cropping(&hash_ref, cbits, which_table, assigned_thread_id, &buffer, &end);
+			dequeue_cropping(&base, cbits, which_table, assigned_thread_id, &buffer, &end);
 			// store... if here, it should be locked
 			//
-
-
+			_cropper(base, cbits, buffer, end, assigned_thread_id);
 		}
 
 
 		/**
 		 * enqueue_cropping
 		*/
-
 		void enqueue_cropping(hh_element *hash_ref,uint32_t cbits,hh_element *buffer,hh_element *end,uint8_t which_table) {
 			crop_entry get_entry;
 			//
@@ -1626,7 +1635,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			_round_robbin_proc_table_threads++;
 			if ( _round_robbin_proc_table_threads > _num_threads ) _round_robbin_proc_table_threads = 0;
 			//
-			p->_crop_entries[which_table].push(get_entry); // by ref
+			p->_to_cropping[which_table].push(get_entry); // by ref
 		}
 
 		/**
@@ -1638,7 +1647,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			//
 			proc_descr *p = _process_table + assigned_thread_id;
 			//
-			p->_crop_entries[which_table].pop(get_entry); // by ref
+			p->_to_cropping[which_table].pop(get_entry); // by ref
 			//
 			hh_element *hash_ref = get_entry.hash_ref;
 			cbits = get_entry.cbits;
@@ -1688,7 +1697,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * is_restore_queue_empty - check on the state of the restoration queue.
 		*/
 		bool is_cropping_queue_empty(uint8_t which_table) {
-			bool is_empty = _crop_entries[which_table].empty();
+			bool is_empty = _to_cropping[which_table].empty();
 #ifndef __APPLE__
 
 #endif
@@ -2711,6 +2720,67 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 
 
+		void _cropper(hh_element *base,uint32_t cbits, hh_element *buffer, hh_element *end,uint8_t thread_id) {
+			//
+			atomic<uint32_t> *bucket_bits = (atomic<uint32_t> *)(&(base->c.bits));
+			uint32_t h_bucket = (uint32_t)(base - buffer);
+
+			auto locking_bits = gen_bits_editor_active(thread_id);   // editor active
+			
+			while( !become_bucket_state_master(bucket_bits, cbits, locking_bits, thread_id) ) {
+				tick();
+			}
+			//
+			hh_element *href = _get_bucket_reference(bucket_bits, base, cbits, h_bucket, UINT32_MAX, buffer, end, thread_id);
+			if ( href ) {
+				// mark as deleted 
+				wait_for_readers(bucket_bits);
+				uint8_t offset = href - base;
+
+				hh_element *deletions[NEIGHBORHOOD];
+				uint8_t del_count = 0;
+
+				auto c =  ones_above(offset-1) & cbits;
+				auto c_end = c;
+				while ( c ) {
+
+					auto vb_probe = base;
+					auto offset = get_b_offset_update(c);
+					vb_probe += offset;
+					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+					//
+					atomic<uint32_t> *probe_bits = (atomic<uint32_t> *)(&(vb_probe->c.bits));
+					uint32_t p_cbits = 0;
+					if ( ready_for_delete(probe_bits,p_cbits) ) {
+						//
+						cbits = cbit_clear_bit(cbits,offset);
+						//
+					}
+
+				}
+
+				update_cbits(base,cbits);			// update cbits
+
+				for ( uint8_t i = 0; i < del_count; i++ ) {
+					auto vb_probe = deletions[i];
+					p_cbits = gen_bitsdeleted(thread_id,p_cbits);
+					atomic<uint32_t> *probe_bits = (atomic<uint32_t> *)(&(vb_probe->c.bits));
+					probe_bits->store(p_cbits);
+				}
+
+				a_removal_taken_spots(base, href, cbits, buffer, end);
+
+				for ( uint8_t i = 0; i < del_count; i++ ) {
+					auto vb_probe = deletions[i];
+					atomic<uint64_t> *bnky = (atomic<uint64_t> *)(&(vb_probe->c));
+					bnky->store(0);
+					atomic<uint64_t> *tv = (atomic<uint64_t> *)(&(vb_probe->tv));
+					tv->store(0);
+				}
+
+			}
+		}
+
 
 		/**
 		 * usurp_membership_position_hold_key 
@@ -2762,21 +2832,6 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-
-		void _cropper(hh_element *base,uint32_t cbits,hh_element *buffer, hh_element *end,uint8_t thread_id) {
-			//
-			atomic<uint32_t> *bucket_bits = (atomic<uint32_t> *)(&(base->c.bits));
-			uint32_t h_bucket = base - buffer;
-			//
-			hh_element *href = _get_bucket_reference(bucket_bits, base, cbits, h_bucket, UINT32_MAX, buffer, end, thread_id);
-			if ( href ) {
-				// mark as deleted 
-				uint8_t offset = href - base;
-				cbits = cbit_clear_bit(cbits,i);
-				update_cbits(href,cbits);			// update cbits
-				a_removal_taken_spots(base, href, cbits, buffer, end);
-			}
-		}
 
 	public: 
 
