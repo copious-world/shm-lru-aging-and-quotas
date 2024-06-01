@@ -176,6 +176,11 @@ inline uint32_t cbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
 	return cbits;
 }
 
+inline uint32_t cbit_clear_bit(uint32_t cbits,uint8_t i) {
+	UNSET(cbits, i);
+	return cbits;
+}
+
 
 // HANDLE THE READER SEMAPHORE which is useful around deletes and some states of inserting.
 //

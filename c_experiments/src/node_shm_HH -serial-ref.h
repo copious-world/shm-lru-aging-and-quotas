@@ -2543,6 +2543,79 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
+		/**
+		 * configure_taken_spots
+		*/
+
+		void configure_taken_spots(hh_element *hash_ref, uint32_t value, uint32_t el_key) {
+			hash_ref->_kv.value = value;
+			hash_ref->_kv.key = el_key;
+			hash_ref->c_bits = 0x1;  // locked position
+			hh_element *base_ref = hash_ref;
+			uint32_t c = 1;				// c will be the new base element map of taken positions
+			for ( uint8_t i = 1; i < NEIGHBORHOOD; i++ ) {
+				hash_ref++;								// keep walking forward to the end of the window
+				if ( hash_ref->c_bits & 0x1 ) {			// this is a base bucket with information beyond the window
+					atomic<uint32_t> *hn_t_bits = (atomic<uint32_t> *)(&base_ref->taken_spots);
+					auto taken = hn_t_bits->load(std::memory_order_acquire);
+					c |= (taken << i); // this is the record, but shift it....
+					break;								// don't need to get more information at this point
+				} else if ( hash_ref->c_bits != 0 ) {
+					SET(c,i);							// this element belongs to a base below the new base
+				}
+			}
+			base_ref->taken_spots = c; // finally save the taken spots.
+		}
+
+
+
+		// del_ref
+		//  // caller will decrement count  -- if this is still happening, it will be during cropping...
+		//
+		/**
+		 * del_ref     
+		 * 
+		 * params: a_c_bits, base, cbits, el_key, buffer, end
+		*/
+		uint32_t del_ref(atomic<uint32_t> *a_c_bits, hh_element *base, uint32_t c, uint32_t el_key, hh_element *buffer, hh_element *end) {
+			hh_element *next = base;
+			//
+			// register the key that is being deleted 
+			//
+			next = el_check_end_wrap(next,buffer,end);
+			if ( el_key == next->_kv.key ) {  // check this first... is a special case and most common
+				if ( popcount(c) > 1 ) {
+					atomic<uint32_t> *ky = (atomic<uint32_t> *)(&base->_kv.key);
+					ky->store(UINT32_MAX,std::memory_order_release);   // write the kill switch (under lock but not for reading)
+					base->_kv.value = 0;
+					// going to shift... as long as readers shift first...
+					wait_for_readers(a_c_bits); // a semaphore wait (i.e. readers count down)
+					total_swappy_read(base,c);
+					submit_for_cropping(base,c);  // after a total swappy read, all BLACK keys will be at the end of members
+				} else {					// the bucket will be gone...
+					wait_for_readers(a_c_bits); // a semaphore wait (i.e. readers count down)
+					clear_bucket(base);
+					a_remove_back_taken_spots(a_c_bits, base, 0, buffer, end);
+				}
+				return 0;
+			}
+			auto c_pattern = c;
+			while ( c ) {			// search for the bucket member that matches the key
+				next = base;
+				uint8_t offset = get_b_offset_update(c);
+				next += offset;
+				next = el_check_end_wrap(next,buffer,end);
+				// is this being usurped or swapped or deleted at this moment? (structural change has no priority over search)
+				if ( el_key == next->_kv.key ) {
+					wait_for_readers(controller); // a semaphore wait (i.e. readers count down)
+					total_swappy_read(base,c);
+					submit_for_cropping(base,c);  // after a total swappy read, all BLACK keys will be at the end of members
+					return offset;
+				}
+			}
+			return UINT32_MAX;
+		}
+
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 	public:
