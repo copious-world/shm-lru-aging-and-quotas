@@ -113,8 +113,6 @@ const uint32_t CBIT_INACTIVE_BASE_ROOT_BIT = 0x1;
 const uint32_t CBIT_BASE_MEMBER_BIT = (0x1 << 31);
 const uint32_t CBIT_BASE_INOP_BITS = (CBIT_INACTIVE_BASE_ROOT_BIT | CBIT_BASE_MEMBER_BIT);
 
-const uint32_t CBIT_SEM_COUNTER_MASK = (0xFE);
-const uint32_t CBIT_SEM_COUNTER_CLEAR_MASK = (~((uint32_t)0x00FE));
 //
 const uint32_t CBIT_BACK_REF_BITS = 0x3E;
 const uint32_t CBIT_BACK_REF_CLEAR_MASK = (~((uint32_t)0x003E));
@@ -124,33 +122,47 @@ const uint32_t READER_CBIT_SET =		((uint32_t)(0x0001) << 9);
 const uint32_t USURPED_CBIT_SET =		((uint32_t)(0x0001) << 10);
 const uint32_t MOBILE_CBIT_SET =		((uint32_t)(0x0001) << 11);
 const uint32_t DELETE_CBIT_SET =		((uint32_t)(0x0001) << 12);
+const uint32_t IMMOBILE_CBIT_SET =		((uint32_t)(0x0001) << 13);
 
 // 
 const uint32_t READER_BIT_RESET = ~(READER_CBIT_SET);
 
+const uint32_t TBIT_ACTUAL_BASE_ROOT_BIT = 0x1;
+const uint32_t TBIT_SEM_COUNTER_MASK = (0xFE);
+const uint32_t TBIT_SEM_COUNTER_CLEAR_MASK = (~((uint32_t)0x00FE));
 
 
 // EDITOR BIT and READER BIT
 
-const uint32_t CBIT_READER_SEMAPHORE_CLEAR = 0x00FFFFFF;
-const uint32_t CBIT_READER_SEMAPHORE_WORD = 0xFF000000;
-const uint32_t CBIT_READER_SEMAPHORE_SHIFT = 24;
-const uint32_t CBIT_READ_MAX_SEMAPHORE = 31;
+const uint32_t TBIT_READER_SEMAPHORE_CLEAR = 0x00FFFFFF;
+const uint32_t TBIT_READER_SEMAPHORE_WORD = 0xFF000000;
+const uint32_t TBIT_READER_SEMAPHORE_SHIFT = 24;
+const uint32_t TBIT_READ_MAX_SEMAPHORE = 31;
 
 
 
 const uint32_t CBIT_THREAD_SHIFT = 16;
 
 
+
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+inline bool is_base_tbit(uint32_t tbits) {
+	auto bit_state = (tbits & TBIT_ACTUAL_BASE_ROOT_BIT);
+	return (bit_state != 0);
+}
+
+
 // All the following bit operations occur in registers. Storage is handled atomically around them.
 //
 
-inline bool is_root_noop(uint32_t cbits) {
+inline bool is_base_noop(uint32_t cbits) {
 	auto bit_state = (cbits & CBIT_INACTIVE_BASE_ROOT_BIT);
 	return (bit_state != 0);
 }
 
-inline bool is_root_in_ops(uint32_t cbits) {
+inline bool is_base_in_ops(uint32_t cbits) {
 	return ((CBIT_BASE_MEMBER_BIT & cbits) == 0);
 }
 
@@ -181,40 +193,43 @@ inline uint32_t cbit_clear_bit(uint32_t cbits,uint8_t i) {
 	return cbits;
 }
 
+// THREAD OWNER OF TBITS for readers
+
+
+inline uint32_t tbits_thread_id_of(uint32_t tbits) {
+	return cbits_thread_id_of(tbits);
+}
+
+inline uint32_t tbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
+	return cbit_thread_stamp(cbits,thread_id);
+}
+
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 // HANDLE THE READER SEMAPHORE which is useful around deletes and some states of inserting.
 //
-inline uint8_t base_reader_sem_count(uint32_t cbits) {
-	if ( is_root_in_ops(cbits) ) {
-		auto semcnt = (cbits >> 1) & 0x7F; 
+inline uint8_t base_reader_sem_count(uint32_t tbits) {
+	if ( is_base_tbit(tbits) ) {
+		auto semcnt = tbits & 0xFE; 
 		return semcnt;
 	}
 	return 0; // has to be greater than or equal to 1. 
 }
 
 
-inline uint32_t base_reader_sem_incr(uint32_t cbits) {
-	if ( is_root_in_ops(cbits) ) {
-		auto semcnt = (cbits >> 1) & 0x7F;
-		if ( semcnt < 0x7F) {
-			semcnt++;
-			cbits = (cbits & CBIT_SEM_COUNTER_CLEAR_MASK) | ((semcnt & 0x007F) << 1);
-		}
-	}
-	return cbits; // has to be greater than or equal to 1. 
+inline bool tbits_sem_at_max(uint32_t tbits) {
+	auto semcnt = ((uint8_t)tbits & 0xFE);
+	return (semcnt == 0xFE); // going by multiples of two to keep the low bit zero.
 }
 
 
-inline uint32_t base_reader_sem_decr(uint32_t cbits) {
-	if ( is_root_in_ops(cbits) ) {
-		auto semcnt = (cbits >> 1) & 0x7F;
-		if ( semcnt > 0 ) {
-			semcnt--;
-			cbits = (cbits & CBIT_SEM_COUNTER_CLEAR_MASK) | ((semcnt & 0x007F) << 1);
-		}
-	}
-	return cbits; // has to be greater than or equal to 1. 
+inline bool tbits_sem_at_zero(uint32_t tbits) {
+	auto semcnt = ((uint8_t)tbits & 0xFE);
+	return (semcnt == 0); // going by multiples of two to keep the low bit zero.
 }
+
+
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
 // MEMBER BACKREF to the base bucket
@@ -252,7 +267,7 @@ HHE *cbits_base_from_backref(uint32_t cbits,uint8_t &backref,HHE *from,HHE *begi
 
 
 inline bool base_in_operation(uint32_t cbits) {
-	if ( is_root_in_ops(cbits) ) {
+	if ( is_base_in_ops(cbits) ) {
 		return (cbits & EDITOR_CBIT_SET) || (cbits & READER_CBIT_SET);
 	}
 	return false;
@@ -261,23 +276,8 @@ inline bool base_in_operation(uint32_t cbits) {
 
 // ---- ---- ---- 
 
-inline bool readers_are_active(uint32_t cbits) {
-	if ( is_root_in_ops(cbits) ) {
-		auto chck = (cbits & READER_CBIT_SET) && (base_reader_sem_count(cbits) > 0);
-		return chck;
-	}
-	return false;
-}
-
-inline uint32_t gen_bitsreader_active(uint8_t thread_id,uint32_t cbits = 0) {
-	auto rdr = (cbits | READER_CBIT_SET);
-	rdr = cbit_thread_stamp(rdr,thread_id);
-	return rdr;
-}
-
-
 inline bool editors_are_active(uint32_t cbits) {
-	if ( is_root_in_ops(cbits) ) {
+	if ( is_base_in_ops(cbits) ) {
 		auto chck = (cbits & EDITOR_CBIT_SET);
 		return chck;
 	}
@@ -296,6 +296,13 @@ inline bool is_member_usurped(uint32_t cbits,uint8_t &thread_id) {
 		if ( cbits & USURPED_CBIT_SET ) {
 			thread_id = cbits_thread_id_of(cbits);
 		}
+	}
+	return false;
+}
+
+inline bool is_cbits_usurped(uint32_t cbits) {
+	if ( cbits & USURPED_CBIT_SET ) {
+		return true;
 	}
 	return false;
 }
@@ -320,6 +327,13 @@ inline bool is_member_in_mobile_predelete(uint32_t cbits) {
 	return false;
 }
 
+
+inline bool is_cbits_in_mobile_predelete(uint32_t cbits) {
+	if ( cbits & MOBILE_CBIT_SET ) {
+		return true;
+	}
+	return false;
+}
 
 
 inline uint32_t gen_bitsmember_in_mobile_predelete(uint8_t thread_id,uint32_t cbits) {
@@ -347,6 +361,16 @@ inline bool is_deleted(uint32_t cbits) {
 	}
 	return false;
 }
+
+
+
+inline bool is_cbits_deleted(uint32_t cbits) {
+	if ( cbits & DELETE_CBIT_SET ) {
+		return true;
+	}
+	return false;
+}
+
 
 
 inline uint32_t gen_bitsdeleted(uint8_t thread_id,uint32_t cbits) {

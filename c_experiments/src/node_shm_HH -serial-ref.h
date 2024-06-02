@@ -2616,6 +2616,114 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			return UINT32_MAX;
 		}
 
+
+
+
+		void total_swappy_read(hh_element *base,uint32_t c) {
+			hh_element *next = base;
+			uint8_t blocker_count = 1;
+			auto save_c = c;
+			bool handle_count = true;
+			while ( blocker_count-- > 0 ) {  // sweep for each blocker until they are at the end..
+				c = save_c;
+				while ( c ) {
+					next = base;
+					uint8_t offset = get_b_offset_update(c);
+					next += offset;
+					next = el_check_end_wrap(next,buffer,end);
+					// is this being usurped or swapped or deleted at this moment? Search on this range is locked
+					//
+					atomic<uint32_t> *a_ky = (atomic<uint32_t> *)(&next->c.key);
+					auto ky = obtain_cell_key(a_ky);
+					//
+					if ( (ky == UINT32_MAX) && c ) {
+						auto use_next_c = c;
+						uint8_t offset_follow = get_b_offset_update(use_next_c);  // chops off the next position
+						hh_element *f_next += offset_follow;
+						f_next = el_check_end_wrap(f_next,buffer,end);
+						//
+						auto value = f_next->->tv.value;
+						auto taken = f_next->->tv.taken;
+						//
+						atomic<uint32_t> *a_f_ky = (atomic<uint32_t> *)(&f_next->c.key);
+						uint32_t f_real_ky = obtain_cell_key(f_real_ky);
+						//
+						f_next->c.key = next->c.key;
+						f_next->->tv.value = next->->tv.value;
+						if ( f_real_ky != UINT32_MAX ) {
+							next->->tv.value = value;
+							next->->tv.taken = taken;
+							a_ky->store(f_real_ky);  // next->c.key = f_real_ky;
+							a_f_ky->store(UINT32_MAX);
+						} else {
+							if ( blocker_count == 0 ) save_c = c;  // ???
+							if ( handle_count ) blocker_count++;
+						}
+						//
+					} else {
+						a_ky->store(ky);
+					}
+				}
+				handle_count = false;
+			}
+		}
+
+
+		uint32_t swappy_read(uint32_t el_key, hh_element *base, uint32_t c) {
+			hh_element *next = base;
+			while ( c ) {
+				next = base;
+				uint8_t offset = get_b_offset_update(c);
+				next += offset;
+				next = el_check_end_wrap(next,buffer,end);
+				// is this being usurped or swapped or deleted at this moment? Search on this range is locked
+				//
+				atomic<uint32_t> *a_ky = (atomic<uint32_t> *)(&next->c.key);
+				
+				uint32_t real_ky = (UINT32_MAX-1);
+				while ( a_ky->compare_exchange_weak(real_ky,(UINT32_MAX-1)) && (real_ky == (UINT32_MAX-1)));
+				auto ky = real_ky;
+				//
+				if ( (ky == UINT32_MAX) && c ) {
+					auto use_next_c = c;
+					uint8_t offset_follow = get_b_offset_update(use_next_c);  // chops off the next position
+					hh_element *f_next += offset_follow;
+					f_next = el_check_end_wrap(f_next,buffer,end);
+					//
+					atomic<uint32_t> *a_f_ky = (atomic<uint32_t> *)(&f_next->c.key);
+					auto fky = a_f_ky->load(std::memory_order_acquire);
+					auto value = f_next->->tv.value;
+					auto taken = f_next->->tv.taken;
+					//
+					uint32_t f_real_ky = (UINT32_MAX-1);
+					while ( a_f_ky->compare_exchange_weak(f_real_ky,(UINT32_MAX-1)) && (f_real_ky == (UINT32_MAX-1)));
+					f_next->->tv.value = next->->tv.value;
+					f_next->c.key = next->c.key;
+
+					if ( f_real_ky != UINT32_MAX ) {
+						next->->tv.value = value;
+						next->c.key = f_real_ky;
+						next->->tv.taken = taken;
+						a_ky->store(f_real_ky);
+						a_f_ky->store(UINT32_MAX);
+						if ( f_real_ky == el_key  ) {  // opportunistic reader helps delete with on swap and returns on finding its value
+							return value;
+						}
+					}
+					//
+					// else resume with the nex position being the hole blocker... 
+				} else if ( el_key == ky ) {
+					auto value = next->->tv.value;
+					a_ky->store(ky);
+					return value;
+				} else {
+					a_ky->store(ky);
+				}
+			}
+			return UINT32_MAX;	
+		}
+
+
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 	public:
