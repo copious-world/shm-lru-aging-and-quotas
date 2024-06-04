@@ -144,6 +144,9 @@ const uint32_t TBIT_READ_MAX_SEMAPHORE = 31;
 
 
 const uint32_t CBIT_THREAD_SHIFT = 16;
+const uint32_t CBIT_Q_COUNT_SHIFT = 24;
+
+const uint32_t CLEAR_Q_COUNT = ~((uint32_t)(0x7E) << CBIT_Q_COUNT_SHIFT);
 
 
 
@@ -205,6 +208,36 @@ inline uint32_t tbits_thread_id_of(uint32_t tbits) {
 inline uint32_t tbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
 	return cbit_thread_stamp(cbits,thread_id);
 }
+
+
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+uint32_t q_count_incr(uint32_t cbits,uint8_t &count_result) {
+	auto count = ((cbits >> CBIT_Q_COUNT_SHIFT) & 0x7F);
+	if ( count < 0x7F ) {
+		count++;
+		cbits = (cbits & CLEAR_Q_COUNT ) | (count << CBIT_Q_COUNT_SHIFT);
+	}
+	count_result = count;
+	return cbits;
+}
+
+
+
+
+
+uint32_t q_count_decr(uint32_t cbits,uint8_t &count_result) {
+	auto count = ((cbits >> CBIT_Q_COUNT_SHIFT) & 0x7F);
+	if ( count > 0 ) {
+		count--;
+		cbits = (cbits & CLEAR_Q_COUNT ) | (count << CBIT_Q_COUNT_SHIFT);
+	}
+	count_result = count;
+	return cbits;
+}
+
+
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 

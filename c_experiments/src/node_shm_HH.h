@@ -1260,7 +1260,6 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 		}
 
 
-
 		/**
 		 * _first_level_bucket_ops
 		 * 
@@ -1305,6 +1304,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 						auto current_thread = cbits_thread_id_of(cbits);
 						auto current_membership = fetch_real_cbits(cbits);
 							// results in first time insertion and search for a hole (could alter time by a small amount to keep a sort)
+						wait_on_max_queue_incr(control_bits,locking_bits);
 						uint64_t current_loaded_value = (((uint64_t)el_key) << HALF) | offset_value;
 						wakeup_value_restore(HH_FROM_BASE_AND_WAIT,control_bits, current_membership, locking_bits, bucket, h_bucket, 0, current_loaded_value, which_table, current_thread, buffer, end);
 					}
@@ -1318,6 +1318,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 							uint64_t current_loaded_value = (((uint64_t)el_key) << HALF) | offset_value;
 							auto current_membership = fetch_real_cbits(cbits);
 							// wait for the bucket to become a base and then shift into the bucket 
+							wait_on_max_queue_incr(control_bits,locking_bits);
 							wakeup_value_restore(HH_FROM_USURP_AND_WAIT,control_bits, current_membership, locking_bits, bucket, h_bucket, 0, current_loaded_value, which_table, op_thread_id, buffer, end);
 						} else if ( is_member_in_mobile_predelete(cbits) || is_deleted(cbits) ) {
 							// bucket is being abandoned -- store the value and lock out other editors -- 
@@ -1357,7 +1358,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 							uint32_t save_key = 0;
 							atomic<uint32_t>  *stable_key = load_stable_key(bucket,save_key);
 							uint32_t save_value = bucket->->tv.value;
-							stash_key_value(save_key,save_value,thread_id);
+							stash_key_value(save_key,save_value,thread_id);  // stored momentarily in two places. One is shared. The queue is a single process object.
 							// OWN THIS BUCKET
 							store_real_cbits(0x1,thread_id);
 							bucket->->tv.value = offset_value;
@@ -1717,16 +1718,91 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			//
 			uint32_t store_time = now_time(); // now
 
-/*
-	HH_FROM_EMPTY,
-	HH_FROM_BASE,
-	HH_FROM_BASE_AND_WAIT,
-	HH_FROM_BASE_USURP,
-	HH_FROM_USURP_AND_WAIT,
-	HH_ADDER_STATES
-*/
-
-
+			switch ( update_type ) {
+				case HH_FROM_EMPTY: {
+					// at this point the empty bucket should be totally claimed, however, 
+					// the memory map (tbits) are not set up causing hole discovery and search 
+					// to have points of failure... This should be easily rectified
+					atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(hash_ref->c.bits));
+					auto prev_bits = control_bits->load(std::memory_order_acquire);
+					///
+					// update tbits in window
+					uint8_t count_result = 0;
+					q_count_decr(prev_bits,count_result);
+					if ( count_result == 0 ) {
+						control_bits->store(fetch_real_cbits(prev_bits));  // the bucket is now a new base				
+					}
+					break;
+				}
+				case HH_FROM_BASE: {
+					// at this point, the value in the base is the new value.
+					// The value taken from the restore queue has to be shifted into the membership map. cbits.
+					// the cbits must be updated by acquiring a new hole identified by the taken bits.
+					// it is possible that by the time the value to be restored arrives here that
+					// the taken positions available to the base are gone. In that case, a version of usurpation
+					// may occur, or the oldest elements (or deleted and not yet serviced elements) may be shifted out.
+					atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(hash_ref->c.bits));
+					auto prev_bits = control_bits->load(std::memory_order_acquire);
+					///
+					// store ....  pop until oldest
+					//
+					uint8_t count_result = 0;
+					q_count_decr(prev_bits,count_result);
+					if ( count_result == 0 ) {
+						control_bits->store(fetch_real_cbits(prev_bits));  // the bucket is now a new base				
+					}
+					// note: there may be a sequence of new value in the queue slightly older than the occupying value
+					break;
+				}
+				case HH_FROM_BASE_AND_WAIT: {
+					// this is the same as `HH_FROM_BASE` but the new value is being shifted into the base
+					// when a blocking operation was in process when the value arrived.
+					atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(hash_ref->c.bits));
+					auto prev_bits = control_bits->load(std::memory_order_acquire);
+					///
+					uint8_t count_result = 0;
+					q_count_decr(prev_bits,count_result);
+					if ( count_result == 0 ) {
+						control_bits->store(fetch_real_cbits(prev_bits));  // the bucket is now a new base				
+					}
+					break;
+				}
+				case HH_FROM_BASE_USURP: {
+					// Similar to `HH_FROM_BASE_AND_WAIT` but that the value of the base just lost a position.
+					// The cbits of the base must reflect the removal of position, while the tbits will not change.
+					// Then the element should be shifted into the base in a time ordered way. If the element is the 
+					// oldest element from the base, then it may be aged out of the store. 
+					atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(hash_ref->c.bits));
+					auto prev_bits = control_bits->load(std::memory_order_acquire);
+					//
+					uint8_t count_result = 0;
+					q_count_decr(prev_bits,count_result);
+					if ( count_result == 0 ) {
+						control_bits->store(fetch_real_cbits(prev_bits));  // the bucket is now a new base				
+					}
+					break;
+				}
+				case HH_FROM_USURP_AND_WAIT: {
+					// The rare case that two insertion operation find the same bucket to be usurped. But, 
+					// one gets there first. The following element will shift the new element in using `HH_FROM_BASE`
+					// operations. The time ordering of the first element is lost to memory management of the tbits
+					// while the second element will be the new newest element. If other similar elements (key,value)
+					// are in the queue, then they will shift in making the cbit sequence longer.
+					atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(hash_ref->c.bits));
+					auto prev_bits = control_bits->load(std::memory_order_acquire);
+					//
+					uint8_t count_result = 0;
+					q_count_decr(prev_bits,count_result);
+					if ( count_result == 0 ) {
+						control_bits->store(fetch_real_cbits(prev_bits));  // the bucket is now a new base				
+					}
+					break;
+				}
+				default: {
+					// an impossible state of affairs unless someone has altered the insertion methods. 
+					break;
+				}
+			}
 
 			// hole -- try to gather all the work for a single bucket from the queue...
 			bool quick_put_ok = pop_until_oldest(hash_ref, loaded_value, store_time, which_table, buffer, end, thread_id);
@@ -1814,6 +1890,27 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			wake_up_one_restore();
 		}
 
+
+
+		/**
+		 * wait_on_max_queue_incr
+		*/
+
+		void wait_on_max_queue_incr(atomic<uint32_t> *control_bits,uint32_t cbits) {
+			uint8_t count_result = 0;
+			auto cbits_update = q_count_incr(cbits, count_result);
+			do {
+				while ( cbits_update == cbits ) {  // this happens when the cbits are maxed out
+					tick();
+					cbits = control_bits->load(std::memory_order_acquire);
+					cbits_update = q_count_incr(cbits, count_result);
+				}
+				while ( !(control_bits->compare_exchange_weak(cbits,cbits_update,std::memory_order_acq_rel)) ) {
+					cbits_update = q_count_incr(cbits, count_result);
+					if ( cbits_update == cbits ) break;  // another thread maxed it out -- back to waiting.
+				}
+			} while ( count_result == Q_COUNTER_MAX );
+		}
 
 
 
