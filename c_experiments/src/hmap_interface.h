@@ -126,6 +126,8 @@ const uint32_t IMMOBILE_CBIT_SET =		((uint32_t)(0x0001) << 13);
 
 // 
 const uint32_t READER_BIT_RESET = ~(READER_CBIT_SET);
+const uint32_t IMMOBILE_CBIT_RESET = ~(IMMOBILE_CBIT_SET);
+const uint64_t IMMOBILE_CBIT_RESET64 = ~((uint64_t)IMMOBILE_CBIT_SET);
 
 const uint32_t TBIT_ACTUAL_BASE_ROOT_BIT = 0x1;
 const uint32_t TBIT_SEM_COUNTER_MASK = (0xFE);
