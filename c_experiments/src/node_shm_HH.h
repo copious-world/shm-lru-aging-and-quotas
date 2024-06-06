@@ -31,6 +31,111 @@
 #include "thread_activity.h"
 
 
+/**
+ * API exposition
+ * 
+ * 1. `prepare_for_add_key_value_known_refs` 
+ * 				--	start the intake of new elements. Assign a table slice and get memory references
+ * 					for use in the call to `add_key_value_known_refs`
+ * 
+ * 2. `add_key_value_known_refs`
+ * 				--	must be set up by the caller with a call to `prepare_for_add_key_value_known_refs`
+ * 					Given the slice has been selected, calls `_first_level_bucket_ops`
+ * 
+ * 3. `update`	--	calls `_internal_update` with a new value to assign to a key... (In current use, this may be rare.)
+ * 4. `del`		--	calls `_internal_update` with an out of bounds key and sets up the cropper threads to work on removing the key
+ * 
+ * 5. `get`		--	calls `_get_bucket_reference`. This is supposed to be the most free (least blocked) method giving  
+ * 					much favor to the process of searching for an exact key and return the value associated with it.
+ * 
+*/
+
+/**
+ * cbits: membership bit map for buckets up to (32) members.
+ * 
+ * At any time a bucket, addressed by a hash index, may be in one of five states:
+ * empty --		all information and value words are zero or UINT32_MAX, initially zero.
+ * root --		called a base, contains the original cbit membership map, with lowest bit set to 0x1 and highest set to zero (0x0).
+ * root in operation	-- a base that is not noop. Stores operational information. The orignial cbit map is stashed, the lowest bit is 0x0 and the highest bit is 0x0.
+ * member				-- stores a back reference to a base. The lowes bit is 0x0 and the highest bit is 0x1.
+ * member in transition	-- stores operational information, and may store a back reference temporarily. The lowes bit is 0x0 and the highest bit is 0x1.
+ * 
+*/
+
+
+/**
+ * tbits: a bit map of taken and free buckets starting and up to the window size (32) or sorting data for other buckets
+ * 
+ * At any time, a bucket may gain, lose or collect bits from other base bit maps. tbits in operation may be in four states:
+ * empty		-- 0 for a bucket that has not been used
+ * taken spots	-- the map of taken spots, 0x1 for taken 0x1 for free. The lowest bit is set to 0x1, since the base is stored there.
+ * operative	-- the lowest bit is cleared 0x0. Others must wait for access or operate on stashed tbits
+ * reader		-- the lowest bit is cleared 0x0 and an even (by 2) reader count is stored in the low word. 
+ * member order	-- the lowest bit is 0x0 and a weight (often time) is stored for members.
+ * 
+ * The member order is detected by examining the cbits to see if the cbits highest bit is set to 0x1.
+*/
+
+
+/**
+ * Sometime buckets are mobile and sometimes they are not. 
+ * 
+ * By mobility is meant that the values keys and tbits may be swapped in position relative to the base bucket.
+ * 
+ * The base (root) is always immobile when considering operations that rearrange elements within a membership.
+ * The base is always usurped by a new element and later shifted into the membership. The later operation leaves 
+ * the new element alone. 
+ * 
+ * If the base is being deleted and there are other members, the first member may be placed in the root provided the update
+ * queue for the base is empty. The element moved in will be marked for deletion in its old position and will be reclaimed later.
+ * 
+ * Elements may be swapped in particular circumstances:
+ * 1. An element is being pushed in from the base (preserving order, but forcing elements to move to a new hole or out like a queue)
+ * 2. An element is being inserted after being usurped, again pushing elements in a queue like operation.
+ * 3. An element is being moved to the end of the membership map since it is marked for deletion.
+ * 4. Occasionally elements may be sorted.
+ * 
+ * 
+ * It is possible that some applicaiton can sort tbits and keys together.
+ * 
+ * Memberships may be sometimes sorted. Sorting is determined by keys and tbits for members.
+ * -- The basic rule is that if a membership is in tact, then the tbits of members are used for ordering. 
+ * -- Otherwise, if the key of an element is UINT32_MAX, the element will treated as having the greatest (least) weight.
+ * 
+ * In deleting an element, the tbits may be set to zero at some point, immediately or eventually. If tbits represent time, 
+ * then a zero tbits will indicate an oldest element (it may be possible to ignore the key).
+ * 
+ * Sorting memberships is not always necessary. Memberships are searched linearly by key. Sorting can result in compression.
+ * The main reason for being nearly sorted is that if a bucket gets full and tries to reinsert an element
+ * by swapping memberhip with another bucket, it will prove useful to inspect the older usurpable elements 
+ * within the updating updating bucket's window. If the elements are sorted to some degree, the search for an element to usurp
+ * in second base, would be from the end of the membership cbits of that base going towards that base. This condition 
+ * may only be needed when buckets start to get full. So, sorting might be done occassionally out of band and only after
+ * some load factor. A thread that crops can take care of sorting when deleting elements. Furthermore, it can work to 
+ * compress buckets. 
+ * 
+ * 
+*/
+
+
+
+/**
+ * When a bucket becomes full it may steal a spot from another bucket to accomodate a new bucket. 
+ * The element stolen, must be the oldest element that can be stolen from a numnber of buckets.
+ * Furthermore, these buckets must be within the window of the updating base bucket. And, 
+ * the the position yieled should be as close to the best position of the reinserted element.
+ * 
+ * If the members cbits can indicate the oldest bucket, it may update when the oldest element is removed. 
+ * Often, this element will be removed fore memberships swapping if storage is becoming full and a number of 
+ * simultaneous strategies are being employed to age out elements in order to reduce density. Updating 
+ * references to the oldest element will be minor. 
+ * 
+ * If oldest element may be reinserted, but it might regularly swap out to secondary storage.
+ * Some attempt to keep storage fairly up to date by scheduling aging out operations should aid in 
+ * keeping the need for position stealing as a rare case scenario.
+ * 
+*/
+
 
 #define MAX_THREADS (64)
 
@@ -258,14 +363,6 @@ static inline hh_element *el_check_end_wrap(hh_element *ptr, hh_element *buffer,
 	return ptr;
 }
 
-
-/**
- * stamp_offset
-*/
-
-static inline uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset) {
-	return time;
-}
 
 
 
@@ -1449,6 +1546,20 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		/**
 		 * prepare_for_add_key_value_known_refs 
 		 * 
+		 * Determines the slice an entry will occupy. 
+		 * 
+		 * Returns: the pointer to hh_element.c.bits as an atomic reference.
+		 * 
+		 * Returns: which_table, cbits by reference. 
+		 * which_table -- the selection of the slice
+		 * cbits -- the membership map for the bucket (which may be empty, a root, a root in operation, a member, a member in transition)
+		 * 
+		 * Returns:  bucket, buffer, end_buffer by address `**`
+		 * 
+		 * bucket_ref -- contains the address of the element at the offset `h_bucket`
+		 * buffer_ref -- contains the address of the storage region for the selected slice
+		 * end_buffer_ref -- contains the address of the end of the storage region
+		 * 
 		*/
 		bool prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table,uint32_t &cbits,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) {
 			//
@@ -1676,6 +1787,47 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
+		/**
+		 * complete_bucket_creation
+		*/
+
+
+		void complete_bucket_creation(atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t locking_bits, hh_element *bucket, hh_element *buffer, hh_element *end_buffer) {
+			//
+			a_place_back_taken_spots(bucket, 0, buffer, end);
+			create_base_taken_spots(bucket, buffer, end);   // this bucket is locked 
+			//
+		}
+
+
+		bool complete_add_bucket_member(atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t locking_bits, hh_element *bucket, hh_element *buffer, hh_element *end_buffer) {
+			atomic<uint32_t> *tbits = (atomic<uint32_t> *)(&bucket->->tv.taken);
+			uint8_t hole;
+			if ( reserve_membership(control_bits,tbits,cbits,prev_bits,hole,thread_id,buffer,end_buffer) ) {
+				//
+				store_real_cbits(cbits,current_thread);   // reserve a spot using prev bits and take spots
+				inner_bucket_time_swaps(hash_base,a,hole,v_passed,time,which_table,buffer,end_buffer,thread_id);  // thread id
+				//
+				return true;
+			}
+			return false;
+		}
+
+
+		bool complete_add_bucket_member_late(atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t locking_bits, hh_element *bucket, hh_element *buffer, hh_element *end_buffer) {
+			atomic<uint32_t> *tbits = (atomic<uint32_t> *)(&bucket->->tv.taken);
+			uint8_t hole;
+			if ( reserve_membership(control_bits,tbits,cbits,prev_bits,hole,thread_id,buffer,end_buffer) ) {
+				//
+				store_real_cbits(cbits,current_thread);   // reserve a spot using prev bits and take spots
+				inner_bucket_time_swaps(hash_base,a,hole,v_passed,time,which_table,buffer,end_buffer,thread_id);  // thread id
+				//
+				return true;
+			}
+			return false;
+		}
+
+
 
 		/**
 		 * bit patterns
@@ -1717,6 +1869,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			// store... if here, it should be locked
 			//
 			uint32_t store_time = now_time(); // now
+			bool did_produce_stashed_kv = false;
 
 			switch ( update_type ) {
 				case HH_FROM_EMPTY: {
@@ -1726,11 +1879,14 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 					atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(hash_ref->c.bits));
 					auto prev_bits = control_bits->load(std::memory_order_acquire);
 					///
+					auto cbits = fetch_real_cbits(prev_bits);
+					complete_bucket_creation(control_bits, cbits, prev_bits, hash_ref, buffer, end_buffer);
+					//
 					// update tbits in window
 					uint8_t count_result = 0;
 					q_count_decr(prev_bits,count_result);
 					if ( count_result == 0 ) {
-						control_bits->store(fetch_real_cbits(prev_bits));  // the bucket is now a new base				
+						control_bits->store(cbits);  // the bucket is now a new base				
 					}
 					break;
 				}
@@ -1745,6 +1901,10 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 					auto prev_bits = control_bits->load(std::memory_order_acquire);
 					///
 					// store ....  pop until oldest
+					auto cbits = fetch_real_cbits(prev_bits);
+					if ( !(complete_add_bucket_member(control_bits, cbits, locking_bits, loaded_value, store_time, hash_ref, buffer, end_buffer, thread_id)) ) {
+						did_produce_stashed_kv = handle_full_bucket_by_usurp(hash_base,c,v_passed,time,offset,buffer,end_buffer);
+					}
 					//
 					uint8_t count_result = 0;
 					q_count_decr(prev_bits,count_result);
@@ -1759,7 +1919,11 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 					// when a blocking operation was in process when the value arrived.
 					atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(hash_ref->c.bits));
 					auto prev_bits = control_bits->load(std::memory_order_acquire);
-					///
+					// store ....  pop until oldest
+					if ( !(complete_add_bucket_member_late(control_bits, cbits, locking_bits, loaded_value, store_time, hash_ref, buffer, end_buffer, thread_id)) ) {
+						did_produce_stashed_kv = handle_full_bucket_by_usurp(hash_base,c,v_passed,time,offset,buffer,end_buffer);
+					}
+					//
 					uint8_t count_result = 0;
 					q_count_decr(prev_bits,count_result);
 					if ( count_result == 0 ) {
@@ -1774,11 +1938,22 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 					// oldest element from the base, then it may be aged out of the store. 
 					atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(hash_ref->c.bits));
 					auto prev_bits = control_bits->load(std::memory_order_acquire);
+					// store ....  pop until oldest
+// 	Like this but the taken bits might not change except a new hole.
+					auto cbits = fetch_real_cbits(prev_bits);
+					precbitsv_bits = cbit_clear_bit(cbits,hole);
+					control_bits->store(cbits);
+					cbits = pop_until_oldest(hash_ref, loaded_value, store_time, which_table, buffer, end, thread_id);
+					//
+					// store ....  pop until oldest
+					if ( !(complete_bucket_creation(control_bits, cbits, prev_bits, hash_ref, buffer, end_buffer)) ) {
+						did_produce_stashed_kv = handle_full_bucket_by_usurp(hash_base,c,v_passed,time,offset,buffer,end_buffer);
+					}
 					//
 					uint8_t count_result = 0;
 					q_count_decr(prev_bits,count_result);
 					if ( count_result == 0 ) {
-						control_bits->store(fetch_real_cbits(prev_bits));  // the bucket is now a new base				
+						control_bits->store(cbits);  // the bucket is now a new base				
 					}
 					break;
 				}
@@ -1790,6 +1965,13 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 					// are in the queue, then they will shift in making the cbit sequence longer.
 					atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(hash_ref->c.bits));
 					auto prev_bits = control_bits->load(std::memory_order_acquire);
+					//
+					cbits = pop_until_oldest(hash_ref, loaded_value, store_time, which_table, buffer, end, thread_id);
+					//
+					// store ....  pop until oldest
+					if ( !(complete_add_bucket_member_late(control_bits, cbits, locking_bits, loaded_value, store_time, hash_ref, buffer, end_buffer, thread_id)) ) {
+						did_produce_stashed_kv = handle_full_bucket_by_usurp(hash_base,c,v_passed,time,offset,buffer,end_buffer);
+					}
 					//
 					uint8_t count_result = 0;
 					q_count_decr(prev_bits,count_result);
@@ -1804,22 +1986,17 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				}
 			}
 
-			// hole -- try to gather all the work for a single bucket from the queue...
-			bool quick_put_ok = pop_until_oldest(hash_ref, loaded_value, store_time, which_table, buffer, end, thread_id);
-			//
-			if ( quick_put_ok ) {   // now unlock the bucket... 
-				//this->slice_unlock_counter(controller,which_table,thread_id);
-			} else {
-				// unlock the bucket... the element did not get back into the bucket, but another attempt may be made
-				// this->slice_unlock_counter(controller,which_table,thread_id);
-				//
+			if ( did_produce_stashed_kv ) {
 				// if the entry can be entered onto the short list (not too old) then allow it to be added back onto the restoration queue...
 				if ( short_list_old_entry(loaded_value, store_time) ) {
-					uint32_t el_key = (uint32_t)((loaded_value >> HALF) & HASH_MASK);  // just unloads it (was index)
-					uint32_t offset_value = (loaded_value & UINT32_MAX);
-					a_place_in_bucket(el_key, h_bucket, offset_value, which_table, thread_id, N, buffer, end);
+					// the bucket of membership is known and returned by `handle_full_bucket_by_usurp`
+					auto current_thread = cbits_thread_id_of(cbits);
+					auto current_membership = fetch_real_cbits(cbits);
+						// results in first time insertion and search for a hole (could alter time by a small amount to keep a sort)
+					wait_on_max_queue_incr(control_bits,locking_bits);
+					uint64_t current_loaded_value = (((uint64_t)el_key) << HALF) | offset_value;
+					wakeup_value_restore(HH_FROM_BASE_AND_WAIT,control_bits, current_membership, locking_bits, bucket, h_bucket, 0, current_loaded_value, which_table, current_thread, buffer, end);
 				}
-				//
 			}
 
 		}
@@ -1874,6 +2051,10 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			*buffer_ref = buffer;
 			*end_ref = end;
 		}
+
+
+
+
 
 
 
@@ -2340,9 +2521,9 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 
 		/**
-		 * full_bucket_so_usurp_loosest_tooth
+		 * handle_full_bucket_by_usurp
 		*/
-		void full_bucket_so_usurp_loosest_tooth(hh_element *hash_base,uint32_t c,uint64_t &v_passed,uint32_t &time,uint32_t offset,hh_element *buffer, hh_element *end) {
+		void handle_full_bucket_by_usurp(hh_element *hash_base,uint32_t c,uint64_t &v_passed,uint32_t &time,uint32_t offset,hh_element *buffer, hh_element *end) {
 			//
 			uint32_t min_base_offset = 0;
 			uint32_t offset_nxt_base = 0;
@@ -2470,7 +2651,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				b = b | hbit;
 				//  may guard against underlying changes anyway .. may not be necessary..
 				while ( !(hb_c_bits->compare_exchange_weak(a_prev,a,std::memory_order_release)) ) { a = a_prev | hbit; }
-				while ( !(hb_c_bits->compare_exchange_weak(b_prev,b,std::memory_order_release)) ) { b = b_prev | hbit; }
+				while ( !(hb_t_bits->compare_exchange_weak(b_prev,b,std::memory_order_release)) ) { b = b_prev | hbit; }
 			}
 			// swapping takes place only on the cbits. Yet a position among the c_bits may be locked if 
 			// a usurpation is in progress. The lock can be checked...
@@ -2488,7 +2669,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			if ( b == UINT32_MAX ) {  // v_passed can't be zero. Instead it is the oldest of the (maybe) full bucket.
 				// however, other buckets are stored interleaved. These buckets have not been examined for maybe 
 				// swapping with the current bucket oldest value.  (enter into territory of another bucket).
-				full_bucket_so_usurp_loosest_tooth(hash_base,c,v_passed,time,offset,buffer,end_buffer);
+				handle_full_bucket_by_usurp(hash_base,c,v_passed,time,offset,buffer,end_buffer);
 				//
 				//h_bucket += offset;
 				return false;  // this region has no free space...
@@ -2646,46 +2827,6 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			}
 			//
 			return false;
-		}
-
-
-		void complete_bucket_creation(atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t locking_bits, hh_element *bucket, hh_element *buffer, hh_element *end_buffer) {
-			//
-			a_place_back_taken_spots(bucket, 0, buffer, end);
-			create_base_taken_spots(bucket, buffer, end);   // this bucket is locked 
-			//
-			cbits = fetch_real_cbits(locking_bits);
-			control_bits->store(cbits);
-			//
-		}
-
-
-		void complete_add_bucket_member(atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t locking_bits, hh_element *bucket, hh_element *buffer, hh_element *end_buffer) {
-			atomic<uint32_t> *tbits = (atomic<uint32_t> *)(&bucket->->tv.taken);
-			uint8_t hole;
-			if ( reserve_membership(control_bits,tbits,cbits,prev_bits,hole,thread_id,buffer,end_buffer) ) {
-				//
-				store_real_cbits(cbits,current_thread);   // reserve a spot using prev bits and take spots
-				inner_bucket_time_swaps(hash_base,a,hole,v_passed,time,which_table,buffer,end_buffer,thread_id);  // thread id
-				//
-			} else {
-				// this bucket is full.. except there may be something that can budge and is within the window.
-				full_bucket_so_usurp_loosest_tooth(hash_base,c,v_passed,time,offset,buffer,end_buffer);
-			}
-		}
-
-
-		void complete_add_bucket_member_late(atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t locking_bits, hh_element *bucket, hh_element *buffer, hh_element *end_buffer) {
-			atomic<uint32_t> *tbits = (atomic<uint32_t> *)(&bucket->->tv.taken);
-			uint8_t hole;
-			if ( reserve_membership(control_bits,tbits,cbits,prev_bits,hole,thread_id,buffer,end_buffer) ) {
-				//
-				store_real_cbits(cbits,current_thread);   // reserve a spot using prev bits and take spots
-				inner_bucket_time_swaps(hash_base,a,hole,v_passed,time,which_table,buffer,end_buffer,thread_id);  // thread id
-				//
-			} else {
-				full_bucket_so_usurp_loosest_tooth(hash_base,c,v_passed,time,offset,buffer,end_buffer);
-			}
 		}
 
 

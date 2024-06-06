@@ -286,6 +286,16 @@ inline uint8_t gen_bitsmember_backref_offset(uint32_t cbits,uint8_t bkref) {
 }
 
 
+/**
+ * stamp_offset
+*/
+
+static inline uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset) {
+	return time;
+}
+
+
+
 class hh_element;
 template<class HHE>
 HHE *cbits_base_from_backref(uint32_t cbits,uint8_t &backref,HHE *from,HHE *begin,HHE *end) {
