@@ -1029,31 +1029,59 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 		 * 
 		*/
 
-		atomic<uint32_t> *tbits_add_reader(hh_element *base, uint8_t thread_id, uint32_t &tbits, uint32_t &value, uint32_t original_tbits = 0) {
+		bool reader_sem_stash_tbits(atomic<uint32_t> *a_tbits, uint32_t tbits_stash, uint8_t thread_id) {
+			uint32_t reader_bits = tbit_thread_stamp(0x2,thread_id);
+			auto expected_tbits = tbits_stash;
+			while ( !(a_tbits->compare_exchange_weak(expected_tbits,reader_bits,std::memory_order_acq_rel)) ) {
+				if ( expected_tbits != tbits_stash ) {
+					if ( expected_tbits == 0 ) return false;
+					else {  // this is a reader semaphore setup by another thread
+						if ( !(tbits_sem_at_max(reader_tbits)) ) {
+							a_tbits->fetch_add(2,std::memory_order_acq_rel);
+							return true;
+						}
+					}
+				}
+			}
+			// 
+			store_real_tbits(tbits_stash,thread_id);  // keep the real tbits in a safe place
+			return true;
+		}
+
+
+		atomic<uint32_t> *tbits_add_reader(hh_element *base, uint32_t &tbits, uint8_t thread_id, uint32_t &value) {
 			//
 			//
-			atomic<uint64_t> *a_tbits_n_v = (atomic<uint32_t> *)(&(base->tv));
+			atomic<uint64_t> *a_tbits_n_v = (atomic<uint64_t> *)(&(base->tv));
 			auto t_n_v = a_tbits_n_v->load(std::memory_order_acquire);
-			uint32_t tb = (uint32_t)(t_n_v & UINT32_MAX);
-			value = ((uint32_t)(t_n_v >> sizeof(uint32_t)) & UINT32_MAX);   // base bucket value
 			//
-			tbits = (original_tbits == 0) ? a_tbits->load(std::memory_order_acquire) : original_tbits;
-			if ( tbits == 0 ) return 0;  // empty
-
-			if ( (tbits == EDITOR_CBIT_SET) || (tbits == READER_CBIT_SET) ) {   // an editor updating a tbit map stores the orginal tbits on its stack
-				tbits = tbits_wait_on_editor(a_tbits);
-			}
-
-			auto reader_tbits = tbits;  // may already be reader tbits with a positive semaphore...
-			if ( tbits & 0x1 ) {
-				reader_tbits = store_real_tbits(a_tbits,tbits,thread_id);
+			if ( t_n_v == 0 ) return nullptr;	// a base is truely empty if both the tbits and the value are zero.. 
+												// tbits can be 0 if a thread is editing the tbits map.
+			//
+			uint32_t tbits = (uint32_t)(t_n_v & UINT32_MAX);
+			value = ((uint32_t)(t_n_v >> sizeof(uint32_t)) & UINT32_MAX);   // base bucket value VALUE NEVER CHANGES here
+			//
+			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
+			while ( true ) {
+				if ( tbits == 0 ) {
+					while ( tbits == 0 ) {
+						tick();
+						tbits = a_tbits->load(std::memory_order_acquire);
+					}
+				}  // the thread that updated the tbits may put back a reader semaphore or the updated tbits, depending
+				//
+				if ( tbits & 0x1 ) {  // the updated or original tbits may be here.
+					if ( reader_sem_stash_tbits(a_tbits,tbits,thread_id) ) {  // stash the tbis and make this a reader semaphore (count = 2)
+						return a_tbits;
+					}
+				} else {
+					if ( !(tbits_sem_at_max(reader_tbits)) ) {
+						a_tbits->fetch_add(2,std::memory_order_acq_rel);
+					}
+				}
 			}
 			//
-			if ( !(tbits_sem_at_max(reader_tbits)) ) {
-				a_tbits->fetch_add(2,std::memory_order_acq_rel);
-			}
-			//
-			return a_tbits;
+			return nullptr;
 		}
 
 
@@ -1071,16 +1099,18 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 				return;  // the tbits are where they are supposed to be
 			}
 			//
-			if ( !(tbits_sem_at_zero(tbits)) ) {
-				a_tbits->fetch_sub(2,std::memory_order_acq_rel);
+			if ( tbits_sem_at_zero(tbits) ) {  // it should have been that the last condition returned (maybe in transition)
+				return;
 			}
 			//
-			if ( tbits_sem_at_zero(tbits - 2) ) {
+			if ( tbits_sem_at_zero(tbits - 2) ) {   // last reader out
 				tbits = fetch_real_tbits(reader_cbits);
 				auto expect_bits = tbits - 2;
 				while ( !(a_tbits->compare_exchange_weak(expect_bits,tbits,2,std::memory_order_acq_rel)) ) {
 					if ( expect_bits & 0x1 ) return; // if there was a change, the pattern was updated.
 				}
+			} else {
+				a_tbits->fetch_sub(2,std::memory_order_acq_rel);
 			}
 			//
 			return;
@@ -1326,6 +1356,34 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 		 * an actual value swap is not in process. 
 		*/
 
+		uint32_t wait_if_base_update(atomic<uint64_t> *a_base_c_n_k,uint32_t cbits) {
+			cbits_n_ky = a_base_c_n_k->load();
+			auto base_ky = (uint32_t)((cbits_n_ky >> sizeof(uint32_t)) & UINT32_MAX);
+			return base_ky;
+		}
+
+
+		bool is_swappy(uint32_t cbits,uint32_t tbits) {
+
+			return false;
+		}
+
+
+		uint32_t tbits_add_swappy_op(base,cbits,tbits,value,thread_id) {
+
+		}
+
+		void tbits_remove_swappy_op(atomic<uint32_t> *a_tbits) {
+
+		}
+
+
+
+/*
+auto original_cbits = tbits_add_swappy_reader(base,cbits,tbits,value,thread_id);
+fetch_real_cbits(cbits);   // Since the base is in operation, the orginal bits will be in the `_cbits_temporary_store`.
+*/
+
 		hh_element *_get_bucket_reference(atomic<uint32_t> *bucket_bits, hh_element *base, uint32_t cbits, uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end,uint8_t thread_id,uint32_t &value) {
 			//
 			if ( el_key == UINT32_MAX ) return nullptr; // this should be worked out earlier but for completeness allow this check
@@ -1336,24 +1394,24 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 			atomic<uint64_t> *a_base_c_n_k = (atomic<uint64_t> *)(&(base->c));
 			//
 			// get the original bits even in a dynamic situation, and get the current representation
-			// stash cbits allowing readers to pass through. Only swappy operations need to be locked out. 
-			auto cbits_n_ky = wait_if_base_update(a_base_c_n_k); // a_base_c_n_k->load(std::memory_order_acquire);
-			auto base_ky = (uint32_t)((cbits_n_ky >> sizeof(uint32_t)) & UINT32_MAX);
+			// stash cbits allowing readers to pass through. Only swappy operations need to be locked out for non swappy reads
+			auto base_ky = wait_if_base_update(a_base_c_n_k,cbits); // a_base_c_n_k->load(std::memory_order_acquire);
 			if ( base_ky == el_key ) {
 				release_when_base_update(a_base_c_n_k,a_tbits);	// last reader out restores cbits.
 				tbits_remove_reader(a_tbits);					// last reader out restores tbits 
 				return base;
 			}
 			//
-			if ( is_base_noop(cbits) ) {
-											// no one is editing this bucket, make it exclusive to readers 
+			if ( !(is_swappy(cbits,tbits)) ) {  // 
+											// swappy operation occurs in this bucket for now, make it exclusive to readers 
 										  	// and don't make the readers do work on behalf of anyone
 				hh_element *hhe = _editor_locked_search_ref(bucket_bits,cbits,base,el_key,thread_id,value);
 				tbits_remove_reader(a_tbits);
 				return hh;
 			} else {
-				auto original_cbits = fetch_real_cbits(cbits);   // Since the base is in operation, the orginal bits will be in the `_cbits_temporary_store`.
+				auto original_cbits = tbits_add_swappy_op(base,cbits,tbits,value,thread_id);
 				auto ref = _swappy_search_ref(el_key, base, original_cbits,thread_id,value);
+				tbits_remove_swappy_op(a_tbits);
 				tbits_remove_reader(a_tbits);
 				return ref;
 			}
@@ -2907,8 +2965,6 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 
 
-
-
 		/**
 		 * place_back_taken_spots
 		*/
@@ -2916,17 +2972,29 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		atomic<uint32_t> *lock_taken_spots(hh_element *vb_probe,uint32_t &taken) {
 			atomic<uint32_t> *a_taken = (atomic<uint32_t> *)(&(vb_probe->->tv.taken));
 			taken = a_taken->load(std::memory_order_acquire);
-			if ( !(taken & 0x1) ) {
-				while ( a_taken->compare_exchange_weak(taken,taken,std::memory_order_acq_rel) || !(taken & 0x1) );
+			while ( !(taken & 0x1) ) {
+				taken = a_taken->load(std::memory_order_acquire);
+				if ( taken != 0 ) {  // this is a read sempahore
+					taken = fetch_real_tbits(taken);
+					return a_taken;
+				}
 			}
-			auto prep_taken = taken & (UINT32_MAX-1);
-			while ( !a_taken->compare_exchange_weak(taken,prep_taken,std::memory_order_acq_rel) ) {
-				prep_taken = taken & (UINT32_MAX-1);
-			}
-
+			auto prep_taken = 0;  // put in zero for update ops preventing a read semaphore.
+			while ( !a_taken->compare_exchange_weak(taken,prep_taken,std::memory_order_acq_rel) );
 			return a_taken;
 		}
 
+
+		void unlock_taken_spots(atomic<uint32_t> *a_taken,uint32_t update) {
+			auto taken = a_taken->load(std::memory_order_acquire);
+			if ( (taken != 0)  && !(taken & 0x1) ) {  // this is a read sempahore
+				auto thrd = tbits_thread_id_of(taken);
+				atomic<uint32_t> *a_real_tbits = (atomic<uint32_t> *)(&(_tbits_temporary_store[thrd]));
+				a_real_tbits->store(update);
+			} else if ( taken == 0 ) {
+				a_taken->store(std::memory_order_release);
+			}
+		}
 
 
 
@@ -2951,11 +3019,11 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				//
 				atomic<uint32_t> *a_real_tbits = (atomic<uint32_t> *)(&(vb_probe->->tv.taken));
 				auto tbits = a_real_tbits->load(std::memory_order_acquire);
-				while ( !(tbits & 0x1) ) {
+				while ( !(tbits & 0x1) ) {  // wait for editors and readers
 					tick();
 					tbits = a_real_tbits->load(std::memory_order_acquire);
 				}
-s				a_real_tbits->fetch_or(taken_bit);
+				a_real_tbits->fetch_or(taken_bit);
 			}
 			//
 			a_place_back_taken_spots(hash_ref, hole, buffer, end);
@@ -3022,7 +3090,7 @@ s				a_real_tbits->fetch_or(taken_bit);
 				}
 
 				for ( uint8_t i = 0; i < count_bases; i++ ) {
-					all_taken_spot_refs[i]->store(all_taken_spots[i],std::memory_order_release);
+					unlock_taken_spots(all_taken_spot_refs[i],all_taken_spots[i]);
 				}
 
 			}
