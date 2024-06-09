@@ -123,6 +123,7 @@ const uint32_t USURPED_CBIT_SET =		((uint32_t)(0x0001) << 10);
 const uint32_t MOBILE_CBIT_SET =		((uint32_t)(0x0001) << 11);
 const uint32_t DELETE_CBIT_SET =		((uint32_t)(0x0001) << 12);
 const uint32_t IMMOBILE_CBIT_SET =		((uint32_t)(0x0001) << 13);
+const uint32_t SWAPPY_CBIT_SET =		((uint32_t)(0x0001) << 14);
 
 // 
 const uint32_t READER_BIT_RESET = ~(READER_CBIT_SET);
@@ -144,9 +145,17 @@ const uint32_t TBIT_READ_MAX_SEMAPHORE = 31;
 
 
 const uint32_t CBIT_THREAD_SHIFT = 16;
-const uint32_t CBIT_Q_COUNT_SHIFT = 24;
 
-const uint32_t CLEAR_Q_COUNT = ~((uint32_t)(0x7E) << CBIT_Q_COUNT_SHIFT);
+const uint32_t CBIT_Q_COUNT_SHIFT = 24;
+const uint32_t TBIT_SWPY_COUNT_SHIFT = 24;
+
+const uint32_t CBIT_Q_COUNT_MAX = (0x7E);
+const uint32_t TBIT_SWPY_COUNT_MAX = (0x7E);
+const uint32_t CBIT_SHIFTED_Q_COUNT_MAX = ((0x7E) << CBIT_Q_COUNT_SHIFT);
+const uint32_t TBIT_SHIFTED_SWPY_COUNT_MAX = ((0x7E) << CBIT_Q_COUNT_SHIFT);
+
+const uint32_t CLEAR_Q_COUNT = ~((uint32_t)CBIT_SHIFTED_Q_COUNT_MAX);
+const uint32_t CLEAR_SWPY_COUNT = ~((uint32_t)TBIT_SHIFTED_SWPY_COUNT_MAX);
 
 
 
@@ -225,8 +234,6 @@ uint32_t q_count_incr(uint32_t cbits,uint8_t &count_result) {
 
 
 
-
-
 uint32_t q_count_decr(uint32_t cbits,uint8_t &count_result) {
 	auto count = ((cbits >> CBIT_Q_COUNT_SHIFT) & 0x7F);
 	if ( count > 0 ) {
@@ -245,7 +252,7 @@ uint32_t q_count_decr(uint32_t cbits,uint8_t &count_result) {
 //
 inline uint8_t base_reader_sem_count(uint32_t tbits) {
 	if ( is_base_tbit(tbits) ) {
-		auto semcnt = tbits & 0xFE; 
+		auto semcnt = tbits & TBIT_SEM_COUNTER_MASK; 
 		return semcnt;
 	}
 	return 0; // has to be greater than or equal to 1. 
@@ -253,16 +260,49 @@ inline uint8_t base_reader_sem_count(uint32_t tbits) {
 
 
 inline bool tbits_sem_at_max(uint32_t tbits) {
-	auto semcnt = ((uint8_t)tbits & 0xFE);
-	return (semcnt == 0xFE); // going by multiples of two to keep the low bit zero.
+	auto semcnt = ((uint8_t)tbits & TBIT_SEM_COUNTER_MASK);
+	return (semcnt == TBIT_SEM_COUNTER_MASK); // going by multiples of two to keep the low bit zero.
 }
 
 
 inline bool tbits_sem_at_zero(uint32_t tbits) {
-	auto semcnt = ((uint8_t)tbits & 0xFE);
+	auto semcnt = ((uint8_t)tbits & TBIT_SEM_COUNTER_MASK);
 	return (semcnt == 0); // going by multiples of two to keep the low bit zero.
 }
 
+
+
+
+
+uint32_t swappy_count_incr(uint32_t tbits,uint8_t &count_result) {
+	auto count = ((tbits >> TBIT_SWPY_COUNT_SHIFT) & 0x7F);
+	if ( count < 0x7F ) {
+		count++;
+		tbits = (tbits & CLEAR_SWPY_COUNT ) | (count << TBIT_SWPY_COUNT_SHIFT);
+	}
+	count_result = count;
+	return tbits;
+}
+
+
+
+uint32_t swappy_count_decr(uint32_t tbits,uint8_t &count_result) {
+	auto count = ((tbits >> TBIT_SWPY_COUNT_SHIFT) & 0x7F);
+	if ( count > 0 ) {
+		count--;
+		tbits = (tbits & CLEAR_SWPY_COUNT ) | (count << TBIT_SWPY_COUNT_SHIFT);
+	}
+	count_result = count;
+	return tbits;
+}
+
+
+bool tbits_is_swappy(uint32_t tbits) {
+	return ((tbits & TBIT_SHIFTED_SWPY_COUNT_MAX) != 0);
+}
+
+
+// TBIT_SWPY_COUNT_SHIFT
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -425,6 +465,17 @@ inline uint32_t gen_bitsdeleted(uint8_t thread_id,uint32_t cbits) {
 }
 
 
+inline bool is_cbits_swappy(uint32_t cbits) {
+	if ( !is_base_noop(cbits) && (cbits & SWAPPY_CBIT_SET) ) {
+		return true;
+	}
+	return false;
+}
+
+
+inline bool is_in_any_state_of_delete(uint32_t cbits) {
+	return ( (cbits & (DELETE_CBIT_SET | MOBILE_CBIT_SET))  != 0 );
+}
 
 // KEY (as returned to the user application will use selector bits to search)
 

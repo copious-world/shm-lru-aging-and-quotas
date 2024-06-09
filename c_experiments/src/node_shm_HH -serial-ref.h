@@ -2724,6 +2724,54 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
+		/**
+		 * usurp_membership_position_hold_key 
+		 * 
+		 * When usurping, the taken spots of all bases within the window don't change. 
+		 * The new base needs map of the current taken spots, which it takes from the other
+		 * bases around it. Since the base including the usurped position in its members is below 
+		 * the the new base position, the taken positions at the new position and above can be taken 
+		 * from the upper part of the base's taken positions. 
+		 * 
+		 * c_bits - the c_bits field from hash_ref
+		*/
+
+		uint8_t usurp_membership_position_hold_key(hh_element *hash_ref, uint32_t c_bits, uint32_t el_key, uint32_t offset_value, uint8_t which_table, hh_element *buffer, hh_element *end) {
+			uint8_t k = 0xFF & (c_bits >> 1);  // have stored the offsets to the bucket head
+			// Original base, he bucket head
+			hh_element *base_ref = (hash_ref - k);  // base_ref ... the base that owns the spot
+			base_ref = el_check_beg_wrap(base_ref,buffer,end);  // and maybe wrap
+			//
+			atomic<uint32_t> *b_c_bits = (atomic<uint32_t> *)(&base_ref->c.bits);
+			auto b_c = b_c_bits->load(std::memory_order_acquire);
+			auto b_c_prev = b_c;
+			UNSET(b_c,k);   // the element has been usurped...
+			while ( !(b_c_bits->compare_exchange_weak(b_c_prev,b_c,std::memory_order_release)) ) { b_c = b_c_prev; UNSET(b_c,k); }
+
+			// Need ... the allocation map for the new base element.
+			// BUILD taken spots for the new base being constructed in the usurped position
+			uint32_t ts = 1 | (base_ref->->tv.taken >> k);   // start with as much of the taken spots from the original base as possible
+			auto hash_nxt = base_ref + (k + 1);
+			for ( uint8_t i = (k + 1); i < NEIGHBORHOOD; i++, hash_nxt++ ) {
+				if ( hash_nxt->c.bits & 0x1 ) { // if there is another bucket, use its record of taken spots
+					// atomic<uint32_t> *hn_t_bits = (atomic<uint32_t> *)(&);  // hn_t_bits->load(std::memory_order_acquire);
+					//
+					auto taken = hash_nxt->->tv.taken;
+					ts |= (taken << i); // this is the record, but shift it....
+					//
+					break;
+				} else if ( hash_nxt->->tv.value != 0 ) {  // set the bit as taken
+					SET(ts,i);
+				}
+			}
+			hash_ref->->tv.taken = ts;  // a locked position
+			hash_ref->c.bits = 0x1;
+
+			hash_ref->->tv.value = offset_value;  // put in the new values
+			return k;
+		}
+
+
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 	public:
