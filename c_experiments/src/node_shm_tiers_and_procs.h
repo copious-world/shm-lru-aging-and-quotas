@@ -727,12 +727,13 @@ class TierAndProcManager : public LRU_Consts {
 									uint8_t which_slice;
 									atomic<uint32_t> *control_bits;
 									uint32_t cbits = 0;
+									uint32_t cbits_op = 0;
 									hh_element *buffer = nullptr;
 									hh_element *end_buffer = nullptr;
 									hh_element *el = nullptr;
 
 									// hash_bucket goes in by ref and will be stamped
-									uint64_t augmented_hash = lru->get_augmented_hash_locking(full_hash,&control_bits,&hash_bucket,&which_slice,&cbits,&el,&buffer,&end_buffer,thread_id);
+									uint64_t augmented_hash = lru->get_augmented_hash_locking(full_hash,&control_bits,&hash_bucket,&which_slice,&cbits,&cbits_op,&el,&buffer,&end_buffer,thread_id);
 
 									if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
 										write_offset_here[0] = offset;
@@ -741,9 +742,8 @@ class TierAndProcManager : public LRU_Consts {
 										//
 										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
 										clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
-										//
 										// -- if there is a problem, it will affect older entries
-										lru->store_in_hash_unlocking(control_bits,full_hash,hash_bucket,offset,which_slice,cbits,el,buffer,end_buffer,thread_id);
+										lru->store_in_hash_unlocking(control_bits,full_hash,hash_bucket,offset,which_slice,cbits,cbits_op,el,buffer,end_buffer,thread_id);
 									} // else the bucket has not been locked...
 								}
 							}

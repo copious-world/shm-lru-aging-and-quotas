@@ -2618,6 +2618,16 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+
+		uint32_t obtain_cell_key(atomic<uint32_t> *a_ky) {
+			uint32_t real_ky = (UINT32_MAX-1);
+			while ( a_ky->compare_exchange_weak(real_ky,(UINT32_MAX-1)) && (real_ky == (UINT32_MAX-1)));
+			return real_ky;
+		}
+	
 
 		void total_swappy_read(hh_element *base,uint32_t c) {
 			hh_element *next = base;
@@ -2773,6 +2783,150 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+
+
+
+		/**
+		 * place_taken_spots
+		 * 
+		 * c contains bucket starts..  Each one of these may be busy....
+		 * but, this just sets the taken spots; so, the taken spots may be treated as atomic...
+		 * 
+		*/
+		void place_taken_spots(hh_element *hash_ref, uint32_t hole, uint32_t c, hh_element *buffer, hh_element *end) {
+			hh_element *vb_probe = nullptr;
+			//
+			c = c & zero_above(hole);
+			while ( c ) {
+				vb_probe = hash_ref;
+				uint8_t offset = get_b_offset_update(c);			
+				vb_probe += offset;
+				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+				//
+				// may check to see if the value settles down...
+				vb_probe->->tv.taken |= (1 << (hole - offset));   // the bit is not as far out
+			}
+			//
+			place_back_taken_spots(hash_ref, hole, buffer, end);
+		}
+
+
+		/**
+		 * place_back_taken_spots
+		*/
+
+		void place_back_taken_spots(hh_element *hash_base, uint32_t dist_base, hh_element *buffer, hh_element *end) {
+			//
+			uint8_t g = NEIGHBORHOOD - 1;
+			auto last_view = (g - dist_base);
+			//
+			if ( last_view >  0 ) { // can't influence any change below the bucket
+				hh_element *vb_probe = hash_base - last_view;
+				vb_probe = el_check_beg_wrap(vb_probe,buffer,end);
+				uint32_t c = 0;
+				uint8_t k = g;     ///  (dist_base + last_view) :: dist_base + (g - dist_base) ::= dist_base + (NEIGHBORHOOD - 1) - dist_base ::= (NEIGHBORHOOD - 1) ::= g
+				while ( vb_probe != hash_base ) {
+					if ( vb_probe->c.bits & 0x1 ) {
+						vb_probe->->tv.taken |= ((uint32_t)0x1 << k);  // the bit is not as far out
+						c = vb_probe->c.bits;
+						break;
+					}
+					vb_probe++; k--;
+					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+				}
+				//
+				c = ~c & zero_above(last_view - (g - k)); // these are not the members of the first found bucket, necessarily in range of hole.
+				c = c & vb_probe->->tv.taken;
+				//
+				while ( c ) {
+					auto base_probe = vb_probe;
+					auto offset_nxt = get_b_offset_update(c);
+					base_probe += offset_nxt;
+					base_probe = el_check_end_wrap(base_probe,buffer,end);
+					if ( base_probe->c.bits & 0x1 ) {
+						auto j = k;
+						j -= offset_nxt;
+						base_probe->->tv.taken |= ((uint32_t)0x1 << j);  // the bit is not as far out
+						c = c & ~(base_probe->c.bits);  // no need to look at base probe members anymore ... remaining bits are other buckets
+					}
+				}
+			}
+		}
+
+
+
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+
+		bool search_writing_process_queues(uint32_t el_key,uint32_t &value,uint8_t thread_id,uint8_t selector) {
+			proc_descr *p = _process_table;
+			for ( uint8_t t = 0; t < _num_threads; t++ ) {
+				if ( !(p->_process_queue[selector].empty()) ) {
+					auto el = p->_process_queue[selector]._r_cached;
+					auto stop = p->_process_queue[selector]._w_cached;
+					auto end = p->_process_queue[selector]._end;
+					auto beg = p->_process_queue[selector]._beg;
+					while ( el != stop ) {
+						uint32_t k = (uint32_t)(el->loaded_value & UINT32_MAX)
+						if ( k == el_key ) {
+							value = ((el->loaded_value >> sizeof(uint32_t)) & UINT32_MAX);
+							return true;
+						}
+						el++;
+						if ( (el == end) && (end != stop) ) el = beg;
+					}
+				}
+				p++;
+			}
+			return false;
+		}
+
+	
+
+		/**
+		 * shift_membership_spots  -- do the swappy read
+		*/
+
+
+		hh_element *a_shift_membership_spots(hh_element *hash_base,hh_element *vb_nxt,uint32_t c, hh_element *buffer, hh_element *end) {
+/*
+				auto original_cbits = tbits_add_swappy_op(base,cbits,tbits,thread_id);
+*/
+			while ( c ) {
+				hh_element *vb_probe = hash_base;
+				auto offset = get_b_offset_update(c);
+				if ( c ) {
+					vb_probe += offset;
+					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+					//
+					
+					atomic<uint32_t> *k_aptr = (atomic<uint32_t> *)(&(vb_probe->c.key));
+					atomic<uint32_t> *nk_aptr = (atomic<uint32_t> *)(&(vb_nxt->c.key));
+					auto ky = k_aptr->exchange(pky,std::memory_order_acq_rel);
+					nk_aptr->store(ky);
+					//
+					atomic<uint32_t> *v_aptr = (atomic<uint32_t> *)(&(vb_probe->->tv.value));
+					atomic<uint32_t> *nv_aptr = (atomic<uint32_t> *)(&(vb_nxt->->tv.value));
+					auto val = v_aptr->exchange(pval,std::memory_order_acq_rel);
+					nv_aptr->store(val);
+					//
+					// not that the c_bits are note copied... for members, it is the offset to the base, while the base stores the memebership bit pattern
+					swap(vb_nxt->->tv.taken,vb_probe->->tv.taken);  // when the element is not a bucket head, this is time...
+					vb_nxt = vb_probe;
+				} else {
+					return vb_nxt;
+				}
+			}
+/*
+				tbits_remove_swappy_op(a_tbits);
+*/
+
+			return nullptr;
+		}
+
 
 	public:
 

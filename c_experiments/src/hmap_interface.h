@@ -102,6 +102,7 @@ inline T CLZ(T x) {		// count leading zeros -- make sure it is not bigger than t
 const uint32_t LOW_WORD = 0xFFFF;
 const uint64_t HASH_MASK = (((uint64_t)0) | LOW_WORD);  // 32 bits
 
+const uint32_t MAX_BUCKET_COUNT = 32;
 
 
 // CBIT LOCKING -- control bits fill the role of hopscotch membership patterns and an be swapped for 
@@ -129,6 +130,9 @@ const uint32_t SWAPPY_CBIT_SET =		((uint32_t)(0x0001) << 14);
 const uint32_t READER_BIT_RESET = ~(READER_CBIT_SET);
 const uint32_t IMMOBILE_CBIT_RESET = ~(IMMOBILE_CBIT_SET);
 const uint64_t IMMOBILE_CBIT_RESET64 = ~((uint64_t)IMMOBILE_CBIT_SET);
+
+
+const uint64_t SWAPPY_CBIT_RESET64 = ~((uint64_t)SWAPPY_CBIT_SET);
 
 const uint32_t TBIT_ACTUAL_BASE_ROOT_BIT = 0x1;
 const uint32_t TBIT_SEM_COUNTER_MASK = (0xFE);
@@ -177,7 +181,7 @@ inline bool is_base_noop(uint32_t cbits) {
 }
 
 inline bool is_base_in_ops(uint32_t cbits) {
-	return ((CBIT_BASE_MEMBER_BIT & cbits) == 0);
+	return ((CBIT_BASE_MEMBER_BIT & cbits) == 0) && (cbits != 0);
 }
 
 inline bool is_empty_bucket(uint32_t cbits) {
@@ -214,8 +218,8 @@ inline uint32_t tbits_thread_id_of(uint32_t tbits) {
 	return cbits_thread_id_of(tbits);
 }
 
-inline uint32_t tbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
-	return cbit_thread_stamp(cbits,thread_id);
+inline uint32_t tbit_thread_stamp(uint32_t tbits,uint8_t thread_id) {
+	return cbit_thread_stamp(tbits,thread_id);
 }
 
 
@@ -464,6 +468,19 @@ inline uint32_t gen_bitsdeleted(uint8_t thread_id,uint32_t cbits) {
 	return rdr;
 }
 
+template<typename T>
+inline T set_bitsdeleted(uint8_t thread_id,T cbits) {
+	auto rdr = (cbits | DELETE_CBIT_SET);
+	return rdr;
+}
+
+
+template<typename T>
+inline T clear_bitsdeleted(T cbits) {
+	auto clear_del_bit = ~(DELETE_CBIT_SET);
+	return cbits & clear_del_bit;
+}
+
 
 inline bool is_cbits_swappy(uint32_t cbits) {
 	if ( !is_base_noop(cbits) && (cbits & SWAPPY_CBIT_SET) ) {
@@ -573,17 +590,6 @@ typedef struct HHASH {
 
 	uint32_t _HV_Offset;
 	uint32_t _C_Offset;
-
-
-	uint16_t bucket_count(uint32_t h_bucket) {			// at most 255 in a bucket ... will be considerably less
-		uint32_t *controllers = (uint32_t *)(static_cast<char *>((void *)(this)) + sizeof(struct HHASH) + _C_Offset);
-		uint16_t *controller = (uint16_t *)(&controllers[h_bucket]);
-		//
-		uint8_t my_word = _control_bits & 0x1;
-		uint16_t count = my_word ? controller[1] : controller[0];
-		return (count & COUNT_MASK);
-	}
-
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 } HHash;
@@ -636,9 +642,9 @@ class HMap_interface {
 		virtual uint64_t	add_key_value(uint32_t el_match_key,uint32_t hash_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 		//
-		virtual bool		prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table,uint32_t &cbits,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) = 0;
+		virtual bool		prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table,uint32_t &,uint32_t &cbits_op,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) = 0;
 		virtual bool		wait_if_unlock_bucket_counts(uint32_t h_bucket, uint8_t thread_id, uint8_t &which_table) = 0;
-		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table = 0,uint8_t thread_id,uint32_t cbits,hh_element *bucket,hh_element *buffer,hh_element *end_buffer) = 0;
+		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint8_t thread_id,uint32_t cbits,uint32_t cbits_op,hh_element *bucket,hh_element *buffer,hh_element *end_buffer) = 0;
 };
 
 
