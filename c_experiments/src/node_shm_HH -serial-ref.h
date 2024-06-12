@@ -2928,6 +2928,107 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
+		/**
+		 * _swappy_search_ref
+		 * 
+		 * Assume that searches start after the base bucket. 
+		 * The base bucket is a special case. Make this assumption for both versions of search.
+		 * 
+		 *	NOTES: By default the base bucket is immobile. It may be read immediately unless it is being deleted.
+		 			The base may be owned by an editor. If it is, then `_swappy_search_ref` will be invoked.
+					The cbits of the base causing `_swappy_search_ref` to be called will be indicating operation by
+					and editor. And, the orginal cbits will be in the `_cbits_temporary_store` indexed by the thread
+					carried in the current cbits.
+
+				There are several strategies for delete at the base. 
+				One: is to leave the root in editor operation. The reader may complete the swap ahead of the deleter.
+				Two: is to leave the root cbits as the membership map. But, examine the key to see if it is max.
+					If it is max, then perform the first swap, moving the next element into the root position.
+		*/
+
+
+
+		hh_element *_swappy_search_ref(uint32_t el_key, hh_element *base, uint32_t c,uint8_t thread_id, uint32_t &value) {
+			//
+			hh_element *next = base;
+			auto base_bits = c;
+			
+			c = c & (UINT32_MAX-1);  // skip checking the first postion ... this method assumes the base already checked
+			while ( c ) {
+				next = base;
+				uint8_t offset = get_b_offset_update(c);
+				next += offset;
+				next = el_check_end_wrap(next,buffer,end);
+				// is this being usurped or swapped or deleted at this moment? Search on this range is locked
+				//
+				atomic<uint64_t> *a_bits_n_ky = (atomic<uint64_t> *)(&(next->c));
+				
+				//
+				// immobility is easiy marked on a member... 
+				// on a base, the swappy search marks a thread marked controller while the original cbits are stashed.
+				// so the immobility mark can still be used. But, the few editors operating in the bucket will not
+				// be able to restore the original cbits until the immobility mark is erased. 
+
+				auto c_n_ky = load_marked_as_immobile(a_bits_n_ky);
+				uint32_t nxt_bits = (uint32_t)(c_n_ky & UINT32_MAX);
+				auto ky = (c_n_ky >> sizeof(uint32_t)) & UINT32_MAX;
+				if ( is_member_bucket(n_cbits) && !(is_cbits_deleted(n_cbits) || (is_cbits_in_mobile_predelete(uint32_t cbits))) ) {
+					if ( el_key == chk_key ) {
+						value = next->tv.value; // maybe load  (note if this were the root it would be already loaded)
+						return next;
+					}
+				}
+
+				if ( ky == el_key  ) {  // opportunistic reader helps delete with on swap and returns on finding its value
+					return next;
+				}
+
+				// proceed if another operation is not at the moment doing a swap.
+				// pass by reference -- values may be the bucket after swap by another thread
+				//
+				wait_until_immobile(a_bits_n_ky,nxt_bits,ky,thread_id);
+				
+				//
+				if ( (ky == UINT32_MAX) && c ) {  // start a swap if this is not the end
+					auto use_next_c = c;
+					uint8_t offset_follow = get_b_offset_update(use_next_c);  // chops off the next position
+					hh_element *f_next += offset_follow;
+					f_next = el_check_end_wrap(f_next,buffer,end);
+					//
+					atomic<uint64_t> *a_bits_fn_ky = (atomic<uint64_t> *)(&(f_next->c));
+					auto c_fn_ky = a_bits_fn_ky->load(std::memory_order_acquire);
+					uint32_t f_nxt_bits = (uint32_t)(c_n_ky & UINT32_MAX);
+					auto fky = (c_n_ky >> sizeof(uint32_t)) & UINT32_MAX;
+
+					value = f_next->->tv.value;
+					auto taken = f_next->->tv.taken;
+					//
+					wait_until_immobile(a_bits_fn_ky,f_nxt_bits,fky,thread_id,true);  // pass by reference
+
+					c_n_ky = (c_n_ky & ((uint64_t)UINT32_MAX << sizeof(uint32_t) )) | f_nxt_bits;
+					c_fn_ky = (c_fn_ky & ((uint64_t)UINT32_MAX << sizeof(uint32_t) )) | nxt_bits;
+					a_bits_n_ky->store(c_fn_ky);
+					a_bits_fn_ky->store(c_n_ky);
+
+					f_next->->tv.value = 0;
+					remobalize(f_nexts,true);
+
+					if ( fky != UINT32_MAX ) {  // move a real value closer
+						next->->tv.value = value;
+						next->->tv.taken = taken;
+						if ( fky == el_key  ) {  // opportunistic reader helps delete with on swap and returns on finding its value
+							return next;
+						}
+					}
+					// else resume with the nex position being the hole blocker... 
+				} else if ( el_key == ky ) {
+					return next;
+				}
+				remobalize(next);
+			}
+			return UINT32_MAX;	
+		}
+
 	public:
 
 		// ---- ---- ---- STATUS

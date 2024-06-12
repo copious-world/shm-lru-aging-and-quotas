@@ -1432,19 +1432,27 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 			return a_bits_n_ky->fetch_or((uint64_t)IMMOBILE_CBIT_SET,std::memory_order_acquire);
 		}
 
-		void remobalize(hh_element *bucket,bool second_lock) {
-
+		void remobilize(atomic<uint64_t> *a_bits_n_ky,bool second_lock = false) {
+			a_bits_n_ky->fetch_and(IMMOBILE_CBIT_RESET64,std::memory_order_acq_rel);
 		}
 
+					
+		void remobilize(hh_element *storage_ref) {
+			atomic<uint64_t> *a_bits_n_ky = (atomic<uint64_t> *)(&(storage_ref->c));
+			remobilize(a_bits_n_ky);
+		}
+
+
+
 		/**
-		 * _swappy_search_ref
+		 * _swappy_aware_search_ref
 		 * 
 		 * Assume that searches start after the base bucket. 
 		 * The base bucket is a special case. Make this assumption for both versions of search.
 		 * 
 		 *	NOTES: By default the base bucket is immobile. It may be read immediately unless it is being deleted.
-		 			The base may be owned by an editor. If it is, then `_swappy_search_ref` will be invoked.
-					The cbits of the base causing `_swappy_search_ref` to be called will be indicating operation by
+		 			The base may be owned by an editor. If it is, then `_swappy_aware_search_ref` will be invoked.
+					The cbits of the base causing `_swappy_aware_search_ref` to be called will be indicating operation by
 					and editor. And, the orginal cbits will be in the `_cbits_temporary_store` indexed by the thread
 					carried in the current cbits.
 
@@ -1456,7 +1464,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 
 
 
-		hh_element *_swappy_search_ref(uint32_t el_key, hh_element *base, uint32_t c,uint8_t thread_id, uint32_t &value) {
+		hh_element *_swappy_aware_search_ref(uint32_t el_key, hh_element *base, uint32_t c,uint8_t thread_id, uint32_t &value, uint32_t &time) {
 			//
 			hh_element *next = base;
 			auto base_bits = c;
@@ -1470,6 +1478,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 				// is this being usurped or swapped or deleted at this moment? Search on this range is locked
 				//
 				atomic<uint64_t> *a_bits_n_ky = (atomic<uint64_t> *)(&(next->c));
+				atomic<uint64_t> *a_tbits_n_val = (atomic<uint64_t> *)(&(next->tv));
 				
 				//
 				// immobility is easiy marked on a member... 
@@ -1479,60 +1488,41 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 
 				auto c_n_ky = load_marked_as_immobile(a_bits_n_ky);
 				uint32_t nxt_bits = (uint32_t)(c_n_ky & UINT32_MAX);
-				auto ky = (c_n_ky >> sizeof(uint32_t)) & UINT32_MAX;
-				if ( is_member_bucket(n_cbits) && !(is_cbits_deleted(n_cbits) || (is_cbits_in_mobile_predelete(uint32_t cbits))) ) {
-					if ( el_key == chk_key ) {
-						value = next->tv.value; // maybe load  (note if this were the root it would be already loaded)
-						return next;
-					}
-				}
-
-				if ( ky == el_key  ) {  // opportunistic reader helps delete with on swap and returns on finding its value
-					return next;
-				}
-
-				// proceed if another operation is not at the moment doing a swap.
-				// pass by reference -- values may be the bucket after swap by another thread
-				//
-				wait_until_immobile(a_bits_n_ky,nxt_bits,ky,thread_id);
-				
-				//
-				if ( (ky == UINT32_MAX) && c ) {  // start a swap if this is not the end
-					auto use_next_c = c;
-					uint8_t offset_follow = get_b_offset_update(use_next_c);  // chops off the next position
-					hh_element *f_next += offset_follow;
-					f_next = el_check_end_wrap(f_next,buffer,end);
+				auto chk_key = (c_n_ky >> sizeof(uint32_t)) & UINT32_MAX;
+				if ( is_member_bucket(nxt_bits) ) {  // if it is not, then the bucket has been cleared and the membership map still wants an update
 					//
-					atomic<uint64_t> *a_bits_fn_ky = (atomic<uint64_t> *)(&(f_next->c));
-					auto c_fn_ky = a_bits_fn_ky->load(std::memory_order_acquire);
-					uint32_t f_nxt_bits = (uint32_t)(c_n_ky & UINT32_MAX);
-					auto fky = (c_n_ky >> sizeof(uint32_t)) & UINT32_MAX;
-
-					value = f_next->->tv.value;
-					auto taken = f_next->->tv.taken;
-					//
-					wait_until_immobile(a_bits_fn_ky,f_nxt_bits,fky,thread_id,true);  // pass by reference
-
-					c_n_ky = (c_n_ky & ((uint64_t)UINT32_MAX << sizeof(uint32_t) )) | f_nxt_bits;
-					c_fn_ky = (c_fn_ky & ((uint64_t)UINT32_MAX << sizeof(uint32_t) )) | nxt_bits;
-					a_bits_n_ky->store(c_fn_ky);
-					a_bits_fn_ky->store(c_n_ky);
-
-					f_next->->tv.value = 0;
-					remobalize(f_nexts,true);
-
-					if ( fky != UINT32_MAX ) {  // move a real value closer
-						next->->tv.value = value;
-						next->->tv.taken = taken;
-						if ( fky == el_key  ) {  // opportunistic reader helps delete with on swap and returns on finding its value
-							return next;
+					if ( !(is_cbits_deleted(nxt_bits) || is_cbits_in_mobile_predelete(nxt_bits)) ) {
+						if ( el_key == chk_key ) {
+							auto tbits_n_val = a_tbits_n_val->load(std::memory_order_acquire);
+							value = (tbits_n_val >> HALF);
+							time = (tbits_n_val & UINT32_MAX);
+							return next;			// return marked as immobile.
 						}
 					}
-					// else resume with the nex position being the hole blocker... 
-				} else if ( el_key == ky ) {
-					return next;
+					//
+					if ( is_cbits_in_mobile_predelete(nxt_bits) && (chk_key == UINT32_MAX) ) {
+						remobilize(a_bits_n_ky);
+						// proceed if another operation is not at the moment doing a swap.
+						// pass by reference -- values may be the bucket after swap by another thread
+						//
+						wait_until_immobile(a_bits_n_ky,nxt_bits,ky,thread_id);
+						c_n_ky = load_marked_as_immobile(a_bits_n_ky);
+						//
+						nxt_bits = (uint32_t)(c_n_ky & UINT32_MAX);
+						chk_key = (c_n_ky >> sizeof(uint32_t)) & UINT32_MAX;
+						//
+						if ( !(is_cbits_deleted(nxt_bits)) ) {  // just in case this is not moving
+							if ( el_key == chk_key ) {
+								auto tbits_n_val = a_tbits_n_val->load(std::memory_order_acquire);
+								value = (tbits_n_val >> HALF);
+								time = (tbits_n_val & UINT32_MAX);
+								return next;			// return marked as immobile.
+							}
+						}
+					}
 				}
-				remobalize(next);
+
+				remobilize(a_bits_n_ky);
 			}
 			return UINT32_MAX;	
 		}
@@ -1684,7 +1674,8 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD> {
 				auto original_cbits = tbits_add_swappy_op(base,cbits,tbits,thread_id);
 				tbits_remove_reader(a_tbits);	// if here, then this is the only non swappy reader and blocks swappy readers
 												// but, right now, thinsgs are wappy
-				auto ref = _swappy_search_ref(el_key, base, original_cbits,thread_id,value);
+				uint32_t time = 0;
+				auto ref = _swappy_aware_search_ref(el_key, base, original_cbits,thread_id,value,time);
 				//
 				tbits_remove_swappy_op(a_tbits);
 				return ref;
@@ -1995,11 +1986,10 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			hh_element *storage_ref = _get_bucket_reference(a_c_bits, base, cbits, h_bucket, el_key, buffer, end, thread_id, value);  // search
 			//
 			// clear mobility lock
+			remobilize(storage_ref);
 
 
-			if ( storage_ref != nullptr ) {
-				value = storage_ref->->tv.value;
-			} else {
+			if ( storage_ref == nullptr ) {
 				// search in reinsertion queue
 				// maybe wait a tick and search again...
 				return UINT32_MAX;
