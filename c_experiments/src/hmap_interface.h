@@ -181,7 +181,7 @@ inline bool is_base_noop(uint32_t cbits) {
 }
 
 inline bool is_base_in_ops(uint32_t cbits) {
-	return ((CBIT_BASE_MEMBER_BIT & cbits) == 0) && (cbits != 0);
+	return ((CBIT_BASE_INOP_BITS & cbits) == 0) && (cbits != 0);
 }
 
 inline bool is_empty_bucket(uint32_t cbits) {
@@ -189,8 +189,8 @@ inline bool is_empty_bucket(uint32_t cbits) {
 }
 
 inline bool is_member_bucket(uint32_t cbits) {
-	auto chck = (cbits & CBIT_BASE_INOP_BITS);
-	return (chck == CBIT_BASE_MEMBER_BIT);
+	auto chck = (cbits & CBIT_BASE_INOP_BITS);  // mask with msb and lsb
+	return (chck == CBIT_BASE_MEMBER_BIT);		// only msb is set -> this is a member
 }
 
 
@@ -275,6 +275,12 @@ inline bool tbits_sem_at_zero(uint32_t tbits) {
 }
 
 
+
+
+inline bool tbits_are_stashed(uint32_t tbits) {
+	if ( TBIT_ACTUAL_BASE_ROOT_BIT & tbits ) return false;
+	return true;
+}
 
 
 
@@ -441,7 +447,14 @@ inline uint32_t gen_bitsmember_in_mobile_predelete(uint8_t thread_id,uint32_t cb
 //
 // after clearing the space has been reclaimed and buckets are empty
 
-
+/**
+ * is_deleted
+ * 
+ * cropped and unacessible but not yet clear in maps and memberships...
+ * cropping clears the taken positions of leaving elements.
+ * 
+ * true delete occurs after clearing the space has been reclaimed and buckets are empty
+*/
 inline bool is_deleted(uint32_t cbits) { 
 	if ( is_member_bucket(cbits) ) {
 		if ( cbits & DELETE_CBIT_SET ) {
@@ -451,7 +464,11 @@ inline bool is_deleted(uint32_t cbits) {
 	return false;
 }
 
-
+/**
+ * CBIT_BASE_MEMBER_BIT
+ * 
+ * does not do the member check. Assumes that the cbits belong to a member bucket
+*/
 
 inline bool is_cbits_deleted(uint32_t cbits) {
 	if ( cbits & DELETE_CBIT_SET ) {

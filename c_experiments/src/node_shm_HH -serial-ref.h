@@ -2928,6 +2928,20 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 		}
 
 
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+		atomic<uint32_t>  *load_stable_key(hh_element *bucket,uint32_t &save_key) {
+			atomic<uint32_t>  *stable_key = (atomic<uint32_t>  *)bucket->c.key);
+			save_key = stable_key->load(std::memory_order_acquire);
+			return stable_key;
+		}
+
+
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+	
 		/**
 		 * _swappy_search_ref
 		 * 
