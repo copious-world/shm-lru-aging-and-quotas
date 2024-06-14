@@ -137,6 +137,17 @@
 */
 
 
+// WORK_ON_THESE
+// short_list_old_entry
+// wait_until_immobile
+// become_bucket_state_master
+// release_bucket_state_master
+// wait_become_bucket_delete_master
+// release_delete_master
+// a_store_real_tbits
+
+
+
 #define MAX_THREADS (64)
 
 
@@ -1718,13 +1729,6 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		void release_delete_master(atomic<uint64_t> *a_c_bits,uint8_t thread_id) {
 
 		}
-
-
-
-	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-
-		virtual void wakeup_value_restore(hh_adder_states update_type,hh_element *hash_ref, uint32_t h_start, uint32_t el_key, uint32_t value, uint8_t hole, uint8_t which_table, uint8_t thread_id, hh_element *buffer, hh_element *end) = 0;
 
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
