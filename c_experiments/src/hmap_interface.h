@@ -28,7 +28,7 @@ struct timespec request {
 
 
 template<typename T>
-inline string joiner(list<T> &jlist) {
+static inline string joiner(list<T> &jlist) {
 	if ( jlist.size() == 0 ) {
 		return("");
 	}
@@ -42,7 +42,7 @@ inline string joiner(list<T> &jlist) {
 }
 
 template<typename K,typename V>
-inline string map_maker_destruct(map<K,V> &jmap) {
+static inline string map_maker_destruct(map<K,V> &jmap) {
 	if ( jmap.size() == 0 ) {
 		return "{}";
 	}
@@ -80,7 +80,7 @@ static inline uint32_t now_time() {
 #define MOD(x, n) ((x) < (n) ? (x) : (x) - (n))
 //
 template<typename T>
-inline T CLZ(T x) {		// count leading zeros -- make sure it is not bigger than the type size
+static inline T CLZ(T x) {		// count leading zeros -- make sure it is not bigger than the type size
 	static uint8_t W = sizeof(T)*8;
 	return(__builtin_clzl(x) % W);
 }
@@ -166,7 +166,7 @@ const uint32_t CLEAR_SWPY_COUNT = ~((uint32_t)TBIT_SHIFTED_SWPY_COUNT_MAX);
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
-inline bool is_base_tbit(uint32_t tbits) {
+static inline bool is_base_tbit(uint32_t tbits) {
 	auto bit_state = (tbits & TBIT_ACTUAL_BASE_ROOT_BIT);
 	return (bit_state != 0);
 }
@@ -175,20 +175,20 @@ inline bool is_base_tbit(uint32_t tbits) {
 // All the following bit operations occur in registers. Storage is handled atomically around them.
 //
 
-inline bool is_base_noop(uint32_t cbits) {
+static inline bool is_base_noop(uint32_t cbits) {
 	auto bit_state = (cbits & CBIT_INACTIVE_BASE_ROOT_BIT);
 	return (bit_state != 0);
 }
 
-inline bool is_base_in_ops(uint32_t cbits) {
+static inline bool is_base_in_ops(uint32_t cbits) {
 	return ((CBIT_BASE_INOP_BITS & cbits) == 0) && (cbits != 0);
 }
 
-inline bool is_empty_bucket(uint32_t cbits) {
+static inline bool is_empty_bucket(uint32_t cbits) {
 	return (cbits == 0);
 }
 
-inline bool is_member_bucket(uint32_t cbits) {
+static inline bool is_member_bucket(uint32_t cbits) {
 	auto chck = (cbits & CBIT_BASE_INOP_BITS);  // mask with msb and lsb
 	return (chck == CBIT_BASE_MEMBER_BIT);		// only msb is set -> this is a member
 }
@@ -196,17 +196,17 @@ inline bool is_member_bucket(uint32_t cbits) {
 
 // THREAD OWNER ID CONTROL
 
-inline uint32_t cbits_thread_id_of(uint32_t cbits) {
+static inline uint32_t cbits_thread_id_of(uint32_t cbits) {
 	auto thread_id = (cbits >> CBIT_THREAD_SHIFT) & 0x00FF;
 	return thread_id;
 }
 
-inline uint32_t cbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
+static inline uint32_t cbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
 	cbits = cbits | ((thread_id & 0x00FF) << CBIT_THREAD_SHIFT);
 	return cbits;
 }
 
-inline uint32_t cbit_clear_bit(uint32_t cbits,uint8_t i) {
+static inline uint32_t cbit_clear_bit(uint32_t cbits,uint8_t i) {
 	UNSET(cbits, i);
 	return cbits;
 }
@@ -214,11 +214,11 @@ inline uint32_t cbit_clear_bit(uint32_t cbits,uint8_t i) {
 // THREAD OWNER OF TBITS for readers
 
 
-inline uint32_t tbits_thread_id_of(uint32_t tbits) {
+static inline uint32_t tbits_thread_id_of(uint32_t tbits) {
 	return cbits_thread_id_of(tbits);
 }
 
-inline uint32_t tbit_thread_stamp(uint32_t tbits,uint8_t thread_id) {
+static inline uint32_t tbit_thread_stamp(uint32_t tbits,uint8_t thread_id) {
 	return cbit_thread_stamp(tbits,thread_id);
 }
 
@@ -226,7 +226,7 @@ inline uint32_t tbit_thread_stamp(uint32_t tbits,uint8_t thread_id) {
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
-uint32_t q_count_incr(uint32_t cbits,uint8_t &count_result) {
+static inline uint32_t q_count_incr(uint32_t cbits,uint8_t &count_result) {
 	auto count = ((cbits >> CBIT_Q_COUNT_SHIFT) & 0x7F);
 	if ( count < 0x7F ) {
 		count++;
@@ -238,7 +238,7 @@ uint32_t q_count_incr(uint32_t cbits,uint8_t &count_result) {
 
 
 
-uint32_t q_count_decr(uint32_t cbits,uint8_t &count_result) {
+static inline uint32_t q_count_decr(uint32_t cbits,uint8_t &count_result) {
 	auto count = ((cbits >> CBIT_Q_COUNT_SHIFT) & 0x7F);
 	if ( count > 0 ) {
 		count--;
@@ -254,7 +254,7 @@ uint32_t q_count_decr(uint32_t cbits,uint8_t &count_result) {
 
 // HANDLE THE READER SEMAPHORE which is useful around deletes and some states of inserting.
 //
-inline uint8_t base_reader_sem_count(uint32_t tbits) {
+static inline uint8_t base_reader_sem_count(uint32_t tbits) {
 	if ( is_base_tbit(tbits) ) {
 		auto semcnt = tbits & TBIT_SEM_COUNTER_MASK; 
 		return semcnt;
@@ -263,13 +263,13 @@ inline uint8_t base_reader_sem_count(uint32_t tbits) {
 }
 
 
-inline bool tbits_sem_at_max(uint32_t tbits) {
+static inline bool tbits_sem_at_max(uint32_t tbits) {
 	auto semcnt = ((uint8_t)tbits & TBIT_SEM_COUNTER_MASK);
 	return (semcnt == TBIT_SEM_COUNTER_MASK); // going by multiples of two to keep the low bit zero.
 }
 
 
-inline bool tbits_sem_at_zero(uint32_t tbits) {
+static inline bool tbits_sem_at_zero(uint32_t tbits) {
 	auto semcnt = ((uint8_t)tbits & TBIT_SEM_COUNTER_MASK);
 	return (semcnt == 0); // going by multiples of two to keep the low bit zero.
 }
@@ -277,14 +277,14 @@ inline bool tbits_sem_at_zero(uint32_t tbits) {
 
 
 
-inline bool tbits_are_stashed(uint32_t tbits) {
+static inline bool tbits_are_stashed(uint32_t tbits) {
 	if ( TBIT_ACTUAL_BASE_ROOT_BIT & tbits ) return false;
 	return true;
 }
 
 
 
-uint32_t swappy_count_incr(uint32_t tbits,uint8_t &count_result) {
+static inline uint32_t swappy_count_incr(uint32_t tbits,uint8_t &count_result) {
 	auto count = ((tbits >> TBIT_SWPY_COUNT_SHIFT) & 0x7F);
 	if ( count < 0x7F ) {
 		count++;
@@ -296,7 +296,7 @@ uint32_t swappy_count_incr(uint32_t tbits,uint8_t &count_result) {
 
 
 
-uint32_t swappy_count_decr(uint32_t tbits,uint8_t &count_result) {
+static inline uint32_t swappy_count_decr(uint32_t tbits,uint8_t &count_result) {
 	auto count = ((tbits >> TBIT_SWPY_COUNT_SHIFT) & 0x7F);
 	if ( count > 0 ) {
 		count--;
@@ -307,8 +307,18 @@ uint32_t swappy_count_decr(uint32_t tbits,uint8_t &count_result) {
 }
 
 
-bool tbits_is_swappy(uint32_t tbits) {
+static inline bool tbits_is_swappy(uint32_t tbits) {
 	return ((tbits & TBIT_SHIFTED_SWPY_COUNT_MAX) != 0);
+}
+
+
+
+
+static inline bool is_swappy(uint32_t cbits,uint32_t tbits) {
+	if ( tbits_is_swappy(tbits) && is_cbits_swappy(cbits) ) {
+		return true;
+	}
+	return false;
 }
 
 
@@ -319,7 +329,7 @@ bool tbits_is_swappy(uint32_t tbits) {
 
 // MEMBER BACKREF to the base bucket
 
-inline uint8_t member_backref_offset(uint32_t cbits) {
+static inline uint8_t member_backref_offset(uint32_t cbits) {
 	if ( is_member_bucket(cbits) ) {
 		auto bkref = (cbits >> 1) & 0x1F; 
 		return bkref;
@@ -328,7 +338,7 @@ inline uint8_t member_backref_offset(uint32_t cbits) {
 }
 
 
-inline uint8_t gen_bitsmember_backref_offset(uint32_t cbits,uint8_t bkref) {
+static inline uint8_t gen_bitsmember_backref_offset(uint32_t cbits,uint8_t bkref) {
 	if ( is_member_bucket(cbits) ) {
 		cbits = (CBIT_BACK_REF_CLEAR_MASK & cbits) | (bkref << 1);
 	}
@@ -348,7 +358,7 @@ static inline uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset
 
 class hh_element;
 template<class HHE>
-HHE *cbits_base_from_backref(uint32_t cbits,uint8_t &backref,HHE *from,HHE *begin,HHE *end) {
+static inline HHE *cbits_base_from_backref(uint32_t cbits,uint8_t &backref,HHE *from,HHE *begin,HHE *end) {
 	backref = ((cbits & CBIT_BACK_REF_BITS) >> 1);
 	from -= backref;
 	if ( backref < begin ) {
@@ -361,7 +371,7 @@ HHE *cbits_base_from_backref(uint32_t cbits,uint8_t &backref,HHE *from,HHE *begi
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
-inline bool base_in_operation(uint32_t cbits) {
+static inline bool base_in_operation(uint32_t cbits) {
 	if ( is_base_in_ops(cbits) ) {
 		return (cbits & EDITOR_CBIT_SET) || (cbits & READER_CBIT_SET);
 	}
@@ -371,7 +381,7 @@ inline bool base_in_operation(uint32_t cbits) {
 
 // ---- ---- ---- 
 
-inline bool editors_are_active(uint32_t cbits) {
+static inline bool editors_are_active(uint32_t cbits) {
 	if ( is_base_in_ops(cbits) ) {
 		auto chck = (cbits & EDITOR_CBIT_SET);
 		return chck;
@@ -379,14 +389,14 @@ inline bool editors_are_active(uint32_t cbits) {
 	return false;
 }
 
-inline uint32_t gen_bits_editor_active(uint8_t thread_id,uint32_t cbits = 0) {
+static inline uint32_t gen_bits_editor_active(uint8_t thread_id,uint32_t cbits = 0) {
 	auto rdr = (cbits | EDITOR_CBIT_SET);
 	rdr = cbit_thread_stamp(rdr,thread_id);
 	return rdr;
 }
 
 
-inline bool is_member_usurped(uint32_t cbits,uint8_t &thread_id) {
+static inline bool is_member_usurped(uint32_t cbits,uint8_t &thread_id) {
 	if ( is_member_bucket(cbits) ) {
 		if ( cbits & USURPED_CBIT_SET ) {
 			thread_id = cbits_thread_id_of(cbits);
@@ -395,7 +405,7 @@ inline bool is_member_usurped(uint32_t cbits,uint8_t &thread_id) {
 	return false;
 }
 
-inline bool is_cbits_usurped(uint32_t cbits) {
+static inline bool is_cbits_usurped(uint32_t cbits) {
 	if ( cbits & USURPED_CBIT_SET ) {
 		return true;
 	}
@@ -403,7 +413,7 @@ inline bool is_cbits_usurped(uint32_t cbits) {
 }
 
 
-inline uint32_t gen_bitsmember_usurped(uint8_t thread_id,uint32_t cbits) {
+static inline uint32_t gen_bitsmember_usurped(uint8_t thread_id,uint32_t cbits) {
 	if ( is_member_bucket(cbits) ) {
 		auto rdr = (cbits | USURPED_CBIT_SET);
 		rdr = cbit_thread_stamp(rdr,thread_id);
@@ -413,7 +423,7 @@ inline uint32_t gen_bitsmember_usurped(uint8_t thread_id,uint32_t cbits) {
 
 
 
-inline bool is_member_in_mobile_predelete(uint32_t cbits) {
+static inline bool is_member_in_mobile_predelete(uint32_t cbits) {
 	if ( is_member_bucket(cbits) ) {
 		if ( cbits & MOBILE_CBIT_SET ) {
 			return true;
@@ -423,7 +433,7 @@ inline bool is_member_in_mobile_predelete(uint32_t cbits) {
 }
 
 
-inline bool is_cbits_in_mobile_predelete(uint32_t cbits) {
+static inline bool is_cbits_in_mobile_predelete(uint32_t cbits) {
 	if ( cbits & MOBILE_CBIT_SET ) {
 		return true;
 	}
@@ -431,7 +441,7 @@ inline bool is_cbits_in_mobile_predelete(uint32_t cbits) {
 }
 
 
-inline uint32_t gen_bitsmember_in_mobile_predelete(uint8_t thread_id,uint32_t cbits) {
+static inline uint32_t gen_bitsmember_in_mobile_predelete(uint8_t thread_id,uint32_t cbits) {
 	if ( is_member_bucket(cbits) ) {
 		auto rdr = (cbits | MOBILE_CBIT_SET);
 		rdr = cbit_thread_stamp(rdr,thread_id);
@@ -455,7 +465,7 @@ inline uint32_t gen_bitsmember_in_mobile_predelete(uint8_t thread_id,uint32_t cb
  * 
  * true delete occurs after clearing the space has been reclaimed and buckets are empty
 */
-inline bool is_deleted(uint32_t cbits) { 
+static inline bool is_deleted(uint32_t cbits) { 
 	if ( is_member_bucket(cbits) ) {
 		if ( cbits & DELETE_CBIT_SET ) {
 			return true;
@@ -470,7 +480,7 @@ inline bool is_deleted(uint32_t cbits) {
  * does not do the member check. Assumes that the cbits belong to a member bucket
 */
 
-inline bool is_cbits_deleted(uint32_t cbits) {
+static inline bool is_cbits_deleted(uint32_t cbits) {
 	if ( cbits & DELETE_CBIT_SET ) {
 		return true;
 	}
@@ -479,27 +489,27 @@ inline bool is_cbits_deleted(uint32_t cbits) {
 
 
 
-inline uint32_t gen_bitsdeleted(uint8_t thread_id,uint32_t cbits) {
+static inline uint32_t gen_bitsdeleted(uint8_t thread_id,uint32_t cbits) {
 	auto rdr = (cbits | DELETE_CBIT_SET);
 	rdr = cbit_thread_stamp(rdr,thread_id);
 	return rdr;
 }
 
 template<typename T>
-inline T set_bitsdeleted(uint8_t thread_id,T cbits) {
+static inline T set_bitsdeleted(uint8_t thread_id,T cbits) {
 	auto rdr = (cbits | DELETE_CBIT_SET);
 	return rdr;
 }
 
 
 template<typename T>
-inline T clear_bitsdeleted(T cbits) {
+static inline T clear_bitsdeleted(T cbits) {
 	auto clear_del_bit = ~(DELETE_CBIT_SET);
 	return cbits & clear_del_bit;
 }
 
 
-inline bool is_cbits_swappy(uint32_t cbits) {
+static inline bool is_cbits_swappy(uint32_t cbits) {
 	if ( !is_base_noop(cbits) && (cbits & SWAPPY_CBIT_SET) ) {
 		return true;
 	}
@@ -507,7 +517,7 @@ inline bool is_cbits_swappy(uint32_t cbits) {
 }
 
 
-inline bool is_in_any_state_of_delete(uint32_t cbits) {
+static inline bool is_in_any_state_of_delete(uint32_t cbits) {
 	return ( (cbits & (DELETE_CBIT_SET | MOBILE_CBIT_SET))  != 0 );
 }
 
