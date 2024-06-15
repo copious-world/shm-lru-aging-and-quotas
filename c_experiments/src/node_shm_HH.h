@@ -642,6 +642,18 @@ public:
 			return cbits;
 		}
 
+
+		atomic<uint32_t> *load_cbits(hh_element *base,uint32_t &cbits,uint32_t &cbits_op) {
+			atomic<uint32_t> *a_cbits_base = (atomic<uint32_t> *)(&(base->c.bits));
+			auto cbits = a_cbits_base->load(std::memory_order_acquire);
+			if ( !(is_base_noop(cbits)) ) {
+				cbits_op = cbits;
+				cbits = fetch_real_cbits(cbits);
+			}
+			return a_cbits_base;
+		}
+
+
 		/**
 		 * _get_member_bits_slice_info
 		 * 
@@ -1866,6 +1878,12 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 			control_bits->store(real_cbits); 
 		}
 
+		uint32_t wait_if_base_update(atomic<uint64_t> *a_base_c_n_k,uint32_t &cbits,uint32_t &cbits_op) {
+			cbits_n_ky = a_base_c_n_k->load();
+			auto base_ky = (uint32_t)((cbits_n_ky >> sizeof(uint32_t)) & UINT32_MAX);
+			return base_ky;
+		}
+
 
 		bool wait_become_bucket_delete_master(atomic<uint64_t> *a_c_bits,uint8_t thread_id) {  // mark the whole bucket swappy mark for delete
 			return true;
@@ -2060,12 +2078,10 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * an actual value swap is not in process. 
 		*/
 
-		uint32_t wait_if_base_update(atomic<uint64_t> *a_base_c_n_k,uint32_t &cbits,uint32_t &cbits_op) {
-			cbits_n_ky = a_base_c_n_k->load();
-			auto base_ky = (uint32_t)((cbits_n_ky >> sizeof(uint32_t)) & UINT32_MAX);
-			return base_ky;
-		}
 
+		/**
+		 * tbits_add_swappy_op
+		*/
 
 		uint32_t tbits_add_swappy_op(hh_element *base,uint32_t cbits,uint32_t tbits,uint8_t thread_id) {
 			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
@@ -2084,6 +2100,10 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 			} while ( count_result == TBIT_SWPY_COUNT_MAX );
 		}
 
+
+		/**
+		 * tbits_remove_swappy_op
+		*/
 		void tbits_remove_swappy_op(atomic<uint32_t> *a_tbits) {
 			uint8_t count_result = 0;
 			auto tbits = a_tbits->load(std::memory_order_acquire);
@@ -2234,15 +2254,32 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 						}
 						return;
 					}
+					//
+					//
+					uint8_t backref = 0;			// get thise by ref
+					uint32_t base_cbits = 0;
+					uint32_t base_cbits_op = 0;
+					//
+					locking_bits = gen_bits_editor_active(thread_id);   // editor active
 
-					locking_bits = gen_bitsmember_usurped(thread_id,locking_bits);
-					// become the base bucket state master.
-					if ( become_bucket_state_master(control_bits,cbits,cbits_op,locking_bits,thread_id) ) { // OWN THIS BUCKET
+					// get sel base (header inline)
+					hh_element *cells_base = cbits_base_from_backref(backref,bucket,buffer,end_buffer);
+					atomic<uint32_t> *base_control_bits = load_cbits(cells_base,base_cbits,base_cbits_op);
+					//
+					// 
+					cell_member_locking_bits = gen_bitsmember_usurped(thread_id,locking_bits);
+					
+					// The base of the cell holds the membership map in which this branch finds the cell.
+					// The base will be altered... And, the value of the cell should be put back into the cell.
+					// BECOME the editor of the base bucket... (any other ops should not be able to access the cell bucket 
+					// 	but, the cells base might be busy in conflicting ways. This results in a delay for this condition.)
+					// waiting here, because this edit changes membership immediately and does not change taken bits
+					if ( become_bucket_state_master(base_control_bits,base_cbits,base_cbits_op,locking_bits,thread_id) ) { // OWN THIS BUCKET
 						//
 						if ( is_member_in_mobile_predelete(cbits_op) || is_delete(cbits_op) ) {  // handle this case for being possible before cropping
 							//
 							if ( is_member_in_mobile_predelete(cbits_op) ) {
-								if ( attempt_preempt_delete(control_bits,bucket,cbits,cbits_op,locking_bits,thread_id) ) {   // delcare immobility to the cropper
+								if ( attempt_preempt_delete(control_bits,bucket,base_control_bits,cells_base,backref,cbits_op,cbits,base_cbits,base_cbits_op,thread_id) ) {   // delcare immobility to the cropper
 									uint64_t ky_n_cbits = (((uint64_t)(el_key) << HALF) | 0x1);
 									uint64_t val_n_tbits = (((uint64_t)(offset_value) << HALF) | tbit_thread_stamp(0,thread_id));
 									//
@@ -2256,21 +2293,9 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 							//  
 							continue;
 						} else {  // question about cell dynamics have been asked...   USURP
-							uint8_t backref = 0;			// get thise by ref
-							uint32_t base_cbits = 0;
-							uint32_t base_cbits_op = 0;
-							uint32_t base_taken_bits = 0;
-							// get sel base (header inline)
-							hh_element *cells_base = cbits_base_from_backref(backref,bucket,buffer,end_buffer,base_cbits,base_taken_bits);
 							//
-							// The base of the cell holds the membership map in which this branch finds the cell.
-							// The base will be altered... And, the value of the cell should be put back into the cell.
-							// BECOME the editor of the base bucket... (any other ops should not be able to access the cell bucket 
-							// 	but, the cells base might be busy in conflicting ways. This results in a delay for this condition.)
-							atomic<uint32_t> *base_control_bits = (atomic<uint32_t> *)(&(cells_base->c.bits));
-							auto cell_base_locking_bits = gen_bits_editor_active(thread_id);   // editor active
-							// waiting here, because this edit changes membership immediately and does not change taken bits
-							while ( !become_bucket_state_master(base_control_bits,base_cbits,base_cbits_op,cell_base_locking_bits,thread_id,true) ) { tick() };
+							// become master of the cell being usurped
+							while ( !become_bucket_state_master(base_control_bits,cbits,cbits_op,cell_member_locking_bits,thread_id,true) ) { tick() };
 							//
 							auto val_n_tbits = a_val_n_tbits->exchange(((uint64_t)UINT32_MAX << HALF),std::memory_order_acquire);
 							auto ky_n_cbits = a_ky_n_cbits->fetch_or((((uint64_t)UINT32_MAX << HALF) | IMMOBILE_CBIT_SET),std::memory_order_acquire);
@@ -3455,15 +3480,30 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		/**
 		 * attempt_preempt_delete
 		 * 
-		 * prior to a swap... 
+		 * prior to a swap... cannot pass into a swappy bucket
 		 * 
 		*/
 
-		bool attempt_preempt_delete(atomic<uint32_t> *control_bits,hh_element *bucket,uint32_t &cbits,uint32_t &cbits_op,uint32_t &locking_bits,uint8_t thread_id) {
-			// cannot proceed if already swappy
-			// remove mobile bit MOBILE_CBIT_SET
-			// become a reader
-			return false;	// if a failed and the element targeted is now filled with a valid value, a preempt will take place.
+		bool attempt_preempt_delete(atomic<uint32_t> *control_bits, hh_element *bucket, atomic<uint32_t> *base_control_bits, hh_element *base, uint8_t backref, uint32_t &cbits, uint32_t &cbits_op, uint32_t &base_cbits, uint32_t &base_cbits_op, uint8_t thread_id) {
+			if ( is_cbits_swappy(base_cbits_op) ) { return false; }
+			// else 
+			uint32_t tbits = 0;
+			uint32_t value = 0;
+			atomic<uint32_t> *a_tbits = tbits_add_reader(base, tbits, thread_id, value);
+			if ( a_tbits == nullptr ) { return false; }
+			//
+			auto state_capture = control_bits->fetch_and(~MOBILE_CBIT_SET,std::memory_order_acq_rel);
+			if ( state_capture & DELETE_CBIT_SET ) {
+				tbits_remove_reader(a_tbits, thread_id);
+				return false;
+			}
+			
+			auto base_bits_update = base_control_bits & ~((uint32_t)0x1 << backref);
+			a_store_real_cbits(base_control_bits, base_bits_update, base_cbits_op, 0, thread_id);
+			
+			//
+			tbits_remove_reader(a_tbits, thread_id);
+			return true;	// if a failed and the element targeted is now filled with a valid value, a preempt will take place.
 		}
 
 
