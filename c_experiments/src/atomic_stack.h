@@ -95,18 +95,16 @@ class AtomicStack {
 			}
 		}
 
-
-
-/*
- 
-		auto cnt = _count_free->load(std::memory_order_acquire);
-		if ( cnt < _max_free->load() ) {
-			// auto current = cnt++;
-			_count_free->fetch_add(1, std::memory_order_relaxed);
-			//while ( !(_count->compare_exchange_weak(current,cnt,std::memory_order_release)) );
+		void _atomic_stack_push(uint8_t *start, uint32_t el_offset) {
+			StackEl *el = (StackEl *)(start + el_offset);
+			_atomic_stack_push(start, el);
 		}
 
-*/
+
+		/**
+		 * increment_free_count
+		*/
+
 		void increment_free_count(void) {
 			auto count = _count_free->fetch_add(1,std::memory_order_acquire);
 			if ( count >= _max_free_local ) {
@@ -119,16 +117,9 @@ class AtomicStack {
 		}
 
 
-/*
-    uint32_t current = cnt.load(std::memory_order_acquire);
-	auto store_this = fc;
-	do {
-		if ( fc >= decr ) {
-			store_this = current - decr;
-		} else break;
-		while ( !(cnt.compare_exchange_weak(current,store_this,std::memory_order_acq_rel)) && (current != fc) );
-	} while ( fc != store_this );
-*/
+		/**
+		 * reduce_free_count
+		*/
 
 		void reduce_free_count(uint32_t fc,uint32_t n) {
 			auto store_this = fc;
@@ -167,10 +158,8 @@ class AtomicStack {
 
 			//
 			_ctrl_free = (StackEl *)(start + 2*sizeof(atomic<uint32_t>*));
-			_ctrl_free->_info = UINT32_MAX;
+			_ctrl_free->init(0);
 			_ctrl_free->_next = (step + 2*sizeof(atomic<uint32_t>*));	// step in bytes
-			_ctrl_free->_hash = 0;
-			_ctrl_free->_when = 0;
 
 			//
 			size_t curr = _ctrl_free->_next;
@@ -184,13 +173,11 @@ class AtomicStack {
 				if ( !check_end((uint8_t *)next_free) ) {
 					throw "test_lru_creation_and_initialization: run past end of reion";
 				}
-				next_free->_info = UINT32_MAX;  // singly linked free list (may become something like time)
+				_ctrl_free->init();
 				next_free->_next = next;
 				if ( next >= region_size ) {
 					next_free->_next = UINT32_MAX;
 				}
-				next_free->_hash = UINT64_MAX;
-				next_free->_when = 0;
 				//
 				curr += step;
 				next += step;
@@ -203,7 +190,6 @@ class AtomicStack {
 			_count_free->store(free_count);
 			_max_free->store(free_count);
 			_max_free_local = free_count;
-			_ctrl_free->_hash = 0;   // how many free elements avaibale
 
 			return free_count;
 		}

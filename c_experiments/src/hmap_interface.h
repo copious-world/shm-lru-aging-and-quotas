@@ -13,6 +13,8 @@
 #include <bit>
 #include <atomic>
 
+#include <atomic_stack.h>
+
 using namespace std;
 
 
@@ -118,16 +120,17 @@ const uint32_t CBIT_BASE_INOP_BITS = (CBIT_INACTIVE_BASE_ROOT_BIT | CBIT_BASE_ME
 const uint32_t CBIT_BACK_REF_BITS = 0x3E;
 const uint32_t CBIT_BACK_REF_CLEAR_MASK = (~((uint32_t)0x003E));
 //
-const uint32_t EDITOR_CBIT_SET =		((uint32_t)(0x0001) << 8);
-const uint32_t READER_CBIT_SET =		((uint32_t)(0x0001) << 9);
-const uint32_t USURPED_CBIT_SET =		((uint32_t)(0x0001) << 10);
-const uint32_t MOBILE_CBIT_SET =		((uint32_t)(0x0001) << 11);
-const uint32_t DELETE_CBIT_SET =		((uint32_t)(0x0001) << 12);
-const uint32_t IMMOBILE_CBIT_SET =		((uint32_t)(0x0001) << 13);
-const uint32_t SWAPPY_CBIT_SET =		((uint32_t)(0x0001) << 14);
+const uint32_t EDITOR_CBIT_SET =		((uint32_t)(0x0001) << 16);
+const uint32_t READER_CBIT_SET =		((uint32_t)(0x0001) << 17);
+const uint32_t USURPED_CBIT_SET =		((uint32_t)(0x0001) << 18);
+const uint32_t MOBILE_CBIT_SET =		((uint32_t)(0x0001) << 19);
+const uint32_t DELETE_CBIT_SET =		((uint32_t)(0x0001) << 20);
+const uint32_t IMMOBILE_CBIT_SET =		((uint32_t)(0x0001) << 21);
+const uint32_t SWAPPY_CBIT_SET =		((uint32_t)(0x0001) << 22);
+const uint32_t ROOT_EDIT_CBIT_SET =		((uint32_t)(0x0001) << 23);
 
 // 
-const uint32_t READER_BIT_RESET = ~(READER_CBIT_SET);
+const uint32_t READER_CBIT_RESET = ~(READER_CBIT_SET);
 const uint32_t IMMOBILE_CBIT_RESET = ~(IMMOBILE_CBIT_SET);
 const uint64_t IMMOBILE_CBIT_RESET64 = ~((uint64_t)IMMOBILE_CBIT_SET);
 
@@ -135,24 +138,25 @@ const uint64_t IMMOBILE_CBIT_RESET64 = ~((uint64_t)IMMOBILE_CBIT_SET);
 const uint64_t SWAPPY_CBIT_RESET64 = ~((uint64_t)SWAPPY_CBIT_SET);
 
 const uint32_t TBIT_ACTUAL_BASE_ROOT_BIT = 0x1;
-const uint32_t TBIT_SEM_COUNTER_MASK = (0xFE);
-const uint32_t TBIT_SEM_COUNTER_CLEAR_MASK = (~((uint32_t)0x00FE));
+const uint32_t TBIT_SEM_COUNTER_MASK = (0xFF0000);
+const uint32_t TBIT_SEM_COUNTER_CLEAR_MASK = (~TBIT_SEM_COUNTER_MASK);
 
 
 // EDITOR BIT and READER BIT
 
-const uint32_t TBIT_READER_SEMAPHORE_CLEAR = 0x00FFFFFF;
-const uint32_t TBIT_READER_SEMAPHORE_WORD = 0xFF000000;
-const uint32_t TBIT_READER_SEMAPHORE_SHIFT = 24;
-const uint32_t TBIT_READ_MAX_SEMAPHORE = 31;
 
+const uint32_t TBIT_READER_SEM_SHIFT = 16;
 
 
 const uint32_t CBIT_THREAD_SHIFT = 16;
+const uint32_t TBIT_THREAD_SHIFT = 16;
+
+const uint32_t CBIT_STASH_ID_SHIFT = 1;  // bottom bit is always zero in op
+const uint32_t TBIT_STASH_ID_SHIFT = 1;
 
 const uint32_t CBIT_Q_COUNT_SHIFT = 24;
 const uint32_t TBIT_SWPY_COUNT_SHIFT = 24;
-
+//
 const uint32_t CBIT_Q_COUNT_MAX = (0x7E);
 const uint32_t TBIT_SWPY_COUNT_MAX = (0x7E);
 const uint32_t CBIT_SHIFTED_Q_COUNT_MAX = ((0x7E) << CBIT_Q_COUNT_SHIFT);
@@ -162,6 +166,7 @@ const uint32_t CLEAR_Q_COUNT = ~((uint32_t)CBIT_SHIFTED_Q_COUNT_MAX);
 const uint32_t CLEAR_SWPY_COUNT = ~((uint32_t)TBIT_SHIFTED_SWPY_COUNT_MAX);
 
 
+const uint32_t TBITS_READER_SEM_INCR = (0x1 << TBIT_READER_SEM_SHIFT);
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -211,6 +216,31 @@ static inline uint32_t cbit_clear_bit(uint32_t cbits,uint8_t i) {
 	return cbits;
 }
 
+
+
+static inline uint32_t cbits_stash_index_of(uint32_t cbits) {
+	auto stash_index = (cbits >> CBIT_STASH_ID_SHIFT) & 0x0FFF;
+	return stash_index;
+}
+
+
+static inline uint32_t tbits_stash_index_of(uint32_t tbits) {
+	auto stash_index = (tbits >> TBIT_STASH_ID_SHIFT) & 0x0FFF;
+	return stash_index;
+}
+
+
+
+static inline uint32_t cbit_stash_index_stamp(uint32_t cbits,uint8_t stash_index) {
+	return cbit_thread_stamp(cbits,stash_index);
+}
+
+static inline uint32_t tbit_stash_index_stamp(uint32_t tbits,uint8_t stash_index) {
+	return cbit_thread_stamp(tbits,stash_index);
+}
+
+
+
 // THREAD OWNER OF TBITS for readers
 
 
@@ -256,7 +286,7 @@ static inline uint32_t q_count_decr(uint32_t cbits,uint8_t &count_result) {
 //
 static inline uint8_t base_reader_sem_count(uint32_t tbits) {
 	if ( is_base_tbit(tbits) ) {
-		auto semcnt = tbits & TBIT_SEM_COUNTER_MASK; 
+		auto semcnt = (tbits & TBIT_SEM_COUNTER_MASK) >> TBIT_READER_SEM_SHIFT; 
 		return semcnt;
 	}
 	return 0; // has to be greater than or equal to 1. 
@@ -654,6 +684,126 @@ class Spinners {
 
 
 
+template<class StackEl,const uint8_t THREAD_COUNT,const uint8_t MAX_EXPECTED_THREAD_REENTRIES>
+class FreeOperatorStashStack : public AtomicStack<StackEl> {
+	public:
+
+		FreeOperatorStashStack() {
+		}
+
+		FreeOperatorStashStack(uint8_t *start,bool am_initializer) {
+			uint16_t reserved_positions = THREAD_COUNT*MAX_EXPECTED_THREAD_REENTRIES;
+			setup_free_stash(start,reserved_positions,am_initializer);
+		}
+
+		virtual ~FreeOperatorStashStack() {}
+
+
+		uint32_t pop_one_free(void) {
+			auto head = (atomic<uint32_t>*)(&(_ctrl_free->_next));
+			uint32_t hdr_offset = head->load(std::memory_order_relaxed);
+			//
+			if ( hdr_offset == UINT32_MAX ) {
+				_status = false;
+				_reason = "out of free memory: free count == 0";
+				return(UINT32_MAX);
+			}
+			//
+			// POP as many as needed
+			//
+			auto fc = _count_free->load(std::memory_order_acquire);
+
+			if ( fc == 0) {
+				_status = false;
+				_reason = "potential free memory overflow: free count == 0";
+				return(nullptr);			/// failed memory allocation...
+			}
+
+			reduce_free_count(fc,1);
+			//
+			std::atomic_thread_fence(std::memory_order_acquire);
+			// ----
+			uint8_t *start = (uint8_t *)_region_start;
+			//
+			uint32_t next_offset = UINT32_MAX;
+			uint32_t first_offset = UINT32_MAX;
+			do {
+				//
+				if ( hdr_offset == UINT32_MAX ) {
+					_status = false;
+					_reason = "out of free memory: free count == 0";
+					return(UINT32_MAX);			/// failed memory allocation...
+				}
+				//
+				first_offset = hdr_offset;
+				StackEl *first = (StackEl *)(start + first_offset); 	// ref next free object
+				next_offset = first->_next;								// next of next free
+			} while( !(head->compare_exchange_weak(hdr_offset, next_offset, std::memory_order_acq_rel)) );  // link ctrl->next to new first
+			//
+			if ( first_offset < UINT32_MAX ) {
+				return first_offset;
+			}
+			//
+			return UINT32_MAX;
+		}
+
+
+		bool check_max_timeout(void) {
+			return true;
+		}
+
+
+		void return_one_to_free(uint32_t el_offset) {
+			_atomic_stack_push(_region_start, el_offset*sizeof(StackEl));
+		}
+
+
+		uint32_t pop_one_wait_free(void) {
+			uint32_t attempt = UINT32_MAX;
+			while ( (attmempt == UINT32_MAX) && check_max_timeout() ) {
+				attempt = pop_one_free();
+				if ( attmempt == UINT32_MAX ) {
+					tick();
+				}
+			}
+			if ( attmempt == UINT32_MAX ) return UINT32_MAX;
+			return (attempt/sizeof(StackEl));
+		}
+
+
+		/**
+		 * setup_free_stash
+		*/
+		uint16_t setup_free_stash(uint8_t *start,uint16_t reserved_positions,bool am_initializer) {
+			//
+			size_t region_size = reserved_positions*sizeof(StackEl);
+			size_t step = sizeof(StackEl);
+			_region_start = (StackEl *)start;   // the process's version of the start of the region
+			//
+			if ( am_initializer ) {
+				return setup_region_free_list(start, step, region_size);
+			} else {
+				attach_region_free_list(start, step, region_size);
+				return (reserved_positions - 2);
+			}
+		}
+
+
+		StackEl *stash_el_reference(uint32_t el_index) {
+			_region_start + el_index;  // el_offset is 
+		}
+
+
+
+
+	public:
+
+		StackEl							*_region_start;
+
+};
+
+
+
 
 
 class HMap_interface {
@@ -669,9 +819,8 @@ class HMap_interface {
 		virtual uint64_t	add_key_value(uint32_t el_match_key,uint32_t hash_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 		//
-		virtual bool		prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table,uint32_t &,uint32_t &cbits_op,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) = 0;
-		virtual bool		wait_if_unlock_bucket_counts(uint32_t h_bucket, uint8_t thread_id, uint8_t &which_table) = 0;
-		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint8_t thread_id,uint32_t cbits,uint32_t cbits_op,hh_element *bucket,hh_element *buffer,hh_element *end_buffer) = 0;
+		virtual bool		prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t thread_id,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref) = 0;
+		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint8_t thread_id,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer) = 0;
 };
 
 

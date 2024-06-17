@@ -131,6 +131,13 @@ typedef struct LRU_ELEMENT_HDR {
 	uint64_t 	_hash;
 	time_t		_when;
 	uint32_t	_share_key;
+
+	void		init(uint64_t hash_init = UINT64_MAX) {
+		this->_info = UINT32_MAX;
+		this->_hash = hash_init;
+		this->_when = 0;
+	}
+
 } LRU_element;
 
 
@@ -696,12 +703,13 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 					atomic<uint32_t> *control_bits;
 					uint32_t cbits = 0;
 					uint32_t cbits_op = 0;
+					uint32_t cbits_base_op = 0;
 					hh_element *buffer = nullptr;
 					hh_element *end_buffer = nullptr;
 					hh_element *el = nullptr;
 
 					// hash_bucket goes in by ref and will be stamped
-					uint64_t augmented_hash = this->get_augmented_hash_locking(full_hash,&control_bits,&hash_bucket,&which_slice,&cbits,&cbits_op,&el,&buffer,&end_buffer,thread_id);
+					uint64_t augmented_hash = this->get_augmented_hash_locking(full_hash,&control_bits,&hash_bucket,&which_slice,&cbits,&cbits_op,&cbits_base_op,&el,&buffer,&end_buffer,thread_id);
 					//
 					if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
 						void *src = (void *)(lel + 1);
@@ -709,7 +717,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 						memcpy(target,src,_record_size);
 						//
 						// -- if there is a problem, it will affect older entries
-						this->store_in_hash_unlocking(control_bits,full_hash,hash_bucket,offset,which_slice,cbits,cbits_op,el,buffer,end_buffer,thread_id);
+						this->store_in_hash_unlocking(control_bits,full_hash,hash_bucket,offset,which_slice,cbits,cbits_op,cbits_base_op,el,buffer,end_buffer,thread_id);
 						//
 					}
 					//
@@ -975,7 +983,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			this->remove_key(hash_bucket,full_hash,process,timestamp);
 		}
 
-		uint64_t		get_augmented_hash_locking(uint32_t full_hash, atomic<uint32_t> **control_bits_ref, uint32_t *h_bucket_ref,uint8_t *which_table_ref,uint32_t *cbits_ref,uint32_t *cbits_op_ref,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t thread_id = 1) {
+		uint64_t		get_augmented_hash_locking(uint32_t full_hash, atomic<uint32_t> **control_bits_ref, uint32_t *h_bucket_ref,uint8_t *which_table_ref,uint32_t *cbits_ref,uint32_t *cbits_op_ref,uint32_t *cbits_base_op_ref,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,uint8_t thread_id = 1) {
 			HMap_interface *T = this->_hmap;
 			uint64_t result = UINT64_MAX;
 			//
@@ -986,13 +994,15 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				uint8_t which_table = 0;
 				uint32_t cbits = 0;
 				uint32_t cbits_op = 0;
+				uint32_t cbits_base_ops = 0;
 
-				if ( T->prepare_for_add_key_value_known_refs(control_bits_ref,h_bucket,thread_id,which_table,cbits,cbits_op,bucket_ref,buffer_ref,end_buffer_ref) ) {
+				if ( T->prepare_for_add_key_value_known_refs(control_bits_ref,h_bucket,thread_id,which_table,cbits,cbits_op,cbits_base_ops,bucket_ref,buffer_ref,end_buffer_ref) ) {
 					*which_table_ref = which_table;
 					h_bucket = stamp_key(h_bucket,which_table);   // but the control bits into the hash
 					*h_bucket_ref = h_bucket;
 					*cbits_ref = cbits;
 					*cbits_op_ref = cbits_op;
+					*cbits_base_op_ref = cbits_base_ops;
 					result = h_bucket | ((uint64_t)full_hash << HALF);
 				}
 			}
@@ -1000,9 +1010,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 		//  ----
-		void			store_in_hash_unlocking(atomic<uint32_t> *control_bits,uint32_t full_hash, uint32_t h_bucket,uint32_t offset,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,uint8_t thread_id) {
+		void			store_in_hash_unlocking(atomic<uint32_t> *control_bits,uint32_t full_hash, uint32_t h_bucket,uint32_t offset,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,uint8_t thread_id) {
 			HMap_interface *T = this->_hmap;
-			T->add_key_value_known_refs(control_bits,full_hash,h_bucket,offset,which_table,thread_id,cbits,cbits_op,bucket,buffer,end_buffer);
+			T->add_key_value_known_refs(control_bits,full_hash,h_bucket,offset,which_table,thread_id,cbits,cbits_op,cbits_base_ops,bucket,buffer,end_buffer);
 		}
 		
 
