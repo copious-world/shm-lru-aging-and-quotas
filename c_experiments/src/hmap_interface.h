@@ -172,6 +172,9 @@ const uint32_t BITS_STASH_INDEX_MASK = 0x0FFE;
 const uint32_t BITS_STASH_POST_SHIFT_INDEX_MASK = 0x07FF;
 const uint32_t BITS_STASH_INDEX_CLEAR_MASK = ~(BITS_STASH_INDEX_MASK);
 
+const uint32_t BITS_MEMBER_STASH_INDEX_MASK = 0x8FFE;
+const uint32_t BITS_MEMBER_STASH_INDEX_MARKER = 0x8000;
+
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
@@ -179,21 +182,40 @@ const uint32_t BITS_STASH_INDEX_CLEAR_MASK = ~(BITS_STASH_INDEX_MASK);
 typedef struct CBIT_STASH_ELEMENT {
 
 	uint32_t			_real_bits;
-	atomic<uint32_t>	_updating;
 	atomic<uint32_t>	_add_update;
 	atomic<uint32_t>	_remove_update;
 	//
 	uint32_t			_value;		// stash key and value when transitioning bucket uses on behalf of searchers
 	uint32_t			_key;
 	//
+	atomic<uint32_t>	_updating;
+	//
 	uint8_t				_service_thread{0};
-	uint8_t				padding[63];
+	uint8_t				padding[7];
 } CBIT_stash_el;
+
+
+
+typedef struct CBIT_MEMBER_STASH_ELEMENT {
+
+	uint32_t			_real_bits;
+	atomic<uint32_t>	_member_bits;
+	//
+	uint32_t			_value;		// stash key and value when transitioning bucket uses on behalf of searchers
+	uint32_t			_key;
+	//
+	atomic<uint32_t>	_updating;
+	uint8_t				_service_thread{0};
+	uint8_t				padding[3];
+} CBIT_stash_member;
 
 
 typedef struct CBIT_STASH_HOLDER {
 	bool				_is_base{false};
-	CBIT_stash_el		*_cse{nullptr};
+	union {
+		CBIT_stash_el		*_cse;
+		CBIT_stash_member	*_csm;
+	} rf{nullptr};
 } CBIT_stash_holder;
 
 
@@ -280,6 +302,18 @@ static inline uint32_t tbits_stash_index_of(uint32_t tbits) {
 
 
 
+static inline uint32_t cbits_member_stash_index_of(uint32_t cbits_op) {   // memebers are always op
+	auto maybe_stash_index = cbits_op & BITS_MEMBER_STASH_INDEX_MASK;
+	if ( maybe_stash_index != 0 ) {
+		maybe_stash_index &= ~(BITS_MEMBER_STASH_INDEX_MARKER);
+		if ( maybe_stash_index != 0 ) {
+			return (maybe_stash_index >> CBIT_STASH_ID_SHIFT);
+		}
+	}
+	return 0;
+}
+
+
 static inline uint32_t cbit_stash_index_stamp(uint32_t cbits,uint8_t stash_index) {
 	return cbit_thread_stamp(cbits,stash_index);
 }
@@ -288,6 +322,12 @@ static inline uint32_t tbit_stash_index_stamp(uint32_t tbits,uint8_t stash_index
 	return cbit_thread_stamp(tbits,stash_index);
 }
 
+
+static inline uint32_t cbit_member_stash_index_stamp(uint32_t cbits,uint8_t stash_index) {
+	uint32_t index_stored = ((stash_index << CBIT_STASH_ID_SHIFT) | BITS_MEMBER_STASH_INDEX_MARKER);
+	cbits = (cbits & 0xFFFF0000) | index_stored;
+	return cbits;
+}
 
 
 // THREAD OWNER OF TBITS for readers

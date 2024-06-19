@@ -3161,3 +3161,46 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			}
 			//
 */
+
+
+
+
+
+/*
+
+				stash_index = _cbit_stash.pop_one_wait_free();		// get a stash records
+				auto c_bits_op_update = cbit_member_stash_index_stamp(c_bits_op,stash_index);
+
+				while ( !a_cbits->compare_exchange_weak(c_bits_op,c_bits_op_update,std::memory_order_acq_rel) ) {
+					auto already_stashed_mem = cbits_member_stash_index_of(c_bits_op);
+					if ( (already_stashed_mem != 0) && (already_stashed_mem != stash_index) ) {		// doing the same thing for member cbits
+						_cbit_stash.return_one_to_free(stash_index);  // claim no knowledge of the situation and leave
+						// encountered this a few lines back, but it slipped in just now
+						CBIT_stash_el *cse = _cbit_stash.stash_el_reference(already_stashed_mem);
+						cbit_stashes[0]._cse = cse;			// put into the carrier
+						cbit_stashes[0]._is_base = false;
+/ *
+						CBIT_stash_el *cse = _cbit_stash.stash_el_reference(already_stashed_mem);
+						cse->_updating++;
+						cbit_stashes[0]._cse = cse;			// put into the carrier .. there is already a base as well
+						cbit_stashes[0]._is_base = false;
+						auto member_cbits = cse->_real_bits;
+						uint8_t backref = 0;
+						hh_element *base = cbits_base_from_backref(member_cbits,backref,base,buffer,end);
+						uint32_t cb;
+						uint32_t cb_op_base;
+						load_cbits(base,cb,cb_op_base);
+						auto already_stashed = cbits_stash_index_of(cb_op_base);
+						if ( already_stashed != 0 ) {
+						CBIT_stash_el *cse = _cbit_stash.stash_el_reference(already_stashed);
+							cse->_updating++;
+							cbit_stashes[0]._cse = cse;
+							cbit_stashes[0]._is_base = true;
+						}
+* /
+						return;
+					}
+				}
+
+				c_bits_op = c_bits_op_update;
+*/
