@@ -3043,6 +3043,50 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 			return UINT32_MAX;	
 		}
 
+
+
+
+
+
+
+		/**
+		 * lock_taken_spots
+		*/
+
+		atomic<uint32_t> *lock_taken_spots(hh_element *vb_probe,uint32_t &taken) {
+			atomic<uint32_t> *a_taken = (atomic<uint32_t> *)(&(vb_probe->->tv.taken));
+			taken = a_taken->load(std::memory_order_acquire);
+			while ( !(taken & 0x1) ) {
+				taken = a_taken->load(std::memory_order_acquire);
+				if ( taken != 0 ) {  // this is a read sempahore
+					taken = fetch_real_tbits(taken);
+					return a_taken;
+				}
+			}
+			auto prep_taken = 0;  // put in zero for update ops preventing a read semaphore.
+			while ( !a_taken->compare_exchange_weak(taken,prep_taken,std::memory_order_acq_rel) );
+			return a_taken;
+		}
+
+
+		/**
+		 * unlock_taken_spots
+		*/
+
+		void unlock_taken_spots(atomic<uint32_t> *a_taken,uint32_t update) {
+			auto taken = a_taken->load(std::memory_order_acquire);
+			if ( (taken != 0)  && !(taken & 0x1) ) {  // this is a read sempahore
+				auto thrd = tbits_thread_id_of(taken);
+				atomic<uint32_t> *a_real_tbits = (atomic<uint32_t> *)(&(_tbits_temporary_store[thrd]));
+				a_real_tbits->store(update);
+			} else if ( taken == 0 ) {
+				a_taken->store(std::memory_order_release);
+			}
+		}
+
+
+
+
 	public:
 
 		// ---- ---- ---- STATUS

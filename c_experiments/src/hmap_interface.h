@@ -251,13 +251,6 @@ typedef enum _op_type {
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
-
-static inline bool is_base_tbit(uint32_t tbits) {
-	auto bit_state = (tbits & TBIT_ACTUAL_BASE_ROOT_BIT);
-	return (bit_state != 0);
-}
-
-
 // All the following bit operations occur in registers. Storage is handled atomically around them.
 //
 
@@ -305,12 +298,6 @@ static inline uint16_t cbits_stash_index_of(uint32_t cbits) {
 }
 
 
-static inline uint32_t tbits_stash_index_of(uint32_t tbits) {
-	auto stash_index = (tbits >> TBIT_STASH_ID_SHIFT) & BITS_STASH_POST_SHIFT_INDEX_MASK;
-	return stash_index;
-}
-
-
 
 static inline uint16_t cbits_member_stash_index_of(uint32_t cbits_op) {   // memebers are always op
 	auto maybe_stash_index = cbits_op & BITS_MEMBER_STASH_INDEX_MASK;
@@ -340,16 +327,6 @@ static inline uint32_t cbit_member_stash_index_stamp(uint32_t cbits,uint8_t stas
 }
 
 
-// THREAD OWNER OF TBITS for readers
-
-
-static inline uint32_t tbits_thread_id_of(uint32_t tbits) {
-	return cbits_thread_id_of(tbits);
-}
-
-static inline uint32_t tbit_thread_stamp(uint32_t tbits,uint8_t thread_id) {
-	return cbit_thread_stamp(tbits,thread_id);
-}
 
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -381,10 +358,29 @@ static inline uint32_t q_count_decr(uint32_t cbits,uint8_t &count_result) {
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+// THREAD OWNER OF TBITS for readers
+
+
+
+static inline uint32_t tbits_stash_index_of(uint32_t tbits) {
+	auto stash_index = (tbits >> TBIT_STASH_ID_SHIFT) & BITS_STASH_POST_SHIFT_INDEX_MASK;
+	return stash_index;
+}
+
+
+static inline uint32_t tbits_thread_id_of(uint32_t tbits) {
+	return cbits_thread_id_of(tbits);
+}
+
+static inline uint32_t tbit_thread_stamp(uint32_t tbits,uint8_t thread_id) {
+	return cbit_thread_stamp(tbits,thread_id);
+}
+
+
 // HANDLE THE READER SEMAPHORE which is useful around deletes and some states of inserting.
 //
 static inline uint8_t base_reader_sem_count(uint32_t tbits) {
-	if ( is_base_tbit(tbits) ) {
+	if ( is_base_tbits(tbits) ) {
 		auto semcnt = (tbits & TBIT_SEM_COUNTER_MASK) >> TBIT_READER_SEM_SHIFT; 
 		return semcnt;
 	}
@@ -407,8 +403,13 @@ static inline bool tbits_sem_at_zero(uint32_t tbits) {
 
 
 static inline bool tbits_are_stashed(uint32_t tbits) {
-	if ( TBIT_ACTUAL_BASE_ROOT_BIT & tbits ) return false;
-	return true;
+	return !is_base_tbits(tbits);
+}
+
+
+static inline bool is_base_tbits(uint32_t tbits) {
+	auto bit_state = (tbits & TBIT_ACTUAL_BASE_ROOT_BIT);
+	return (bit_state != 0);
 }
 
 
