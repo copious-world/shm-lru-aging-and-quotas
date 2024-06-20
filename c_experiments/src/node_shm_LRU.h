@@ -707,7 +707,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 					hh_element *buffer = nullptr;
 					hh_element *end_buffer = nullptr;
 					hh_element *el = nullptr;
-					CBIT_stash_holder cbit_stashes[4];
+					CBIT_stash_holder *cbit_stashes[4];
 
 					// hash_bucket goes in by ref and will be stamped
 					uint64_t augmented_hash = this->get_augmented_hash_locking(full_hash,&control_bits,&hash_bucket,&which_slice,&cbits,&cbits_op,&cbits_base_op,&el,&buffer,&end_buffer,cbit_stashes);
@@ -984,7 +984,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			this->remove_key(hash_bucket,full_hash,process,timestamp);
 		}
 
-		uint64_t		get_augmented_hash_locking(uint32_t full_hash, atomic<uint32_t> **control_bits_ref, uint32_t *h_bucket_ref,uint8_t *which_table_ref,uint32_t *cbits_ref,uint32_t *cbits_op_ref,uint32_t *cbits_base_op_ref,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder cbit_stashes[4]) {
+		uint64_t		get_augmented_hash_locking(uint32_t full_hash, atomic<uint32_t> **control_bits_ref, uint32_t *h_bucket_ref,uint8_t *which_table_ref,uint32_t *cbits_ref,uint32_t *cbits_op_ref,uint32_t *cbits_base_op_ref,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) {
 			HMap_interface *T = this->_hmap;
 			uint64_t result = UINT64_MAX;
 			//
@@ -1012,7 +1012,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		}
 
 		//  ----
-		void			store_in_hash_unlocking(atomic<uint32_t> *control_bits,uint32_t full_hash, uint32_t h_bucket,uint32_t offset,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder cbit_stashes[4]) {
+		void			store_in_hash_unlocking(atomic<uint32_t> *control_bits,uint32_t full_hash, uint32_t h_bucket,uint32_t offset,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) {
 			HMap_interface *T = this->_hmap;
 			T->add_key_value_known_refs(control_bits,full_hash,h_bucket,offset,which_table,cbits,cbits_op,cbits_base_ops,bucket,buffer,end_buffer,cbit_stashes);
 		}

@@ -177,55 +177,65 @@ const uint32_t BITS_MEMBER_STASH_INDEX_MARKER = 0x8000;
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+typedef enum STASH_TYPE {
+	CBIT_UNDECIDED,
+	CBIT_BASE,
+	CBIT_MEMBER,
+	CBIT_MASK
+} stash_type;
 
 
 typedef struct CBIT_STASH_ELEMENT {
-
-	uint32_t			_real_bits;
-	atomic<uint32_t>	_add_update;
-	atomic<uint32_t>	_remove_update;
+	//
+	atomic<uint32_t>	_updating{0};
+	uint32_t			_real_bits;			// 64
 	//
 	uint32_t			_value;		// stash key and value when transitioning bucket uses on behalf of searchers
-	uint32_t			_key;
-	//
-	atomic<uint32_t>	_updating;
+	uint32_t			_key;				// +64 = 128
 	//
 	uint8_t				_service_thread{0};
-	uint8_t				padding[7];
+	stash_type			_is_base_mem{CBIT_UNDECIDED};	// +16
+	//
+};
+
+
+
+typedef struct CBIT_STASH_BASE {
+	//
+	atomic<uint32_t>	_add_update;
+	atomic<uint32_t>	_remove_update;		// + 64
+	//
 } CBIT_stash_el;
 
 
 
-typedef struct CBIT_MEMBER_STASH_ELEMENT {
+typedef struct CBIT_MEMBER_STASH_MEMBER  {
 
-	uint32_t			_real_bits;
-	atomic<uint32_t>	_member_bits;
-	//
-	uint32_t			_value;		// stash key and value when transitioning bucket uses on behalf of searchers
-	uint32_t			_key;
-	//
-	atomic<uint32_t>	_updating;
-	uint8_t				_service_thread{0};
-	uint8_t				padding[3];
+	atomic<uint32_t>	_member_bits;		// +32
+
 } CBIT_stash_member;
 
 
-typedef struct CBIT_STASH_HOLDER {
-	bool				_is_base{false};
+typedef struct CBIT_STASH_HOLDER : CBIT_STASH_ELEMENT {
+	uint32_t				_next;
 	union {
-		CBIT_stash_el		*_cse;
-		CBIT_stash_member	*_csm;
-	} rf{nullptr};
+		CBIT_stash_el		_cse;
+		CBIT_stash_member	_csm;
+	} stored;
+	uint16_t				_index;
 } CBIT_stash_holder;
 
 
 typedef struct TBIT_STASH_ELEMENT {
-
+	//
+	uint32_t			_next;
 	uint32_t			_real_bits;
 	atomic<uint32_t>	_updating;
 	uint32_t			_add_update;
 	uint32_t			_remove_update;
-
+	uint16_t			_index;
+	//
+	uint16_t			info;
 } TBIT_stash_el;
 
 
@@ -289,7 +299,7 @@ static inline uint32_t cbit_clear_bit(uint32_t cbits,uint8_t i) {
 
 
 
-static inline uint32_t cbits_stash_index_of(uint32_t cbits) {
+static inline uint16_t cbits_stash_index_of(uint32_t cbits) {
 	auto stash_index = (cbits >> CBIT_STASH_ID_SHIFT) & BITS_STASH_POST_SHIFT_INDEX_MASK;
 	return stash_index;
 }
@@ -302,7 +312,7 @@ static inline uint32_t tbits_stash_index_of(uint32_t tbits) {
 
 
 
-static inline uint32_t cbits_member_stash_index_of(uint32_t cbits_op) {   // memebers are always op
+static inline uint16_t cbits_member_stash_index_of(uint32_t cbits_op) {   // memebers are always op
 	auto maybe_stash_index = cbits_op & BITS_MEMBER_STASH_INDEX_MASK;
 	if ( maybe_stash_index != 0 ) {
 		maybe_stash_index &= ~(BITS_MEMBER_STASH_INDEX_MARKER);
@@ -842,8 +852,8 @@ class FreeOperatorStashStack : public AtomicStack<StackEl> {
 		}
 
 
-		void return_one_to_free(uint32_t el_offset) {
-			_atomic_stack_push(_region_start, el_offset*sizeof(StackEl));
+		void return_one_to_free(uint32_t el_index) {
+			_atomic_stack_push(_region_start, el_index*sizeof(StackEl));
 		}
 
 
@@ -856,7 +866,10 @@ class FreeOperatorStashStack : public AtomicStack<StackEl> {
 				}
 			}
 			if ( attmempt == UINT32_MAX ) return UINT32_MAX;
-			return (attempt/sizeof(StackEl));
+			uint32_t el_index = attempt/sizeof(StackEl);
+			StackEl *se = stash_el_reference(el_index);
+			se->_index = el_index;		// elements implement index... as well as _next
+			return (el_index);
 		}
 
 
@@ -908,8 +921,8 @@ class HMap_interface {
 		virtual uint64_t	add_key_value(uint32_t el_match_key,uint32_t hash_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 		//
-		virtual bool		prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder cbit_stashes[4]) = 0;
-		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder cbit_stashes[4]) = 0;
+		virtual bool		prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) = 0;
+		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) = 0;
 };
 
 

@@ -732,7 +732,7 @@ class TierAndProcManager : public LRU_Consts {
 									hh_element *buffer = nullptr;
 									hh_element *end_buffer = nullptr;
 									hh_element *el = nullptr;
-									CBIT_stash_holder cbit_stashes[4];
+									CBIT_stash_holder *cbit_stashes[4];
 
 									// hash_bucket goes in by ref and will be stamped
 									uint64_t augmented_hash = lru->get_augmented_hash_locking(full_hash,&control_bits,&hash_bucket,&which_slice,&cbits,&cbits_op,&cbits_base_op,&el,&buffer,&end_buffer,cbit_stashes);
