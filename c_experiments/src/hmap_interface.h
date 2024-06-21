@@ -229,13 +229,15 @@ typedef struct CBIT_STASH_HOLDER : CBIT_STASH_ELEMENT {
 typedef struct TBIT_STASH_ELEMENT {
 	//
 	uint32_t			_next;
-	uint32_t			_real_bits;
+	uint32_t			_real_bits;			// + 64
+	//
 	atomic<uint32_t>	_updating;
-	uint32_t			_add_update;
-	uint32_t			_remove_update;
+	atomic<uint32_t>	_add_update;		// + 64
+	//
+	atomic<uint32_t>	_remove_update;
 	uint16_t			_index;
 	//
-	uint16_t			info;
+	uint16_t			info;				// + 64
 } TBIT_stash_el;
 
 
