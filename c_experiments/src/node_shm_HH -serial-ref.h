@@ -3086,6 +3086,64 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
+
+		/**
+		 * update_cbits
+		 * 
+		*/
+	
+
+		void update_cbits_release(atomic<uint32_t> *base_bits, uint32_t cbits_op_base, uint32_t del_cbits, uint8_t thread_id) {
+			auto op_bits = clear_bitsdeleted(cbits_op_base);
+			auto del_bits_mask = ~del_cbits;
+			a_remove_real_cbits(base_bits,op_bits,del_bits_mask,thread_id);
+			auto cbits = fetch_real_cbits(cbits_op_base);
+			base_bits->store(cbits,std::memory_order_release);
+			// while ( !(base_bits->compare_exchange_weak(cbits_op_base,cbits,std::memory_order_acq_rel)) )
+		}
+
+
+
+		/**
+		 * a_remove_real_cbits
+		*/
+
+
+		void a_remove_real_cbits(atomic<uint32_t> *control_bits, uint32_t op_cbits, uint32_t cbits_mask, uint8_t thread_id) {
+			while ( (op_cbits & DELETE_CBIT_SET) && !(op_cbits & 0x1) ) {  // just wait for the deleters to finish
+				op_cbits = control_bits->load(std::memory_order_acquire);
+			}
+			if ( op_cbits & 0x1 ) {  // somehow, some thread gave up owernship of the bucket, but the current thread is supposed to own the bucket
+				control_bits->fetch_and(cbits_mask,std::memory_order_release);
+			} else {
+				atomic<uint32_t> *a_stash_cbit = (atomic<uint32_t> *)(&(_cbits_temporary_store[thread_id]));
+				a_stash_cbit->fetch_and(cbits_mask,std::memory_order_release);
+			}
+		}
+
+
+
+		/**
+		 * a_remove_single_real_cbit
+		*/
+
+		void a_remove_single_real_cbit(atomic<uint32_t> *control_bits, uint32_t op_cbits, uint32_t cbits, uint32_t hbit, uint8_t thread_id) {
+			while ( (op_cbits & DELETE_CBIT_SET) && !(op_cbits & 0x1) ) {  // just wait for the deleters to finish
+				op_cbits = control_bits->load(std::memory_order_acquire);
+			}
+			auto bit_clear = ~hbit;
+			if ( op_cbits & 0x1 ) {  // somehow, some thread gave up owernship of the bucket, but the current thread is supposed to own the bucket
+				control_bits->fetch_and(bit_clear,std::memory_order_release);
+			} else {
+				auto thrd = bits_thread_id_of(op_cbits);
+				atomic<uint32_t> *a_stash_cbit = (atomic<uint32_t> *)(&(_cbits_temporary_store[thrd]));
+				a_stash_cbit->fetch_and(bit_clear,std::memory_order_release);
+			}
+		}
+
+
+
+
 		/**
 		 * lock_taken_spots
 		*/
