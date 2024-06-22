@@ -3050,6 +3050,43 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 		/**
+		 * tbits_prepare_update
+		*/
+
+		uint32_t tbits_prepare_update(atomic<uint32_t> *a_tbits,bool &captured) {   // the job of an editor
+			uint32_t real_bits = 0;
+			//
+			do {
+				auto check_bits = a_tbits->load(std::memory_order_acquire);
+				if ( is_base_tbits(check_bits) ) {
+					real_bits = check_bits;
+				} else if ( (check_bits != EDITOR_CBIT_SET) && (check_bits != READER_CBIT_SET) ) {
+					real_bits = fetch_real_tbits(check_bits); // the aim of the caller is to get the real bits and maybe wait to update later.
+				} else {  // either 0 or EDITOR_CBIT_SET
+					// wait to get the bits... another editor owns the spot
+					check_bits = tbits_wait_on_editor(a_tbits); // should be zero
+					if ( check_bits & 0x1 ) {
+						real_bits = check_bits;
+					} else {
+						real_bits = fetch_real_tbits(check_bits); // the aim of the caller is to get the real bits and maybe wait to update later.
+					}
+				}
+			} while ( !(real_bits & 0x1) );
+			// 
+			// try to claim the tbis position, but if failing just move on.
+			auto maybe_capture = real_bits;
+			captured = a_tbits->compare_exchange_weak(maybe_capture,EDITOR_CBIT_SET,std::memory_order_release);
+			if ( captured ) {
+				if ( a_tbits->load(std::memory_order_relaxed) != EDITOR_CBIT_SET ) {
+					captured = false;  // check on suprious conditions
+				}
+			}
+			return real_bits;
+		}
+
+
+
+		/**
 		 * lock_taken_spots
 		*/
 
