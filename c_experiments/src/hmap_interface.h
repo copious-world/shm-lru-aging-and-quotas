@@ -140,6 +140,8 @@ const uint64_t SWAPPY_CBIT_RESET64 = ~((uint64_t)SWAPPY_CBIT_SET);
 const uint32_t TBIT_ACTUAL_BASE_ROOT_BIT = 0x1;
 const uint32_t TBIT_SEM_COUNTER_MASK = (0xFF0000);
 const uint32_t TBIT_SEM_COUNTER_CLEAR_MASK = (~TBIT_SEM_COUNTER_MASK);
+const uint32_t TBIT_SWPY_COUNTER_MASK = (0xFF000000);
+const uint32_t TBIT_SWPY_COUNTER_CLEAR_MASK = (~TBIT_SWPY_COUNTER_MASK);
 
 
 // EDITOR BIT and READER BIT
@@ -147,26 +149,26 @@ const uint32_t TBIT_SEM_COUNTER_CLEAR_MASK = (~TBIT_SEM_COUNTER_MASK);
 
 const uint32_t TBIT_READER_SEM_SHIFT = 16;
 
-
-const uint32_t CBIT_THREAD_SHIFT = 16;
-const uint32_t TBIT_THREAD_SHIFT = 16;
-
 const uint32_t CBIT_STASH_ID_SHIFT = 1;  // bottom bit is always zero in op
 const uint32_t TBIT_STASH_ID_SHIFT = 1;
 
-const uint32_t CBIT_Q_COUNT_SHIFT = 24;
-const uint32_t TBIT_SWPY_COUNT_SHIFT = 24;
-//
-const uint32_t CBIT_Q_COUNT_MAX = (0x7E);
-const uint32_t TBIT_SWPY_COUNT_MAX = (0x7E);
-const uint32_t CBIT_SHIFTED_Q_COUNT_MAX = ((0x7E) << CBIT_Q_COUNT_SHIFT);
-const uint32_t TBIT_SHIFTED_SWPY_COUNT_MAX = ((0x7E) << CBIT_Q_COUNT_SHIFT);
 
+
+const uint32_t CBIT_Q_COUNT_SHIFT = 24;
+const uint32_t CBIT_Q_COUNT_MAX = (0x7E);
+const uint32_t CBIT_SHIFTED_Q_COUNT_MAX = ((0x7E) << CBIT_Q_COUNT_SHIFT);
 const uint32_t CLEAR_Q_COUNT = ~((uint32_t)CBIT_SHIFTED_Q_COUNT_MAX);
+
+const uint32_t CBIT_Q_COUNT_INCR = (0x1 << CBIT_Q_COUNT_SHIFT);
+
+
+const uint32_t TBIT_SWPY_COUNT_SHIFT = 24;
+const uint32_t TBIT_SWPY_COUNT_MAX = (0x7E);
+const uint32_t TBIT_SHIFTED_SWPY_COUNT_MAX = ((0x7E) << TBIT_SWPY_COUNT_SHIFT);
 const uint32_t CLEAR_SWPY_COUNT = ~((uint32_t)TBIT_SHIFTED_SWPY_COUNT_MAX);
 
-
 const uint32_t TBITS_READER_SEM_INCR = (0x1 << TBIT_READER_SEM_SHIFT);
+const uint32_t TBITS_READER_SWPY_INCR = (0x1 << TBIT_SWPY_COUNT_SHIFT);
 
 const uint32_t BITS_STASH_INDEX_MASK = 0x0FFE;
 const uint32_t BITS_STASH_POST_SHIFT_INDEX_MASK = 0x07FF;
@@ -277,15 +279,6 @@ static inline bool is_member_bucket(uint32_t cbits) {
 
 // THREAD OWNER ID CONTROL
 
-static inline uint32_t cbits_thread_id_of(uint32_t cbits) {
-	auto thread_id = (cbits >> CBIT_THREAD_SHIFT) & 0x00FF;
-	return thread_id;
-}
-
-static inline uint32_t cbit_thread_stamp(uint32_t cbits,uint8_t thread_id) {
-	cbits = cbits | ((thread_id & 0x00FF) << CBIT_THREAD_SHIFT);
-	return cbits;
-}
 
 static inline uint32_t cbit_clear_bit(uint32_t cbits,uint8_t i) {
 	UNSET(cbits, i);
@@ -313,12 +306,16 @@ static inline uint16_t cbits_member_stash_index_of(uint32_t cbits_op) {   // mem
 }
 
 
-static inline uint32_t cbit_stash_index_stamp(uint32_t cbits,uint8_t stash_index) {
-	return cbit_thread_stamp(cbits,stash_index);
+static inline uint32_t cbit_stash_index_stamp(uint32_t cbits,uint16_t stash_index) {
+	uint32_t index_stored = ((stash_index << CBIT_STASH_ID_SHIFT));
+	cbits = (cbits & 0xFFFF0000) | index_stored;
+	return cbits;
 }
 
-static inline uint32_t tbit_stash_index_stamp(uint32_t tbits,uint8_t stash_index) {
-	return cbit_thread_stamp(tbits,stash_index);
+static inline uint32_t tbit_stash_index_stamp(uint32_t tbits,uint16_t stash_index) {
+	uint32_t index_stored = ((stash_index << TBIT_STASH_ID_SHIFT));
+	tbits = (tbits & 0xFFFF0000) | index_stored;
+	return tbits;
 }
 
 
@@ -331,29 +328,17 @@ static inline uint32_t cbit_member_stash_index_stamp(uint32_t cbits,uint8_t stas
 
 
 
-// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-
-static inline uint32_t q_count_incr(uint32_t cbits,uint8_t &count_result) {
-	auto count = ((cbits >> CBIT_Q_COUNT_SHIFT) & 0x7F);
-	if ( count < 0x7F ) {
-		count++;
-		cbits = (cbits & CLEAR_Q_COUNT ) | (count << CBIT_Q_COUNT_SHIFT);
-	}
-	count_result = count;
-	return cbits;
+static inline bool cbits_q_count_at_max(uint32_t cbits_op) {
+	auto semcnt = ((uint8_t)cbits_op & CBIT_SHIFTED_Q_COUNT_MAX);
+	return (semcnt == CBIT_SHIFTED_Q_COUNT_MAX); // going by multiples of two to keep the low bit zero.
 }
 
 
 
-static inline uint32_t q_count_decr(uint32_t cbits,uint8_t &count_result) {
-	auto count = ((cbits >> CBIT_Q_COUNT_SHIFT) & 0x7F);
-	if ( count > 0 ) {
-		count--;
-		cbits = (cbits & CLEAR_Q_COUNT ) | (count << CBIT_Q_COUNT_SHIFT);
-	}
-	count_result = count;
-	return cbits;
+static inline bool cbits_q_count_at_zero(uint32_t cbits) {
+	auto semcnt = ((uint8_t)cbits & CBIT_SHIFTED_Q_COUNT_MAX);
+	return (semcnt == 0); // going by multiples of two to keep the low bit zero.
 }
 
 
@@ -370,15 +355,6 @@ static inline uint32_t tbits_stash_index_of(uint32_t tbits) {
 }
 
 
-static inline uint32_t tbits_thread_id_of(uint32_t tbits) {
-	return cbits_thread_id_of(tbits);
-}
-
-static inline uint32_t tbit_thread_stamp(uint32_t tbits,uint8_t thread_id) {
-	return cbit_thread_stamp(tbits,thread_id);
-}
-
-
 // HANDLE THE READER SEMAPHORE which is useful around deletes and some states of inserting.
 //
 static inline uint8_t base_reader_sem_count(uint32_t tbits) {
@@ -390,17 +366,29 @@ static inline uint8_t base_reader_sem_count(uint32_t tbits) {
 }
 
 
+static inline bool tbits_sem_at_zero(uint32_t tbits) {
+	auto semcnt = ((uint8_t)tbits & TBIT_SEM_COUNTER_MASK);
+	return (semcnt == 0); // going by multiples of two to keep the low bit zero.
+}
+
+
+
 static inline bool tbits_sem_at_max(uint32_t tbits) {
 	auto semcnt = ((uint8_t)tbits & TBIT_SEM_COUNTER_MASK);
 	return (semcnt == TBIT_SEM_COUNTER_MASK); // going by multiples of two to keep the low bit zero.
 }
 
 
-static inline bool tbits_sem_at_zero(uint32_t tbits) {
-	auto semcnt = ((uint8_t)tbits & TBIT_SEM_COUNTER_MASK);
+static inline bool tbits_swappy_at_zero(uint32_t tbits) {
+	auto semcnt = ((uint8_t)tbits & TBIT_SWPY_COUNTER_MASK);
 	return (semcnt == 0); // going by multiples of two to keep the low bit zero.
 }
 
+
+static inline bool tbits_swappy_at_max(uint32_t tbits) {
+	auto semcnt = ((uint8_t)tbits & TBIT_SWPY_COUNTER_MASK);
+	return (semcnt == TBIT_SWPY_COUNTER_MASK); // going by multiples of two to keep the low bit zero.
+}
 
 
 
@@ -470,7 +458,7 @@ static inline uint8_t member_backref_offset(uint32_t cbits) {
 }
 
 
-static inline uint8_t gen_bitsmember_backref_offset(uint32_t cbits,uint8_t bkref) {
+static inline uint32_t gen_bitsmember_backref_offset(uint32_t cbits,uint8_t bkref) {
 	if ( is_member_bucket(cbits) ) {
 		cbits = (CBIT_BACK_REF_CLEAR_MASK & cbits) | (bkref << 1);
 	}
@@ -521,6 +509,9 @@ static inline bool editors_are_active(uint32_t cbits) {
 	return false;
 }
 
+
+
+/*
 static inline uint32_t gen_bits_editor_active(uint8_t thread_id,uint32_t cbits = 0) {
 	auto rdr = (cbits | EDITOR_CBIT_SET);
 	rdr = cbit_thread_stamp(rdr,thread_id);
@@ -536,6 +527,7 @@ static inline bool is_member_usurped(uint32_t cbits,uint8_t &thread_id) {
 	}
 	return false;
 }
+*/
 
 static inline bool is_cbits_usurped(uint32_t cbits) {
 	if ( cbits & USURPED_CBIT_SET ) {
@@ -545,6 +537,10 @@ static inline bool is_cbits_usurped(uint32_t cbits) {
 }
 
 
+
+/*
+
+
 static inline uint32_t gen_bitsmember_usurped(uint8_t thread_id,uint32_t cbits) {
 	if ( is_member_bucket(cbits) ) {
 		auto rdr = (cbits | USURPED_CBIT_SET);
@@ -552,7 +548,7 @@ static inline uint32_t gen_bitsmember_usurped(uint8_t thread_id,uint32_t cbits) 
 		return rdr;
 	}
 }
-
+*/
 
 
 static inline bool is_member_in_mobile_predelete(uint32_t cbits) {
@@ -572,6 +568,7 @@ static inline bool is_cbits_in_mobile_predelete(uint32_t cbits) {
 	return false;
 }
 
+/*
 
 static inline uint32_t gen_bitsmember_in_mobile_predelete(uint8_t thread_id,uint32_t cbits) {
 	if ( is_member_bucket(cbits) ) {
@@ -580,7 +577,7 @@ static inline uint32_t gen_bitsmember_in_mobile_predelete(uint8_t thread_id,uint
 		return rdr;
 	}
 }
-
+*/
 
 
 // is_deleted
@@ -621,11 +618,11 @@ static inline bool is_cbits_deleted(uint32_t cbits) {
 
 
 
-static inline uint32_t gen_bitsdeleted(uint8_t thread_id,uint32_t cbits) {
-	auto rdr = (cbits | DELETE_CBIT_SET);
-	rdr = cbit_thread_stamp(rdr,thread_id);
-	return rdr;
-}
+// static inline uint32_t gen_bitsdeleted(uint8_t thread_id,uint32_t cbits) {
+// 	auto rdr = (cbits | DELETE_CBIT_SET);
+// 	rdr = cbit_thread_stamp(rdr,thread_id);
+// 	return rdr;
+// }
 
 template<typename T>
 static inline T set_bitsdeleted(uint8_t thread_id,T cbits) {

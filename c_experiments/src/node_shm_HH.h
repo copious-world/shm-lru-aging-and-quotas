@@ -137,17 +137,6 @@
 */
 
 
-// WORK_ON_THESE
-// short_list_old_entry
-// wait_until_immobile
-// wait_if_base_update
-// become_bucket_state_master
-// release_bucket_state_master
-// wait_become_bucket_delete_master
-// release_delete_master
-
-
-
 #define MAX_THREADS (64)
 #define EXPECTED_THREAD_REENTRIES (8)
 
@@ -667,7 +656,21 @@ public:
 			}
 			return a_cbits_base;
 		}
-		//stash_el_reference
+
+
+
+		atomic<uint64_t> *load_cbits(atomic<uint64_t> *a_cbits_n_ky,uint32_t &cbits,uint32_t &cbits_op,uint32_t &base_ky) {
+			auto cbits_n_ky = a_cbits_n_ky->load(std::memory_order_acquire);
+			cbits = ((uint32_t)cbits_n_ky & UINT32_MAX);
+			cbits_op = 0;
+			if ( !(is_base_noop(cbits)) &&  (cbits != 0) ) {
+				cbits_op = cbits;
+				cbits = fetch_real_cbits(cbits);
+			}
+			base_ky = (uint32_t)((cbits_n_ky >> sizeof(uint32_t)) & UINT32_MAX);
+			return a_cbits_n_ky;
+		}
+
 
 
 		/**
@@ -958,23 +961,137 @@ public:
 			_unstash_base_cbits(a_cbits,csh_base);
 		}
 
-		// ---- 
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- 
+
+
+
+		CBIT_stash_holder 	*stash_or_get_member_bits(hh_element *mem, uint32_t &cbits_op, uint32_t modifier = 0) {
+			//
+			atomic<uint32_t> *a_mem_bits = (atomic<uint32_t> *)(&(mem->c.bits));
+			cbits_op = a_mem_bits->fetch_or(modifier,std::memory_order_acquire); // some threads resond to the modifier...
+			if ( is_member_bucket(cbits_op) ) {
+				if ( cbits_op & modifier ) return nullptr; // accept that another thread has the op true when also stashed
+				//
+				auto stash_index = cbits_member_stash_index_of(cbits_op);
+				if ( stash_index != 0 ) {
+					CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
+					return csh;
+				} else {
+					auto cbits = cbits_op;
+					cbits_op |= modifier;
+					CBIT_stash_holder *csh  = stash_member_bits(a_mem_bits,cbits,cbits_op);
+					return csh;
+				}
+				//
+			}
+			return nullptr;
+		}
+
+
+		void cbits_stash_swap_offses(CBIT_stash_holder *csh1,CBIT_stash_holder *csh2) {
+			auto mem_bits_1 = csh1->_real_bits;
+			auto mem_bits_2 = csh2->_real_bits;
+			//
+			uint8_t back1 = member_backref_offset(mem_bits_1);
+			uint8_t back2 = member_backref_offset(mem_bits_2);
+
+			csh1->_real_bits = gen_bitsmember_backref_offset(mem_bits_1,back2);
+			csh2->_real_bits = gen_bitsmember_backref_offset(mem_bits_2,back1);
+		}
+
+
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- 
+
+
+
+		TBIT_stash_el *stash_taken_spots(atomic<uint32_t> *a_tbits) {
+			//
+			auto tbits = a_tbits->load(std::memory_order_acquire);
+			if ( is_base_tbits(tbits) || (tbits == 0) ) {
+				//
+				uint8_t stash_index = _tbit_stash.pop_one_wait_free();
+				uint32_t tbits_op = tbit_stash_index_stamp(0,stash_index);
+				//
+				while ( !a_tbits->compare_exchange_weak(tbits,tbits_op,std::memory_order_acq_rel) ) {
+					auto already_stashed = tbits_stash_index_of(tbits_op);
+					if ( already_stashed != stash_index ) {
+						// maybe update a stash counter
+						TBIT_stash_el *tse = _tbit_stash.stash_el_reference(already_stashed);
+						tse->_updating++;
+						_tbit_stash.return_one_to_free(stash_index);
+						return tse;
+					}
+				}
+				//
+				TBIT_stash_el *tse = _tbit_stash.stash_el_reference(stash_index);
+				tse->_real_bits = tbits;
+				tse->_updating = 1; // this should be the first one.. 
+				return tse;
+			} else {
+				auto already_stashed = tbits_stash_index_of(tbits);
+				TBIT_stash_el *tse = _tbit_stash.stash_el_reference(already_stashed);
+				if ( tse != nullptr ) {
+					tse->_updating++;
+					return tse;
+				}
+			}
+
+			return nullptr;
+		}
+
+
+
+		///
+		void _unstash_base_tbits(atomic<uint32_t> *a_tbits,TBIT_stash_el *tse) {
+			if ( tse->_updating > 0 ) {
+				tse->_updating--;
+			}
+			bool last_out = (tse->_updating == 0);
+			if ( last_out ) {
+				auto tbits_expected = a_tbits->load(std::memory_order_acquire);
+				auto tbits_update = tse->_real_bits;
+				tbits_update &= ~(tse->_remove_update);
+				tbits_update |= tse->_add_update;
+				while ( !(a_tbits->compare_exchange_weak(tbits_expected,tbits_update,std::memory_order_acq_rel)) ) {
+					if ( tbits_expected & 0x1 ) break;
+					if ( tse->_updating > 0 ) break;
+				}
+			}
+		}
 
 
 
 		TBIT_stash_el *stash_taken_spots(hh_element *nxt_base) {
-			return nullptr;
+			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(nxt_base->tv.taken));
+			return stash_taken_spots(a_tbits);
 		}
 
 
 
 		TBIT_stash_el *stash_taken_spots(hh_element *nxt_base,uint32_t &real_tbits) {
-			return nullptr;
+			TBIT_stash_el *tse = stash_taken_spots(nxt_base);
+			real_tbits = tse->_real_bits;
+			return tse;
 		}
 
-		void _unstash_base_tbits(atomic<uint32_t> *a_tbits,TBIT_stash_el *tse) {
+
+
+
+		TBIT_stash_el *stash_taken_spots(atomic<uint32_t> *a_tbits,uint32_t &real_tbits) {
+			TBIT_stash_el *tse = stash_taken_spots(a_tbits);
+			real_tbits = tse->_real_bits;
+			return tse;
 		}
 
+
+
+		TBIT_stash_el *stash_taken_spots(atomic<uint32_t> *a_tbits,uint32_t &real_tbits,uint32_t &tbits_op) {
+			TBIT_stash_el *tse = stash_taken_spots(a_tbits);
+			real_tbits = tse->_real_bits;
+			tbits_op = a_tbits->load(std::memory_order_acquire);
+			return tse;
+		}
 
 
 		atomic<uint32_t> *load_tbits(atomic<uint32_t> *a_tbits_base,uint32_t &tbits,uint32_t &tbits_op) {
@@ -1102,6 +1219,20 @@ public:
 
 
 
+		// if become_bucket_state_master identifies this situation or wait_become_bucket_delete_master does so.
+		uint32_t wait_if_base_update(atomic<uint64_t> *a_base_c_n_k,uint32_t &cbits,uint32_t &cbits_op) {
+			if ( cbits_op & ROOT_EDIT_CBIT_SET ) {
+				uint32_t base_ky = 0;
+				while ( cbits_op & ROOT_EDIT_CBIT_SET ) {
+					load_cbits(a_base_c_n_k, cbits, cbits_op, base_ky);
+				}
+				return base_ky;
+			} else {
+				auto cbits_n_ky = a_base_c_n_k->load(std::memory_order_acquire);  //  just getting the key; so, don't worry about stash
+				auto base_ky = (uint32_t)((cbits_n_ky >> sizeof(uint32_t)) & UINT32_MAX);
+				return base_ky;
+			}
+		}
 
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -1184,6 +1315,171 @@ public:
 				}
 			}
 		}
+
+
+
+
+
+
+		/**
+		 * tbits_add_reader
+		 * 
+		 * 
+		 * When reading, readers will move passed the base quickly, but they should put themselve into a semaphore
+		 * designed to keep trailing editors in a wait mode while allowing current editors to finish 
+		 * cooperatively with the readers. 
+		 * 
+		 * The readers will require fast access to the cbits of the base. They will slow down only if an editor 
+		 * has taken ownership of the base. But, editors will need to check the reader semaphore especially when 
+		 * preparing to update the tbits. If the tbits are not to be touched, they may be used to mark reading 
+		 * and keep a semaphore. The last readers will have to restore the tbits and allow editors to change it.
+		 * 
+		 * 
+		*/
+
+
+
+		/**
+		 * tbits_add_reader
+		*/
+
+		TBIT_stash_el *tbits_add_reader(atomic<uint32_t> *a_tbits, uint32_t &tbits) {
+			//
+			uint32_t tbits_op = 0;
+			TBIT_stash_el *tse = stash_taken_spots(a_tbits,tbits,tbits_op);
+			if ( tse != nullptr ) {
+				if ( !(tbits_sem_at_max(tbits_op)) ) {
+					a_tbits->fetch_add(TBITS_READER_SEM_INCR,std::memory_order_acq_rel);
+				}
+			}
+			//
+			return tse;
+		}
+
+
+
+		/**
+		 * tbits_remove_reader
+		*/
+
+		void tbits_remove_reader(atomic<uint32_t> *a_tbits, TBIT_stash_el *tse_base) {
+			//
+			auto tbits = a_tbits->load(std::memory_order_acquire);
+			//
+			auto reader_tbits = tbits;
+			if ( tbits & 0x1 ) {  // already unstashed
+				return;  // the tbits are where they are supposed to be
+			}
+			//
+			if ( !(tbits_sem_at_zero(tbits)) ) {  // it should have been that the last condition returned (maybe in transition)
+				a_tbits->fetch_sub(TBITS_READER_SEM_INCR,std::memory_order_acq_rel);
+			}
+			//
+			_unstash_base_tbits(a_tbits,tse_base);    // unstash if last out
+		}
+
+
+		/**
+		 * tbits_wait_for_readers
+		*/
+
+		void tbits_wait_for_readers(atomic<uint32_t> *a_tbits) {
+			auto tbits = a_tbits->load(std::memory_order_acquire);
+			while ( base_reader_sem_count(tbits) > 0 ) {
+				tick();
+			}
+		}
+
+		/**
+		 * tbits_add_swappy_op
+		*/
+
+		TBIT_stash_el *tbits_add_swappy_op(hh_element *base,uint32_t &tbits) {
+			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
+			return tbits_add_swappy_op(a_tbits,tbits);
+		}
+
+		TBIT_stash_el *tbits_add_swappy_op(atomic<uint32_t> *a_tbits,uint32_t &tbits) {
+			//
+			uint32_t tbits_op = 0;
+			TBIT_stash_el *tse = stash_taken_spots(a_tbits,tbits,tbits_op);
+			if ( tse != nullptr ) {
+				if ( !(tbits_swappy_at_max(tbits_op)) ) {
+					a_tbits->fetch_add(TBITS_READER_SWPY_INCR,std::memory_order_acq_rel);
+				}
+			}
+			//
+			return tse;
+		}
+
+
+		/**
+		 * tbits_remove_swappy_op
+		*/
+		void tbits_remove_swappy_op(atomic<uint32_t> *a_tbits,TBIT_stash_el *tse_base) {
+
+			auto tbits = a_tbits->load(std::memory_order_acquire);
+			//
+			auto reader_tbits = tbits;
+			if ( tbits & 0x1 ) {  // already unstashed
+				return;  // the tbits are where they are supposed to be
+			}
+			//
+			if ( !(tbits_swappy_at_zero(tbits)) ) {  // it should have been that the last condition returned (maybe in transition)
+				a_tbits->fetch_sub(TBITS_READER_SWPY_INCR,std::memory_order_acq_rel);
+			}
+			//
+			_unstash_base_tbits(a_tbits,tse_base);    // unstash if last out
+
+		}
+
+
+		inline bool q_count_decr(atomic<uint32_t> *control_bits, uint32_t &cbits_op) {
+
+			cbits_op = control_bits->load(std::memory_order_acquire);
+			//
+			if ( cbits_op & 0x1 ) {  // already unstashed
+				return true;  // the tbits are where they are supposed to be
+			}
+			auto stash_index = cbits_stash_index_of(cbits_op);
+			auto csh = _cbit_stash.stash_el_reference(stash_index);
+			//
+			if ( !(cbits_q_count_at_zero(cbits_op)) ) {  // it should have been that the last condition returned (maybe in transition)
+				auto prior_cbits = control_bits->fetch_sub(CBIT_Q_COUNT_INCR,std::memory_order_acq_rel);
+				if ( cbits_q_count_at_zero(prior_cbits - CBIT_Q_COUNT_INCR) ) {
+					_unstash_base_cbits(control_bits,csh);
+					return true;
+				}
+			}
+			//
+			return false;
+		}
+
+
+
+		/**
+		 * wait_on_max_queue_incr
+		*/
+
+		bool wait_on_max_queue_incr(atomic<uint32_t> *control_bits,uint32_t &cbits_op) {
+
+			auto stash_index = cbits_stash_index_of(cbits_op);   // stash_index == 0 -> program broken upstream
+			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
+
+			if ( csh != nullptr ) {
+				while ( cbits_q_count_at_max(cbits_op) ) { 
+					tick();
+					cbits_op = control_bits->load(std::memory_order_acquire);
+				}
+				control_bits->fetch_add(CBIT_Q_COUNT_INCR,std::memory_order_acq_rel);
+				csh->_updating++;
+				return true;
+			}
+
+			return false;;
+		}
+
+
 
 
 	public:
@@ -1921,291 +2217,6 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		/**
-		 * tbits_wait_on_editor
-		 * 	the aim is to have a 0 in the tbits by the time this returns.
-		 * 	The reader wants to turn the tbits into a semaphore, but it wants to stash the real tbits.
-		*/
-		uint32_t tbits_wait_on_editor(atomic<uint32_t> *a_tbits) {
-			auto which_tbits = a_tbits->load(std::memory_order_acquire);
-			while ( (which_tbits == EDITOR_CBIT_SET) || (which_tbits == READER_CBIT_SET) ) {
-				while ( (which_tbits == READER_CBIT_SET) && a_tbits->load(std::memory_order_acquire) == READER_CBIT_SET ) {  // another reader is about to set the tbits as a semaphore
-					tick();
-				}
-				if ( which_tbits == READER_CBIT_SET ) {
-					return a_tbits->load(std::memory_order_relaxed); // this will be the semaphores
-				}
-				//
-				while ( which_tbits == EDITOR_CBIT_SET  ) {  // an editor is working on changing the mem allocation map
-					which_tbits = a_tbits->load(std::memory_order_acquire);
-					tick();
-				}
-				//
-				auto real_bits = which_tbits; // the real bits should have been put in by the last editor on completion.
-				//
-				if ( a_tbits->compare_exchange_weak(which_tbits,READER_CBIT_SET,std::memory_order_acq_rel) ) {
-					return real_bits;
-				}
-			}
-			return a_tbits->load(std::memory_order_relaxed);
-		}
-
-
-
-		/**
-		 * tbits_add_reader
-		 * 
-		 * 
-		 * When reading, readers will move passed the base quickly, but they should put themselve into a semaphore
-		 * designed to keep trailing editors in a wait mode while allowing current editors to finish 
-		 * cooperatively with the readers. 
-		 * 
-		 * The readers will require fast access to the cbits of the base. They will slow down only if an editor 
-		 * has taken ownership of the base. But, editors will need to check the reader semaphore especially when 
-		 * preparing to update the tbits. If the tbits are not to be touched, they may be used to mark reading 
-		 * and keep a semaphore. The last readers will have to restore the tbits and allow editors to change it.
-		 * 
-		 * 
-		*/
-
-		/**
-		 * reader_sem_stash_tbits
-		*/
-
-		bool reader_sem_stash_tbits(atomic<uint32_t> *a_tbits, uint32_t tbits_stash, uint8_t thread_id) {
-			uint32_t reader_bits = tbit_thread_stamp(0x2,thread_id);
-			auto expected_tbits = tbits_stash;
-			while ( !(a_tbits->compare_exchange_weak(expected_tbits,reader_bits,std::memory_order_acq_rel)) ) {
-				if ( expected_tbits != tbits_stash ) {
-					if ( expected_tbits == 0 ) return false;
-					else {  // this is a reader semaphore setup by another thread
-						if ( !(tbits_sem_at_max(reader_tbits)) ) {
-							a_tbits->fetch_add(TBITS_READER_SEM_INCR,std::memory_order_acq_rel);
-							return true;
-						}
-					}
-				}
-			}
-			// 
-			store_real_tbits(tbits_stash,thread_id);  // keep the real tbits in a safe place
-			return true;
-		}
-
-
-		/**
-		 * tbits_add_reader
-		*/
-
-		TBIT_stash_el *tbits_add_reader(atomic<uint32_t> *a_tbits, uint32_t &tbits, uint32_t &value) {
-			//
-/*
-	atomic<uint64_t> *a_tbits_n_v = (atomic<uint64_t> *)(&(base->tv));
-	auto t_n_v = a_tbits_n_v->load(std::memory_order_acquire);
-	//
-	if ( t_n_v == 0 ) return nullptr;	// a base is truely empty if both the tbits and the value are zero.. 
-										// tbits can be 0 if a thread is editing the tbits map.
-	//
-	uint32_t tbits = (uint32_t)(t_n_v & UINT32_MAX);
-	value = ((uint32_t)(t_n_v >> sizeof(uint32_t)) & UINT32_MAX);   // base bucket value VALUE NEVER CHANGES here
-	//
-	atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
-	while ( true ) {
-		if ( tbits == 0 ) {
-			while ( tbits == 0 ) {
-				tick();
-				tbits = a_tbits->load(std::memory_order_acquire);
-			}
-		}  // the thread that updated the tbits may put back a reader semaphore or the updated tbits, depending
-		//
-		if ( tbits & 0x1 ) {  // the updated or original tbits may be here.
-			if ( reader_sem_stash_tbits(a_tbits,tbits,thread_id) ) {  // stash the tbis and make this a reader semaphore (count = 2)
-				return a_tbits;
-			}
-		} else {
-			if ( !(tbits_sem_at_max(reader_tbits)) ) {
-				a_tbits->fetch_add(TBITS_READER_SEM_INCR,std::memory_order_acq_rel);
-			}
-		}
-	}
-*/
-			//
-			return nullptr;
-		}
-
-
-
-		/**
-		 * tbits_remove_reader
-		*/
-
-		void tbits_remove_reader(atomic<uint32_t> *a_tbits, uint8_t thread_id = 0) {
-			//
-			auto tbits = a_tbits->load(std::memory_order_acquire);
-			//
-			auto reader_tbits = tbits;
-			if ( tbits & 0x1 ) {
-				return;  // the tbits are where they are supposed to be
-			}
-			//
-			if ( tbits_sem_at_zero(tbits) ) {  // it should have been that the last condition returned (maybe in transition)
-				return;
-			}
-			//
-			if ( tbits_sem_at_zero(tbits - 2) ) {   // last reader out
-				tbits = fetch_real_tbits(reader_cbits);
-				auto expect_bits = tbits - 2;
-				while ( !(a_tbits->compare_exchange_weak(expect_bits,tbits,2,std::memory_order_acq_rel)) ) {
-					if ( expect_bits & 0x1 ) return; // if there was a change, the pattern was updated.
-				}
-			} else {
-				a_tbits->fetch_sub(TBITS_READER_SEM_INCR,std::memory_order_acq_rel);
-			}
-			//
-			return;
-		}
-
-
-		/**
-		 * tbits_wait_for_readers
-		*/
-
-		void tbits_wait_for_readers(atomic<uint32_t> *a_tbits) {
-			auto tbits = a_tbits->load(std::memory_order_acquire);
-			while ( base_reader_sem_count(tbits) > 0 ) {
-				tick();
-			}
-		}
-
-		/**
-		 * tbits_add_swappy_op
-		*/
-
-/*
-	uint32_t b = a_tbits->load(std::memory_order_acquire);
-	if ( b == 0 ) {  // tbits have been stashed
-		b = wait_for_real_tbits(a_tbits,b);  // wait for this to be other than zero 
-	}
-
-	bool tbits_stashed = tbits_are_stashed(b);
-
-	atomic<uint32_t> *a_real_tbits = a_tbits;
-
-	if ( tbits_stashed ) {     // add swappy op
-		uint32_t tbits_op = b;
-		uint8_t alt_thread = tbits_thread_id_of(tbits_op); // contend to set tbis (or cooperatively) in the stash
-		b = fetch_real_tbits(b);
-		a_real_tbits = (atomic<uint32_t> *)(&(_tbits_temporary_store[alt_thread]));
-	} else {
-		a_real_tbits = stash_tbits(a_tbits,b,thread_id);   // add swappy op
-	}
-*/
-
-		TBIT_stash_el *tbits_add_swappy_op(hh_element *base,uint32_t cbits,uint32_t &tbits) {
-			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
-			return tbits_add_swappy_op(a_tbits,cbits,tbits);
-		}
-
-		TBIT_stash_el *tbits_add_swappy_op(atomic<uint32_t> *a_tbits,uint32_t cbits,uint32_t &tbits) {
-
-
-			uint8_t count_result = 0;
-			auto tbits_update = swappy_count_incr(tbits, count_result);
-			do {
-				while ( tbits_update == tbits ) {  // this happens when the cbits are maxed out
-					tick();
-					tbits = a_tbits->load(std::memory_order_acquire);
-					tbits_update = swappy_count_incr(tbits, count_result);
-				}
-				while ( !(a_tbits->compare_exchange_weak(tbits,tbits_update,std::memory_order_acq_rel)) ) {
-					tbits_update = swappy_count_incr(tbits, count_result);
-					if ( (tbits & TBIT_SHIFTED_SWPY_COUNT_MAX) == TBIT_SHIFTED_SWPY_COUNT_MAX  ) break;  // another thread maxed it out -- back to waiting.
-				}
-			} while ( count_result == TBIT_SWPY_COUNT_MAX );
-
-
-
-			return a_real_tbits;
-		}
-
-
-		/**
-		 * tbits_remove_swappy_op
-		*/
-		void tbits_remove_swappy_op(atomic<uint32_t> *a_tbits,TBIT_stash_el *tse) {
-			uint8_t count_result = 0;
-			auto tbits = a_tbits->load(std::memory_order_acquire);
-			auto tbits_update = swappy_count_decr(tbits, count_result);
-			do {
-				while ( !(control_bits->compare_exchange_weak(tbits,tbits_update,std::memory_order_acq_rel)) ) {
-					tbits_update = swappy_count_decr(tbits, count_result);
-				}
-			} while ( count_result == Q_COUNTER_MAX );
-		}
-
-
-		/**
-		 * wait_tbits_exclude_swappy_op
-		*/
-
-		void wait_tbits_exclude_swappy_op(atomic<uint32_t> *a_tbits) {
-			uint8_t count_result = 0;
-			auto tbits = a_tbits->load(std::memory_order_acquire);
-			while ( !(tbits & 0x1) && !(tbits_sem_at_zero(tbits)) ) {
-				tick();
-				tbits = a_tbits->load(std::memory_order_acquire);
-			}
-		}
-
-
-
-
-		/**
-		 * a_clear_cbit
-		*/
-
-		void a_clear_cbit(hh_element *base,uint8_t offset) {
-			// slice_unlock(min_probe)
-			atomic<uint64_t> *c_aptr = (atomic<uint64_t> *)(base->c.bits);
-			auto c_bits = c_aptr->load(std::memory_order_acquire);
-			auto c_bits_prev = c_bits;
-			auto update_c_bits = (c_bits & ~(0x1 << offset));
-			while ( !(c_aptr->compare_exchange_weak(c_bits_prev,update_c_bits,std::memory_order_release)) ) { c_bits = c_bits_prev; update_c_bits = (c_bits & ~(0x1 << offset); }
-		}
-
-
-		/**
-		 * a_add_cbit
-		*/
-
-		void a_add_cbit(hh_element *base,uint8_t offset) {
-			atomic<uint64_t> *a_c_aptr = (atomic<uint64_t> *)(base->c.bits);
-			auto c_bits = a_c_aptr->load(std::memory_order_acquire);
-			auto c_bits_prev = c_bits;
-			auto update_c_bits = (c_bits | (0x1 << (min_base_offset + offset_nxt_base)));
-			while ( !(c_aptr->compare_exchange_weak(c_bits_prev,update_c_bits,std::memory_order_release)) ) { \
-				c_bits = c_bits_prev; 
-				update_c_bits = (c_bits | (0x1 << (min_base_offset + offset_nxt_base)))
-			}
-		}
-
-
-		/**
-		 * a_store_real_tbits_and
-		 * 
-		 * a_tbits -- the presupposition is that a_tbits is a reference to exactly the bucket tbits and is not a
-		 * reference to the stash of the tbits. 
-		*/
-
-		void a_store_real_tbits_and(atomic<uint32_t> *a_tbits, uint32_t tbits_update) {
-			auto current_tbits = a_tbits->load(std::memory_order_acquire);
-			if ( current_tbits & 0x1 ) {
-				a_tbits->fetch_and(tbits_update,std::memory_order_acq_rel);
-			} else {
-				uint8_t alt_thread = tbits_thread_id_of(current_tbits);
-				atomic<uint32_t> *a_real_tbits = (atomic<uint32_t> *)(&(_tbits_temporary_store[alt_thread]));
-				a_tbits->fetch_and(tbits_update,std::memory_order_acq_rel);
-			}
-		}
 
 
 		/**
@@ -2283,15 +2294,6 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * 
 		 * 
 		 * 	
-	HH_FROM_EMPTY,			// from zero 
-	HH_FROM_BASE,			// overwritten and old value queued  (wait during overwrite)
-	HH_FROM_BASE_AND_WAIT,	// queued no overwrite (no wait)
-	HH_USURP,			// specifically a member is being overwritten
-	HH_USURP_BASE,		// secondary op during usurp (may not need to wait)
-	HH_DELETE, 			// more generally members
-	HH_DELETE_BASE,		// specifically rewiting the base or completely erasing it
-	HH_ADDER_STATES
-
 		*/
 
 		void set_control_bit_state(atomic<uint32_t> *control_bits,uint32_t &cbits_op,uint32_t set_bit) {
@@ -2303,6 +2305,11 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 				}
 			}
 		}
+
+		/**
+		 * become_bucket_state_master
+		 * 
+		 */
 
 		bool become_bucket_state_master(hh_adder_states master_context,atomic<uint32_t> *control_bits,hh_element *bucket, uint32_t &cbits,  uint32_t &cbits_op, uint32_t &cbits_base_op) {
 			switch ( master_context ) {
@@ -2390,6 +2397,30 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 			return false;
 		}
 
+
+		/**
+		 * release_bucket_state_master
+		 * 
+		 * 		should be called by the restore queue handler
+		*/
+		void release_bucket_state_master(atomic<uint32_t> *control_bits, hh_element *hh) {
+			//
+			auto cbits_op = control_bits->load(std::memory_order_acquire);
+			if ( cbits_op & 0x1 ) return;
+			uint16_t stash_index = cbits_stash_index_of(cbits_op);
+			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
+			unstash_base_cbits(control_bits,csh);
+			cbits_op = control_bits->load(std::memory_order_acquire);
+			if ( cbits_op & 0x1 ) return;
+			// clear ROOT_EDIT_CBIT_SET  IMMOBILE_CBIT_SET | USURPED_CBIT_SET  EDITOR_CBIT_SET
+			uint32_t release_bits = ROOT_EDIT_CBIT_SET | IMMOBILE_CBIT_SET | USURPED_CBIT_SET | EDITOR_CBIT_SET;
+			release_bits = ~(release_bits);
+			//
+			control_bits->fetch_and(release_bits,std::memory_order_acq_rel);
+		}
+
+
+
 		void clear_bucket_root_edit(uint64_t &ky_n_cbits) {
 			ky_n_cbits &= ~((uint64_t)ROOT_EDIT_CBIT_SET);
 		}
@@ -2400,50 +2431,101 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 
 
-		// if become_bucket_state_master identifies this situation or wait_become_bucket_delete_master does so.
-		uint32_t wait_if_base_update(atomic<uint64_t> *a_base_c_n_k,uint32_t &cbits,uint32_t &cbits_op) {
-			auto cbits_n_ky = a_base_c_n_k->load();
-			while ( cbits_n_ky & ROOT_EDIT_CBIT_SET ) {
-				tick();
-				cbits_n_ky = a_base_c_n_k->load();
-			}
-			auto base_ky = (uint32_t)((cbits_n_ky >> sizeof(uint32_t)) & UINT32_MAX);
-			return base_ky;
-		}
+		/**
+		 * wait_become_bucket_delete_master
+		 */
 
+		bool wait_become_bucket_delete_master(hh_adder_states master_context,hh_element *base,uint32_t &cbits, uint32_t &cbits_op) {  // mark the whole bucket swappy mark for delete
+			atomic<uint64_t> *a_c_bits = (atomic<uint64_t> *)(&(base->c.bits));
+			while ( stash_updating_count(cbits_op) > 1 ) {
+				tick();
+				load_cbits(a_c_bits,cbits,cbits_op);
+			}
+			switch ( master_context ) {
+				case HH_DELETE: {
+					bool set_it = false;
+					while ( stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
+						// try to get ahead of editors, which might delete as well 
+						auto cbits_op_expected = cbits_op;
+						auto cbits_op_update = cbits_op | SWAPPY_CBIT_SET | DELETE_CBIT_SET; // if winning this state, then tell things to be swappy aware
+						// after the new value is inserted, the next phase will be a late arrival insertion of the old value..
+						//
+						while ( !(set_it = a_c_bits->compare_exchange_weak(cbits_op_expected,cbits_op_update,std::memory_order_acq_rel)) && !(cbits_op_expected & SWAPPY_CBIT_SET) && !(cbits_op_expected & DELETE_CBIT_SET) ) {
+							auto ref_count = stash_updating_count(cbits_op);
+							if ( (ref_count == 0) && (cbits_op_expected & 0x1) ) {  // an error condition, in which this is unstashed 
+								CBIT_stash_holder *cbit_stashes[4];
+								stash_cbits(a_c_bits,bucket,cbits,cbits_op,cbits_base_ops,cbit_stashes);
+								break;
+							} else {
+								cbits_op_update = cbits_op_expected | SWAPPY_CBIT_SET | DELETE_CBIT_SET;
+							}
+						}
+					}
+					return set_it;
+				}
+				case HH_DELETE_BASE: {
+					bool set_it = false;
+					while ( stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
+						// try to get ahead of editors, which might delete as well 
+						while ( !(cbits_op & ROOT_EDIT_CBIT_SET) ) {
+							auto cbits_op_expected = cbits_op;
+							auto cbits_op_update = cbits_op | ROOT_EDIT_CBIT_SET | DELETE_CBIT_SET; // if winning this state, then tell things to be swappy aware
+							// after the new value is inserted, the next phase will be a late arrival insertion of the old value..
+							//
+							while ( !(set_it = a_c_bits->compare_exchange_weak(cbits_op_expected,cbits_op_update,std::memory_order_acq_rel)) && !(cbits_op_expected & ROOT_EDIT_CBIT_SET) && !(cbits_op_expected & DELETE_CBIT_SET) ) {
+								auto ref_count = stash_updating_count(cbits_op);
+								if ( (ref_count == 0) && (cbits_op_expected & 0x1) ) {  // an error condition, in which this is unstashed 
+									CBIT_stash_holder *cbit_stashes[4];
+									stash_cbits(a_c_bits,bucket,cbits,cbits_op,cbits_base_ops,cbit_stashes);
+									break;
+								} else {
+									cbits_op_update = cbits_op_expected | ROOT_EDIT_CBIT_SET | DELETE_CBIT_SET;
+								}
+							}
+						}
+					}
+					return set_it;
+				}
+				default: {
+					break;
+				}
+			}
+			return false;
+		}
 
 
 		/**
-		 * release_bucket_state_master
-		 * 
-		 * 		should be called by the restore queue handler
-		*/
-		void release_bucket_state_master(atomic<uint32_t> *control_bits, uint32_t real_cbits) {
-			control_bits->store(real_cbits); 
-		}
+		 * release_delete_master
+		 */
 
+		void release_delete_master(hh_adder_states master_context,hh_element *base) {
+			atomic<uint32_t> *a_c_bits = (atomic<uint32_t> *)(&(base->c.bits));
+			uint32_t release_bits = 0;
+			switch ( master_context ) {
+				case HH_DELETE: {
+					release_bits = SWAPPY_CBIT_SET | DELETE_CBIT_SET;
+					break;
+				}
+				case HH_DELETE_BASE: {
+					release_bits = ROOT_EDIT_CBIT_SET | DELETE_CBIT_SET;
+					break;
+				}
+				default: {
+					break;
+				}
+			}
 
-		bool wait_become_bucket_delete_master(hh_adder_states master_context,atomic<uint64_t> *a_c_bits,uint32_t &cbits, uint32_t &cbits_op) {  // mark the whole bucket swappy mark for delete
-// ROOT_EDIT_CBIT_SET
-			return true;
-		}
-
-/*
-	HH_DELETE, 			// more generally members
-	HH_DELETE_BASE,		// specifically rewiting the base or completely erasing it
-*/
-
-		void release_delete_master(hh_adder_states master_context,atomic<uint64_t> *a_c_bits) {
-
-			if ( master_context == HH_DELETE_BASE ) {
+			if ( release_bits ) {
+				auto cbits_op = a_c_bits->load(std::memory_order_acquire);
+				if ( cbits_op & 0x1 ) return;
+				uint16_t stash_index = cbits_stash_index_of(cbits_op);
+				CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
+				unstash_base_cbits(a_c_bits,csh);
+				cbits_op = a_c_bits->load(std::memory_order_acquire);
+				if ( cbits_op & 0x1 ) return;
+				release_bits = ~(release_bits);
 				//
-// ROOT_EDIT_CBIT_SET
-				// if the ROOT edit context has been set up by this thread then clear it
-				auto ky_n_cbits = a_c_bits->load(std::memory_order_acquire);
-				auto ky_n_cbits_update = ky_n_cbits;
-				clear_bucket_root_edit(ky_n_cbits_update);
-				while ( !(a_c_bits->compare_exchange_weak(ky_n_cbits,ky_n_cbits_update)) );
-				//
+				a_c_bits->fetch_and(release_bits,std::memory_order_acq_rel);
 			}
 
 		}
@@ -2481,7 +2563,9 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 
 		void wait_until_immobile(atomic<uint32_t> *a_cbits, uint32_t &cbits, uint32_t &ky) {
-// IMMOBILE_CBIT_SET
+			while ( a_cbits->load(std::memory_order_acquire) & IMMOBILE_CBIT_SET == 0 ) {
+				tick();
+			}
 		}
 
 		uint64_t load_marked_as_immobile(atomic<uint64_t> *a_b_n_key) {   // a little more cautious
@@ -2521,10 +2605,8 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 			// else 
 			uint32_t tbits = 0;
-			uint32_t value = 0;
-			uint8_t stash_id = 0;
 			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
-			TBIT_stash_el *tse = tbits_add_reader(a_tbits, tbits, stash_id, value);
+			TBIT_stash_el *tse = tbits_add_reader(a_tbits, tbits);
 			if ( tse == nullptr ) { return false; }
 			//
 			// 
@@ -2698,21 +2780,23 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 		hh_element *_get_bucket_reference(atomic<uint32_t> *bucket_bits, hh_element *base, uint32_t cbits, uint32_t cbits_op, uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end, uint32_t &value) {
 			//
+			if ( is_empty_bucket(cbits) ) {
+				return nullptr;
+			}
 			// bucket_bits are the base of the bucket storing the state of cbits
 			uint32_t tbits = 0;
 			uint8_t stash_id = 0;
 			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
 			atomic<uint64_t> *a_base_c_n_k = (atomic<uint64_t> *)(&(base->c));
 			//
-			TBIT_stash_el *tse = tbits_add_reader(a_tbits,tbits,stash_id,value);  // lockout ops that swap elements
+			TBIT_stash_el *tse = tbits_add_reader(a_tbits,tbits);  // lockout ops that swap elements
+			if ( tse == nullptr ) return nullptr;
 			// get the original bits even in a dynamic situation, and get the current representation
 			// stash cbits allowing readers to pass through. Only swappy operations need to be locked out for non swappy reads
 			uint32_t base_ky = wait_if_base_update(a_base_c_n_k,cbits,cbits_op); // a_base_c_n_k->load(std::memory_order_acquire);
-			if ( is_empty_bucket(cbits) ) {  // base update finishes by deleting the only element in the bucket
-				tbits_remove_reader(a_tbits,tse);					// last reader out restores tbits 
-				return nullptr;
-			}
+			//
 			if ( base_ky == el_key ) {
+				value = base->tv.value;
 				tbits_remove_reader(a_tbits,tse);					// last reader out restores tbits 
 				return base;
 			}
@@ -2724,7 +2808,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 				tbits_remove_reader(a_tbits,tse);
 				return hh;
 			} else {
-				tbits_add_swappy_op(base,cbits,tbits);
+				tbits_add_swappy_op(base,tbits);
 				tbits_remove_reader(a_tbits,tse);	// if here, then this is the only non swappy reader and blocks swappy readers
 												// but, right now, thinsgs are wappy
 				uint32_t time = 0;
@@ -2805,7 +2889,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 						// not being able to control the bucket this insertion is defered (new and old alike)
 						// the control bits belong to the operation thread, but the queue increases
 						set_control_bit_state(control_bits,cbits_op,EDITOR_CBIT_SET);
-						if ( wait_on_max_queue_incr(control_bits,cbits,cbits_op,cbits_base_op) ) {
+						if ( wait_on_max_queue_incr(control_bits,cbits_op) ) {
 							wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_op_base, bucket, h_bucket, el_key, offset_value, which_table, buffer, end, cbit_stashes[0]);
 							return;
 						}  // else, before being able to up the queue count, the bucket finished the base insertion (so, go again)
@@ -2819,7 +2903,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 					if ( is_cbits_usurped(cbits_op) )  {  // attempting the same operation 
 						// results in first time insertion and search for a hole (could alter time by a small amount to keep a sort)
 						set_control_bit_state(control_bits,cbits_op,EDITOR_CBIT_SET);
-						if ( wait_on_max_queue_incr(control_bits,cbits,cbits_op,cbits_base_op) ) {
+						if ( wait_on_max_queue_incr(control_bits,cbits_op) ) {
 							wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_op_base, bucket, h_bucket, el_key, offset_value, which_table, buffer, end, cbit_stashes[0]);
 							return;
 						}
@@ -3177,7 +3261,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			//
 			// cbits are real cbits
 			if ( root_ky == el_key ) {  // deleting the base -- make it a special case
-				if ( wait_become_bucket_delete_master(HH_DELETE_BASE,a_c_bits,cbits,op_cbits) ) {  // failure may mean that an adder has a value to put in 
+				if ( wait_become_bucket_delete_master(HH_DELETE_BASE,base,cbits,op_cbits) ) {  // failure may mean that an adder has a value to put in 
 					if ( popcount(cbits) == 1 ) {  // Hence the whole bucket will be empty
 						atomic<uint64_t> *a_t_bits = (atomic<uint64_t> *)(&(base->tv));
 						a_remove_back_taken_spots(base,0,1,buffer,end);
@@ -3187,7 +3271,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 						// swap in the next element and mark its old position as deleted
 						a_swap_next(a_c_bits,base,cbits,UINT32_MAX,0,buffer,end,MOBILE_CBIT_SET);
 						submit_for_cropping(base,cbits,buffer,end,selector);  // after a total swappy read, all BLACK keys will be at the end of members
-						release_delete_master(HH_DELETE_BASE,a_c_bits)
+						release_delete_master(HH_DELETE_BASE,base)
 					}
 				}
 				return;
@@ -3279,7 +3363,14 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * for normal lookup except fails.)
 		 * 
 		*/
-		bool short_list_old_entry([[maybe_unused]] uint32_t key, [[maybe_unused]] uint32_t value,[[maybe_unused]] uint32_t store_time) {
+		bool (*_timout_tester)(uint32_t,uint32_t,uint32_t){nullptr};
+		void set_timeout_test(bool (*timeouter)(uint32_t,uint32_t,uint32_t)) {
+			_timout_tester = timeouter;
+		}
+		bool short_list_old_entry(uint32_t key,uint32_t value,uint32_t store_time) {
+			if ( _timout_tester !== nullptr ) {
+				return (*_timout_tester)(key,value,store_time);
+			}
 			return true;
 		}
 
@@ -3322,10 +3413,8 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 					///
 					complete_bucket_creation(control_bits, real_cbits, cbits_op, cbits_op_base, hash_ref, buffer, end_buffer);
 					//
-					uint8_t count_result = 0;
-					q_count_decr(cbits_op,count_result);  // a q count for ops sequenced by queuing to the restore queue.
-					if ( count_result == 0 ) {
-						release_bucket_state_master(control_bits, real_cbits);
+					if ( q_count_decr(control_bits,cbits_op) ) {
+						release_bucket_state_master(control_bits, hash_ref);
 					}
 					break;
 				}
@@ -3343,10 +3432,8 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 						yielding_base = handle_full_bucket_by_usurp(hash_ref, real_cbits, el_key, offset_value, time, offset, buffer, end_buffer);
 					}
 					//
-					uint8_t count_result = 0;
-					q_count_decr(prev_bits,count_result);
-					if ( count_result == 0 ) {
-						release_bucket_state_master(control_bits, fetch_real_cbits(prev_bits));
+					if ( q_count_decr(control_bits,cbits_op) ) {
+						release_bucket_state_master(control_bits, hash_ref);
 					}
 					break;
 				}
@@ -3358,11 +3445,11 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 			if ( yielding_base !== nullptr ) {
 				// if the entry can be entered onto the short list (not too old) then allow it to be added back onto the restoration queue...
-				if ( short_list_old_entry(el_key, offset_value,, store_time) ) {
+				if ( short_list_old_entry(el_key, offset_value, store_time) ) {
 					control_bits = (atomic<uint32_t> *)(&(yielding_base->c.bits));
 					load_cbits(control_bits,cbits,cbits_op);
 					set_control_bit_state(control_bits,cbits_op,EDITOR_CBIT_SET);
-					while ( !wait_on_max_queue_incr(control_bits,cbits,cbits_op,cbits_base_op) ) { tick(); }
+					while ( !wait_on_max_queue_incr(control_bits,cbits_op) ) { tick(); }
 
 					h_bucket = (yielding_base - buffer);
 					// el_key, offset_value have been updated to contain the yield member value 
@@ -3380,28 +3467,6 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				}
 			}
 
-		}
-
-
-
-		/**
-		 * wait_on_max_queue_incr
-		*/
-
-		void wait_on_max_queue_incr(atomic<uint32_t> *control_bits,uint32_t cbits) {
-			uint8_t count_result = 0;
-			auto cbits_update = q_count_incr(cbits, count_result);
-			do {
-				while ( cbits_update == cbits ) {  // this happens when the cbits are maxed out
-					tick();
-					cbits = control_bits->load(std::memory_order_acquire);
-					cbits_update = q_count_incr(cbits, count_result);
-				}
-				while ( !(control_bits->compare_exchange_weak(cbits,cbits_update,std::memory_order_acq_rel)) ) {
-					cbits_update = q_count_incr(cbits, count_result);
-					if ( cbits_update == cbits ) break;  // another thread maxed it out -- back to waiting.
-				}
-			} while ( count_result == Q_COUNTER_MAX );
 		}
 
 
@@ -3687,7 +3752,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			TBIT_stash_el *tse = nullptr;
 			while ( true ) {
 				//
-				TBIT_stash_el *tse = tbits_add_swappy_op(base, cbits, tbits);
+				TBIT_stash_el *tse = tbits_add_swappy_op(base, tbits);
 				if ( tse == nullptr ) break;
 				//
 				auto a = cbits;    // these should be stored in the thread table at the time of call ... cbits indicate the ownership of the cell
@@ -3966,32 +4031,39 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 		/**
 		 * a_swap_values -- swap only in a bucket that allows one swappy op at a time.
+		 * 
+		 * this method is called under the context of a bucket state master on the base.
+		 * The state is a delete master state. Since the bucket is relegated to just one thread,
+		 * swapping may take place without much contention, although stashing buckets will be checked 
+		 * for other state change conditions.
+		 * 
 		*/
 		void a_swap_values(h_element *b1,h_element *b2) {
+			//
+			uint32_t cbits_op_1 = 0;
+			CBIT_stash_holder *csh1 = stash_or_get_member_bits(b1,cbits_op_1,IMMOBILE_CBIT_SET);
+			if ( csh1 == nullptr ) return;
+			//
+			uint32_t cbits_op_2 = 0;
+			CBIT_stash_holder *csh2 = stash_or_get_member_bits(b1,cbits_op_2,IMMOBILE_CBIT_SET);
+			if ( csh2 == nullptr ) return;
+			//
 			atomic<uint64_t> *a_b1_cbits = (atomic<uint64_t> *)(&(b1->c));
 			atomic<uint64_t> *a_b2_cbits = (atomic<uint64_t> *)(&(b2->c));
 			//
 			atomic<uint64_t> *a_b1_tbits = (atomic<uint64_t> *)(&(b1->tv));
 			atomic<uint64_t> *a_b2_tbits = (atomic<uint64_t> *)(&(b2->tv));
-			
-			auto cbits_n_ky_1 = a_b1_cbits->load(std::memory_order_acquire);
-			auto cbits_n_ky_2 = a_b2_cbits->load(std::memory_order_acquire);
 			//
 			auto tbits_n_val_1 = a_b1_tbits->load(std::memory_order_acquire);
 			auto tbits_n_val_2 = a_b2_tbits->exchange(tbits_n_val_1,std::memory_order_acq_rel);
 			a_b2_tbits->store(tbits_n_val_1,std::memory_order_release);
 			//
-			auto k1 = (uint32_t)((cbits_n_ky_1 >> HALF) & UINT32_MAX);
-			auto k2 = (uint32_t)((cbits_n_ky_2 >> HALF) & UINT32_MAX);
+			cbits_stash_swap_offses(csh1,csh2);
 			//
-			cbits_n_ky_1 = (cbits_n_ky_1 & UINT32_MAX) | ((uint64_t)k2 << HALF);
-			cbits_n_ky_2 = (cbits_n_ky_2 & UINT32_MAX) | ((uint64_t)k1 << HALF);
+			auto cbits_n_ky_1 = a_b1_cbits->load(std::memory_order_acquire);
+			auto cbits_n_ky_2 = a_b2_cbits->exchange(cbits_n_ky_1,std::memory_order_acq_rel);
+			a_b2_cbits->store(cbits_n_ky_1,std::memory_order_release);
 			//
-			cbits_n_ky_1 = clear_bitsdeleted(cbits_n_ky_1);
-			cbits_n_ky_2 = set_bitsdeleted(cbits_n_ky_2);
-			//
-			a_b1_cbits->store(cbits_n_ky_1);
-			a_b2_cbits->store(cbits_n_ky_2);
 		}
 
 
@@ -4053,107 +4125,104 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			atomic<uint32_t> *a_base_bits = (atomic<uint32_t> *)(&(base->c.bits));
 			uint32_t cbits = 0;		// cbits by reference...
 			uint32_t cbits_op = 0;	// cbits by reference...
-			while( !(wait_become_bucket_delete_master(HH_DELETE,a_base_bits, cbits, cbits_op)) ) {
-				tick();
-			}
-			//
-
-			uint32_t value = 0;
-			//
-			hh_element *href = _get_bucket_reference(base_bits_n_ky, base, cbits, cbits_op, h_bucket, UINT32_MAX, buffer, end, value);
-			if ( href != nullptr ) {
+			if ( wait_become_bucket_delete_master(HH_DELETE, base, cbits, cbits_op) ) {
+				uint32_t value = 0;
 				//
-				auto tbits = base_tbits->load(std::memory_order_acquire);
-				//
-				// clear mobility lock
-				// mark as deleted 
-				remobilize(href,DELETE_CBIT_SET);  // not yet moved to the back of the cbits, but will want to own the swap
-
-				// if tbits are op, then the semaphores are stored in the cell's tbits (tv.taken)
-				tbits_wait_for_readers(base_tbits);	// allow non-swappy readers to finish, and the bucket becomes swappy
-				uint8_t offset = href - base;		// how far from the base?
-
-				hh_element *deletions[NEIGHBORHOOD];
-				uint8_t del_count = 0;
-
-				auto c = ones_above(offset-1) & cbits;		// 
-				auto c_end = c;
-				auto cbits_update = cbits;
-
-				CBIT_stash_holder *cbit_stashes[4];
-				stash_cbits(a_base_bits,base,cbits,cbits_op,cbits_base_ops,cbit_stashes);
-				CBIT_stash_holder *csh = cbit_stashes[0];
-
-				TBIT_stash_el *tse = tbits_add_swappy_op(base_tbits,cbits_op,tbits);
-
-				while ( c & c_end ) {				// pick up the cells that will be moved to the end of the buffer
-					auto vb_probe = base;
-					auto offset = get_b_offset_update(c);
-					vb_probe += offset;
-					vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+				hh_element *href = _get_bucket_reference(base_bits_n_ky, base, cbits, cbits_op, h_bucket, UINT32_MAX, buffer, end, value);
+				if ( href != nullptr ) {
 					//
-					uint32_t p_cbits = 0;
-					if ( ready_for_delete(vb_probe,p_cbits) ) {  // p_cbits probe cbits by reference
-						// clear mobility lock ( of found lost key element)
-						// mark as deleted 
-						remobilize(href,DELETE_CBIT_SET);
-						while ( c_end ) {		// pared down from the end
-							//
-							auto roffset = get_b_reverse_offset_update(c_end);   // backend paring 
-							if ( roffset > offset ) {  // the lost keys have to end up at the end
+					auto tbits = base_tbits->load(std::memory_order_acquire);
+					//
+					// clear mobility lock
+					// mark as deleted 
+					remobilize(href,DELETE_CBIT_SET);  // not yet moved to the back of the cbits, but will want to own the swap
+
+					// if tbits are op, then the semaphores are stored in the cell's tbits (tv.taken)
+					tbits_wait_for_readers(base_tbits);	// allow non-swappy readers to finish, and the bucket becomes swappy
+					uint8_t offset = href - base;		// how far from the base?
+
+					hh_element *deletions[NEIGHBORHOOD];
+					uint8_t del_count = 0;
+
+					auto c = ones_above(offset-1) & cbits;		// 
+					auto c_end = c;
+					auto cbits_update = cbits;
+
+					CBIT_stash_holder *cbit_stashes[4];
+					stash_cbits(a_base_bits,base,cbits,cbits_op,cbits_base_ops,cbit_stashes);
+					CBIT_stash_holder *csh = cbit_stashes[0];
+
+					TBIT_stash_el *tse = tbits_add_swappy_op(base_tbits,tbits);
+
+					while ( c & c_end ) {				// pick up the cells that will be moved to the end of the buffer
+						auto vb_probe = base;
+						auto offset = get_b_offset_update(c);
+						vb_probe += offset;
+						vb_probe = el_check_end_wrap(vb_probe,buffer,end);
+						//
+						uint32_t p_cbits = 0;
+						if ( ready_for_delete(vb_probe,p_cbits) ) {  // p_cbits probe cbits by reference
+							// clear mobility lock ( of found lost key element)
+							// mark as deleted 
+							remobilize(href,DELETE_CBIT_SET);
+							while ( c_end ) {		// pared down from the end
 								//
-								auto vb_replace = base;
-								vb_replace += roffset;
-								vb_replace = el_check_end_wrap(vb_replace,buffer,end);
-								//
-								if ( !is_deletion_marked(vb_replace)  ) {
-									a_swap_values(vb_probe,vb_replace);  // swap everything but offsets...
-									deletions[del_count++] = vb_replace;
+								auto roffset = get_b_reverse_offset_update(c_end);   // backend paring 
+								if ( roffset > offset ) {  // the lost keys have to end up at the end
+									//
+									auto vb_replace = base;
+									vb_replace += roffset;
+									vb_replace = el_check_end_wrap(vb_replace,buffer,end);
+									//
+									if ( !is_deletion_marked(vb_replace)  ) {
+										a_swap_values(vb_probe,vb_replace);  // swap everything but offsets...
+										deletions[del_count++] = vb_replace;
+										// echo the change in an update record
+										// (this is where the membership bit actually disappears )
+										get_b_reverse_offset_update(cbits_update);
+										break; // go get the next thing to delete
+									}
+									// Otherwise, the member taken from the end should go. Most likely, it has a lost key.
 									// echo the change in an update record
 									// (this is where the membership bit actually disappears )
+									deletions[del_count++] = vb_replace;		// 
 									get_b_reverse_offset_update(cbits_update);
-									break; // go get the next thing to delete
+								} else {
+									// Otherwise, this member has a lost key. And, the loop was planning to send it to the end,
+									// but there are no swappable elements left.
+									// echo the change in an update record
+									// (this is where the membership bit actually disappears )
+									deletions[del_count++] = vb_probe;
+									get_b_reverse_offset_update(cbits_update);
+									break;
 								}
-								// Otherwise, the member taken from the end should go. Most likely, it has a lost key.
-								// echo the change in an update record
-								// (this is where the membership bit actually disappears )
-								deletions[del_count++] = vb_replace;		// 
-								get_b_reverse_offset_update(cbits_update);
-							} else {
-								// Otherwise, this member has a lost key. And, the loop was planning to send it to the end,
-								// but there are no swappable elements left.
-								// echo the change in an update record
-								// (this is where the membership bit actually disappears )
-								deletions[del_count++] = vb_probe;
-								get_b_reverse_offset_update(cbits_update);
-								break;
+								//
 							}
-							//
 						}
 					}
-				}
-				//
+					//
 
-				// cbits
-				stash_bits_clear((cbits_update),csh);
-				unstash_base_cbits(base,csh,buffer,end);
-				//
-				// tbits
-				a_removal_taken_spots(base, tse, cbits, cbits_update, buffer, end);  
-				//
-				tbits_remove_swappy_op(base_tbits,tse);
-				//
-				for ( uint8_t i = 0; i < del_count; i++ ) {  // gone for good
-					auto vb_probe = deletions[i];
-					atomic<uint64_t> *bnky = (atomic<uint64_t> *)(&(vb_probe->c));
-					bnky->store(0);
-					atomic<uint64_t> *tv = (atomic<uint64_t> *)(&(vb_probe->tv));
-					tv->store(0);
+					// cbits
+					stash_bits_clear((cbits_update),csh);
+					unstash_base_cbits(base,csh,buffer,end);
+					//
+					// tbits
+					a_removal_taken_spots(base, tse, cbits, cbits_update, buffer, end);  
+					//
+					tbits_remove_swappy_op(base_tbits,tse);
+					//
+					for ( uint8_t i = 0; i < del_count; i++ ) {  // gone for good
+						auto vb_probe = deletions[i];
+						atomic<uint64_t> *bnky = (atomic<uint64_t> *)(&(vb_probe->c));
+						bnky->store(0);
+						atomic<uint64_t> *tv = (atomic<uint64_t> *)(&(vb_probe->tv));
+						tv->store(0);
+					}
 				}
+
+				release_delete_master(HH_DELETE,base);
 			}
-
-			release_delete_master(HH_DELETE,base_bits,base_bits_n_ky);
-		}
+		}		//
 
 };
 

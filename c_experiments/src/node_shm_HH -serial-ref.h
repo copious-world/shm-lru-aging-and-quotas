@@ -2385,6 +2385,122 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
+		/**
+		 * reader_sem_stash_tbits
+		*/
+
+		bool reader_sem_stash_tbits(atomic<uint32_t> *a_tbits, uint32_t tbits_stash, uint8_t thread_id) {
+			uint32_t reader_bits = tbit_thread_stamp(0x2,thread_id);
+			auto expected_tbits = tbits_stash;
+			while ( !(a_tbits->compare_exchange_weak(expected_tbits,reader_bits,std::memory_order_acq_rel)) ) {
+				if ( expected_tbits != tbits_stash ) {
+					if ( expected_tbits == 0 ) return false;
+					else {  // this is a reader semaphore setup by another thread
+						if ( !(tbits_sem_at_max(reader_tbits)) ) {
+							a_tbits->fetch_add(TBITS_READER_SEM_INCR,std::memory_order_acq_rel);
+							return true;
+						}
+					}
+				}
+			}
+			// 
+			store_real_tbits(tbits_stash,thread_id);  // keep the real tbits in a safe place
+			return true;
+		}
+
+
+
+		/**
+		 * tbits_wait_on_editor
+		 * 	the aim is to have a 0 in the tbits by the time this returns.
+		 * 	The reader wants to turn the tbits into a semaphore, but it wants to stash the real tbits.
+		*/
+		uint32_t tbits_wait_on_editor(atomic<uint32_t> *a_tbits) {
+			auto which_tbits = a_tbits->load(std::memory_order_acquire);
+			while ( (which_tbits == EDITOR_CBIT_SET) || (which_tbits == READER_CBIT_SET) ) {
+				while ( (which_tbits == READER_CBIT_SET) && a_tbits->load(std::memory_order_acquire) == READER_CBIT_SET ) {  // another reader is about to set the tbits as a semaphore
+					tick();
+				}
+				if ( which_tbits == READER_CBIT_SET ) {
+					return a_tbits->load(std::memory_order_relaxed); // this will be the semaphores
+				}
+				//
+				while ( which_tbits == EDITOR_CBIT_SET  ) {  // an editor is working on changing the mem allocation map
+					which_tbits = a_tbits->load(std::memory_order_acquire);
+					tick();
+				}
+				//
+				auto real_bits = which_tbits; // the real bits should have been put in by the last editor on completion.
+				//
+				if ( a_tbits->compare_exchange_weak(which_tbits,READER_CBIT_SET,std::memory_order_acq_rel) ) {
+					return real_bits;
+				}
+			}
+			return a_tbits->load(std::memory_order_relaxed);
+		}
+
+		/**
+		 * a_store_real_tbits_and
+		 * 
+		 * a_tbits -- the presupposition is that a_tbits is a reference to exactly the bucket tbits and is not a
+		 * reference to the stash of the tbits. 
+		*/
+
+		void a_store_real_tbits_and(atomic<uint32_t> *a_tbits, uint32_t tbits_update) {
+			auto current_tbits = a_tbits->load(std::memory_order_acquire);
+			if ( current_tbits & 0x1 ) {
+				a_tbits->fetch_and(tbits_update,std::memory_order_acq_rel);
+			} else {
+				uint8_t alt_thread = tbits_thread_id_of(current_tbits);
+				atomic<uint32_t> *a_real_tbits = (atomic<uint32_t> *)(&(_tbits_temporary_store[alt_thread]));
+				a_tbits->fetch_and(tbits_update,std::memory_order_acq_rel);
+			}
+		}
+
+
+		/**
+		 * a_add_cbit
+		*/
+
+		void a_add_cbit(hh_element *base,uint8_t offset) {
+			atomic<uint64_t> *a_c_aptr = (atomic<uint64_t> *)(base->c.bits);
+			auto c_bits = a_c_aptr->load(std::memory_order_acquire);
+			auto c_bits_prev = c_bits;
+			auto update_c_bits = (c_bits | (0x1 << (min_base_offset + offset_nxt_base)));
+			while ( !(c_aptr->compare_exchange_weak(c_bits_prev,update_c_bits,std::memory_order_release)) ) { \
+				c_bits = c_bits_prev; 
+				update_c_bits = (c_bits | (0x1 << (min_base_offset + offset_nxt_base)))
+			}
+		}
+
+
+
+		/**
+		 * a_clear_cbit
+		*/
+
+		void a_clear_cbit(hh_element *base,uint8_t offset) {
+			// slice_unlock(min_probe)
+			atomic<uint64_t> *c_aptr = (atomic<uint64_t> *)(base->c.bits);
+			auto c_bits = c_aptr->load(std::memory_order_acquire);
+			auto c_bits_prev = c_bits;
+			auto update_c_bits = (c_bits & ~(0x1 << offset));
+			while ( !(c_aptr->compare_exchange_weak(c_bits_prev,update_c_bits,std::memory_order_release)) ) { c_bits = c_bits_prev; update_c_bits = (c_bits & ~(0x1 << offset); }
+		}
+
+
+		/**
+		 * wait_tbits_exclude_swappy_op
+		*/
+
+		void wait_tbits_exclude_swappy_op(atomic<uint32_t> *a_tbits) {
+			uint8_t count_result = 0;
+			auto tbits = a_tbits->load(std::memory_order_acquire);
+			while ( !(tbits & 0x1) && !(tbits_sem_at_zero(tbits)) ) {
+				tick();
+				tbits = a_tbits->load(std::memory_order_acquire);
+			}
+		}
 
 
 
