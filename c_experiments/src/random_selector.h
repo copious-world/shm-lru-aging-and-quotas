@@ -249,8 +249,8 @@ public:
 
 
 
-	void share_lock(void) {}
-	void share_unlock(void) {}
+	virtual void share_lock(void) = 0;
+	virtual void share_unlock(void) = 0;
 
 };
 

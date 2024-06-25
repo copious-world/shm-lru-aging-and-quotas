@@ -432,8 +432,7 @@ inline void thread_sleep(uint8_t ticks) {
 
 class SliceSelector : public Random_bits_generator<> {
 
-
-public:
+	public:
 
 		SliceSelector() {
 		}
@@ -441,9 +440,23 @@ public:
 		virtual ~SliceSelector() {
 		}
 
+
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+	public: 
+
+		// RANDOMNESS -- randomness is avaiable (and updated by another thread) for deciding ties 
+		// between slices. There are situations encountered by processes here that may interfere
+		// with providing perfect randomness for tie breaking, but there is no need for perfection.
+		// This needs enough randomness to keep bucket sizes minimal. 
+	
+		/**
+		 * 
+		 */
 		void initialize_randomness(void) {
 			_random_gen_region->store(0);
 		}
+		
 
 		/**
 		 * set_random_bits
@@ -460,79 +473,6 @@ public:
 		}
 
 
-		// C BITS
-
-		uint32_t fetch_real_cbits(uint32_t cbit_carrier) {
-			if ( is_base_noop(cbit_carrier) ) {
-				return cbit_carrier;
-			} else {
-				auto stash_index = cbits_stash_index_of(cbit_carrier);
-				CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
-				if ( csh != nullptr ) {
-					auto cbits = csh->_real_bits;
-					return cbits;
-				}
-			}
-			return 0;
-		}
-
-
-		// T BITS
-
-		uint32_t fetch_real_tbits(uint32_t tbit_carrier) {
-			if ( is_base_tbits(tbit_carrier) ) {
-				return tbit_carrier;
-			} else {
-				auto stash_index = tbits_stash_index_of(tbit_carrier);
-				TBIT_stash_el *tse = _tbit_stash.stash_el_reference(stash_index);
-				if ( tse != nullptr ) {
-					auto tbits = tse->_real_bits;
-					return tbits;
-				}
-			}
-		}
-
-
-		void store_real_tbits(uint32_t tbits,uint8_t thrd) {
-			_tbits_temporary_store[thrd] = tbits;
-		}
-
-
-
-		/**
-		 * get_real_base_cbits
-		*/
-
-		uint32_t get_real_base_cbits(hh_element *base_probe) {
-			atomic<uint32_t> *a_cbits = (atomic<uint32_t> *)(base_probe->c.bits);
-			auto cbits = a_cbits->load(std::memory_order_acquire);
-			if ( is_base_in_ops(cbits) ) {
-				cbits = fetch_real_cbits(cbits);
-			}
-			if ( is_base_noop(cbits) ) {
-				return cbits;
-			}
-			return 0;
-		}
-
-
-		/**
-		 * get_real_base_tbits
-		*/
-
-		uint32_t get_real_base_tbits(hh_element *base_probe) {
-			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(base_probe->tv.taken);
-			auto tbits = a_tbits->load(std::memory_order_acquire);
-			if ( !(is_base_tbits(tbits)) ) {
-				tbits = fetch_real_cbits(tbits);
-			}
-			return tbits;
-		}
-
-
-
-	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
 
 		/**
 		 * share_lock -- implement Random_bits_generator locks
@@ -546,7 +486,7 @@ public:
 		 * that the usage of a region will be improbible enough that buffer generation will always finished before the currently 
 		 * available buffer is used up.
 		*/
-		void share_lock(void) {
+		void share_lock(void) override {
 #ifndef __APPLE__
 				while ( _random_share_lock->test() ) {  // if not cleared, then wait
 					_random_share_lock->wait(true);
@@ -565,7 +505,7 @@ public:
 		 * 
 		 * override the lock for shared random bits (in parent this is a no op)
 		*/
-		void share_unlock(void) {
+		void share_unlock(void) override {
 #ifndef __APPLE__
 			while ( _random_share_lock->test() ) {
 				_random_share_lock->clear();
@@ -585,7 +525,7 @@ public:
 		 * override the lock for shared random bits (in parent this is a no op)
 		*/
 
-		void random_generator_thread_runner() {
+		void random_generator_thread_runner(void) {
 			while ( true ) {
 #ifndef __APPLE__
 				do {
@@ -605,6 +545,8 @@ public:
 
 		/**
 		 * wakeup_random_generator
+		 * 
+		 * 
 		*/
 		void wakeup_random_generator(uint8_t which_region) {   //
 			//
@@ -618,36 +560,99 @@ public:
 		}
 
 
+
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
 	public: 
 
 
+		// CONTROL BITS - cbits - for a base, a bit pattern of membership positions, for a member, a backreference to the base
+		// TAKEN BITS - tbits - for a base, a bit pattern of allocated positions for the NEIGHBOR window from the base
+		//					  - for a member, a coefficient for some ordering of member elements such as time (for example).
+
+		// C BITS
 		/**
-		 * load_real_cbits
+		 * fetch_real_cbits
+		 */
+		uint32_t fetch_real_cbits(uint32_t cbit_carrier) {
+			if ( is_base_noop(cbit_carrier) ) {
+				return cbit_carrier;
+			} else {
+				auto stash_index = cbits_stash_index_of(cbit_carrier);
+				CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
+				if ( csh != nullptr ) {
+					auto cbits = csh->_real_bits;
+					return cbits;
+				}
+			}
+			return 0;
+		}
+
+
+		// T BITS
+		/**
+		 * fetch_real_tbits
+		 */
+		uint32_t fetch_real_tbits(uint32_t tbit_carrier) {
+			if ( is_base_tbits(tbit_carrier) ) {
+				return tbit_carrier;
+			} else {
+				auto stash_index = tbits_stash_index_of(tbit_carrier);
+				TBIT_stash_el *tse = _tbit_stash.stash_el_reference(stash_index);
+				if ( tse != nullptr ) {
+					auto tbits = tse->_real_bits;
+					return tbits;
+				}
+			}
+		}
+
+
+		/**
+		 * get_real_base_cbits
+		 * 
 		 * 
 		*/
 
-		uint32_t load_real_cbits(hh_element *base) {
-			atomic<uint32_t> *a_cbits_base = (atomic<uint32_t> *)(&(base->c.bits));
-			auto cbits = a_cbits_base->load(std::memory_order_acquire);
-			if ( !(is_base_noop(cbits)) ) {
+		uint32_t get_real_base_cbits(hh_element *base_probe) {
+			atomic<uint32_t> *a_cbits = (atomic<uint32_t> *)(base_probe->c.bits);
+			auto cbits = a_cbits->load(std::memory_order_acquire);
+			if ( is_base_in_ops(cbits) ) {
 				cbits = fetch_real_cbits(cbits);
 			}
-			return cbits;
+			if ( is_base_noop(cbits) ) {
+				return cbits;
+			}
+			return 0;
 		}
 
 
-		atomic<uint32_t> *load_cbits(hh_element *base,uint32_t &cbits,uint32_t &cbits_op) {
-			atomic<uint32_t> *a_cbits_base = (atomic<uint32_t> *)(&(base->c.bits));
-			auto cbits = a_cbits_base->load(std::memory_order_acquire);
-			if ( !(is_base_noop(cbits)) &&  (cbits != 0) ) {
-				cbits_op = cbits;
-				cbits = fetch_real_cbits(cbits);
+		/**
+		 * get_real_base_tbits
+		 * 
+		 * 
+		*/
+
+		uint32_t get_real_base_tbits(hh_element *base_probe) {
+			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(base_probe->tv.taken);
+			auto tbits = a_tbits->load(std::memory_order_acquire);
+			if ( !(is_base_tbits(tbits)) ) {
+				tbits = fetch_real_cbits(tbits);
 			}
-			return a_cbits_base;
+			return tbits;
 		}
 
 
 
+	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+	public: 
+
+		/**
+		 * load_cbits
+		 */
 		atomic<uint32_t> *load_cbits(atomic<uint32_t> *a_cbits_base,uint32_t &cbits,uint32_t &cbits_op) {
 			auto cbits = a_cbits_base->load(std::memory_order_acquire);
 			if ( !(is_base_noop(cbits)) &&  (cbits != 0) ) {
@@ -657,8 +662,19 @@ public:
 			return a_cbits_base;
 		}
 
+		/**
+		 * load_cbits
+		 */
+		atomic<uint32_t> *load_cbits(hh_element *base,uint32_t &cbits,uint32_t &cbits_op) {
+			atomic<uint32_t> *a_cbits_base = (atomic<uint32_t> *)(&(base->c.bits));
+			return load_cbits(a_cbits_base,cbits,cbits_op);
+		}
 
-
+		/**
+		 * load_cbits  -- 64 bit version
+		 * 
+		 * Out Parameter: base_ky --- the key for that value in the base
+		 */
 		atomic<uint64_t> *load_cbits(atomic<uint64_t> *a_cbits_n_ky,uint32_t &cbits,uint32_t &cbits_op,uint32_t &base_ky) {
 			auto cbits_n_ky = a_cbits_n_ky->load(std::memory_order_acquire);
 			cbits = ((uint32_t)cbits_n_ky & UINT32_MAX);
@@ -670,124 +686,6 @@ public:
 			base_ky = (uint32_t)((cbits_n_ky >> sizeof(uint32_t)) & UINT32_MAX);
 			return a_cbits_n_ky;
 		}
-
-
-
-		/**
-		 * _get_member_bits_slice_info
-		 * 
-		 * 	<-- called by prepare_for_add_key_value_known_refs -- which is application facing.
-		*/
-		atomic<uint32_t> *_get_member_bits_slice_info(uint32_t h_bucket,uint8_t &which_table,uint32_t &c_bits,uint32_t &c_bits_op,uint32_t &c_bits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) {
-			//
-			if ( h_bucket >= _max_n ) {
-				h_bucket -= _max_n;  // let it be circular...
-			}
-			//
-			c_bits_op = 0;
-			c_bits = 0;
-			//
-			uint8_t count0{0};
-			uint8_t count1{0};
-			//
-			hh_element *buffer0		= _region_HV_0;
-			hh_element *end_buffer0	= _region_HV_0_end;
-			//
-			hh_element *el_0 = buffer0 + h_bucket;
-			atomic<uint32_t> *a_cbits0 = (atomic<uint32_t> *)(&(el_0->c.bits));
-			auto c0 = a_cbits0->load(std::memory_order_acquire);
-			uint32_t c0_ops = 0;
-			uint8_t backref0 = 0;
-			uint32_t c0_op_base = 0;
-			hh_element *base0 = nullptr;
-			//
-			if ( c0 != 0 ) {  // no elements
-				if ( is_base_noop(c0) ) {
-					count0 = popcount(c0);
-				} else {
-					if ( is_base_in_ops(c0) ) {
-						auto real_bits = fetch_real_cbits(c0);
-						c0_ops = c0;
-						c0 = real_bits;
-						count0 = popcount(real_bits);
-					} else if ( is_member_bucket(c0) ) {
-						c0_ops = c0;
-						base0 = cbits_base_from_backref(c0,backref0,el_0,buffer0,end_buffer0);
-						load_cbits(base0,c0,c0_op_base);
-						count0 = 1;   // indicates the member element ... some work will be done to reinsert the previously stored member
-					}
-				}
-			}
-			//
-			hh_element *buffer1		= _region_HV_1;
-			hh_element *end_buffer1	= _region_HV_1_end;
-			//
-			hh_element *el_1 = buffer1 + h_bucket;
-			atomic<uint32_t> *a_cbits1 = (atomic<uint32_t> *)(&(el_1->c.bits));
-			auto c1 = a_cbits1->load(std::memory_order_acquire);
-			uint32_t c1_ops = 0;
-			uint8_t backref1 = 0;
-			uint32_t c1_op_base = 0;
-			hh_element *base1 = nullptr;
-			//
-			if ( c1 != 0 ) {  // no elements
-				if ( is_base_noop(c1) ) {
-					count1 = popcount(c1);
-				} else {
-					if ( is_base_in_ops(c1) ) {
-						auto real_bits = fetch_real_cbits(c1);
-						c1_ops = c1;
-						c1 = real_bits;
-						count1 = popcount(real_bits);
-					} else if ( is_member_bucket(c0) ) {
-						c1_ops = c1;
-						base1 = cbits_base_from_backref(c1,backref1,el_1,buffer1,end_buffer1);
-						load_cbits(base1,c1,c1_op_base);
-						count1 = 1;   // indicates the member element ... some work will be done to reinsert the previously stored member
-					}
-				}
-			}
-			//
-			auto selector = _hlpr_select_insert_buffer(count0,count1);
-			if ( selector == 0xFF ) return nullptr;
-			//
-			atomic<uint32_t> *a_cbits = nullptr;
-			hh_element *base = nullptr;
-			uint8_t backref = 0;
-			//
-			which_table = selector;
-			//
-			if ( selector == 0 ) {				// select data structures
-				*bucket_ref = el_0;
-				*buffer_ref = buffer0;
-				*end_buffer_ref = end_buffer0;
-				c_bits = c0;		// real cbits
-				c_bits_op = c0_ops;
-				backref = backref0;
-				c_bits_base_ops = c0_op_base;
-				//
-				base = base0;
-				a_cbits = a_cbits0;
-			} else {
-				*bucket_ref = el_1;
-				*buffer_ref = buffer1;
-				*end_buffer_ref = end_buffer1;
-				c_bits = c1;		// real cbits
-				c_bits_op = c1_ops;
-				backref = backref1;
-				c_bits_base_ops = c1_op_base;
-				//
-				base = base1;
-				a_cbits = a_cbits1;
-			}
-			//
-
-			stash_cbits(a_cbits,base,c_bits,c_bits_op,c_bits_base_ops,cbit_stashes,*buffer_ref,*end_buffer_ref);
-			//
-			return a_cbits;
-			
-		}
-
 
 
 		/**
@@ -988,7 +886,7 @@ public:
 		}
 
 
-		void cbits_stash_swap_offses(CBIT_stash_holder *csh1,CBIT_stash_holder *csh2) {
+		void cbits_stash_swap_offset(CBIT_stash_holder *csh1,CBIT_stash_holder *csh2) {
 			auto mem_bits_1 = csh1->_real_bits;
 			auto mem_bits_2 = csh2->_real_bits;
 			//
@@ -1137,6 +1035,8 @@ public:
 			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
 			return csh->_updating;
 		}
+
+
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		bool stashed_empty_bucket(uint32_t cbits,uint32_t cbits_op) {
@@ -1171,15 +1071,6 @@ public:
 
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-
-		void erase_stashed_key_value(uint16_t already_stashed) {
-			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(already_stashed);
-			if ( csh != nullptr ) {
-				csh->_key = 0;
-				csh->_value = 0;
-			}
-		}
 
 
 		bool _check_key_value_stash(uint32_t cbits_op, uint32_t key, uint32_t &value) {
@@ -1279,12 +1170,18 @@ public:
 
 
 		// cbits_stash_update(cbits_op,update_bits,ADD_BITS_IMMEDIATE)
+		/**
+		 * cbits_stash_update
+		 */
 		void cbits_stash_update(uint32_t cbits_op,uint32_t update_bits,op_type op) {
 			uint8_t stash_index = cbits_stash_index_of(cbits_op);  // make sure the member bucket is marked
 			CBIT_stash_holder *cse = _cbit_stash.stash_el_reference(stash_index);
 			cbits_stash_update(cse,cbits_op,update_bits,op);
 		}
 
+		/**
+		 * cbits_stash_update
+		 */
 		void cbits_stash_update(CBIT_stash_holder *cse,uint32_t cbits_op,uint32_t update_bits,op_type op) {
 			uint8_t stash_index = cbits_stash_index_of(cbits_op);  // make sure the member bucket is marked
 			CBIT_stash_holder *cse = _cbit_stash.stash_el_reference(stash_index);
@@ -1315,9 +1212,6 @@ public:
 				}
 			}
 		}
-
-
-
 
 
 
@@ -1477,6 +1371,129 @@ public:
 			}
 
 			return false;;
+		}
+
+
+		// END OF SEMAPHORES
+
+
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+		/**
+		 * _get_member_bits_slice_info
+		 * 
+		 * 	<-- called by prepare_for_add_key_value_known_refs -- which is application facing.
+		*/
+		atomic<uint32_t> *_get_member_bits_slice_info(uint32_t h_bucket,uint8_t &which_table,uint32_t &c_bits,uint32_t &c_bits_op,uint32_t &c_bits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) {
+			//
+			if ( h_bucket >= _max_n ) {
+				h_bucket -= _max_n;  // let it be circular...
+			}
+			//
+			c_bits_op = 0;
+			c_bits = 0;
+			//
+			uint8_t count0{0};
+			uint8_t count1{0};
+			//
+			hh_element *buffer0		= _region_HV_0;
+			hh_element *end_buffer0	= _region_HV_0_end;
+			//
+			hh_element *el_0 = buffer0 + h_bucket;
+			atomic<uint32_t> *a_cbits0 = (atomic<uint32_t> *)(&(el_0->c.bits));
+			auto c0 = a_cbits0->load(std::memory_order_acquire);
+			uint32_t c0_ops = 0;
+			uint8_t backref0 = 0;
+			uint32_t c0_op_base = 0;
+			hh_element *base0 = nullptr;
+			//
+			if ( c0 != 0 ) {  // no elements
+				if ( is_base_noop(c0) ) {
+					count0 = popcount(c0);
+				} else {
+					if ( is_base_in_ops(c0) ) {
+						auto real_bits = fetch_real_cbits(c0);
+						c0_ops = c0;
+						c0 = real_bits;
+						count0 = popcount(real_bits);
+					} else if ( is_member_bucket(c0) ) {
+						c0_ops = c0;
+						base0 = cbits_base_from_backref(c0,backref0,el_0,buffer0,end_buffer0);
+						load_cbits(base0,c0,c0_op_base);
+						count0 = 1;   // indicates the member element ... some work will be done to reinsert the previously stored member
+					}
+				}
+			}
+			//
+			hh_element *buffer1		= _region_HV_1;
+			hh_element *end_buffer1	= _region_HV_1_end;
+			//
+			hh_element *el_1 = buffer1 + h_bucket;
+			atomic<uint32_t> *a_cbits1 = (atomic<uint32_t> *)(&(el_1->c.bits));
+			auto c1 = a_cbits1->load(std::memory_order_acquire);
+			uint32_t c1_ops = 0;
+			uint8_t backref1 = 0;
+			uint32_t c1_op_base = 0;
+			hh_element *base1 = nullptr;
+			//
+			if ( c1 != 0 ) {  // no elements
+				if ( is_base_noop(c1) ) {
+					count1 = popcount(c1);
+				} else {
+					if ( is_base_in_ops(c1) ) {
+						auto real_bits = fetch_real_cbits(c1);
+						c1_ops = c1;
+						c1 = real_bits;
+						count1 = popcount(real_bits);
+					} else if ( is_member_bucket(c0) ) {
+						c1_ops = c1;
+						base1 = cbits_base_from_backref(c1,backref1,el_1,buffer1,end_buffer1);
+						load_cbits(base1,c1,c1_op_base);
+						count1 = 1;   // indicates the member element ... some work will be done to reinsert the previously stored member
+					}
+				}
+			}
+			//
+			auto selector = _hlpr_select_insert_buffer(count0,count1);
+			if ( selector == 0xFF ) return nullptr;
+			//
+			atomic<uint32_t> *a_cbits = nullptr;
+			hh_element *base = nullptr;
+			uint8_t backref = 0;
+			//
+			which_table = selector;
+			//
+			if ( selector == 0 ) {				// select data structures
+				*bucket_ref = el_0;
+				*buffer_ref = buffer0;
+				*end_buffer_ref = end_buffer0;
+				c_bits = c0;		// real cbits
+				c_bits_op = c0_ops;
+				backref = backref0;
+				c_bits_base_ops = c0_op_base;
+				//
+				base = base0;
+				a_cbits = a_cbits0;
+			} else {
+				*bucket_ref = el_1;
+				*buffer_ref = buffer1;
+				*end_buffer_ref = end_buffer1;
+				c_bits = c1;		// real cbits
+				c_bits_op = c1_ops;
+				backref = backref1;
+				c_bits_base_ops = c1_op_base;
+				//
+				base = base1;
+				a_cbits = a_cbits1;
+			}
+			//
+
+			stash_cbits(a_cbits,base,c_bits,c_bits_op,c_bits_base_ops,cbit_stashes,*buffer_ref,*end_buffer_ref);
+			//
+			return a_cbits;
+			
 		}
 
 
@@ -2154,7 +2171,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 
 		/**
-		 * clear_bucket
+		 * clear_bucket -- utility may be of use
 		 * 
 		*/
 
@@ -2180,10 +2197,6 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 			return false;
 		}
 
-
-		bool is_base_bucket_cbits_ops(uint32_t cbits_ops) {
-			return cbits_ops == 0;
-		}
 
 		/**
 		 * bucket_is_base
@@ -2421,10 +2434,16 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 
 
+		/**
+		 * clear_bucket_root_edit -- 64 bit
+		 */
 		void clear_bucket_root_edit(uint64_t &ky_n_cbits) {
 			ky_n_cbits &= ~((uint64_t)ROOT_EDIT_CBIT_SET);
 		}
 
+		/**
+		 * clear_bucket_root_edit -- 32 bit
+		 */
 		void clear_bucket_root_edit(uint32_t cbits_op) {
 			cbits_op &= ~((uint32_t)ROOT_EDIT_CBIT_SET);
 		}
@@ -3087,6 +3106,18 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+
+
+
+		void random_generator_thread_runner(void) {
+			SliceSelector::random_generator_thread_runner();
+		}
+
+		void set_random_bits(void *shared_bit_region) {
+			SliceSelector::set_random_bits(shared_bit_region);
+		}
+
+
 		//
 		/**
 		 * prepare_for_add_key_value_known_refs 
@@ -3106,7 +3137,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * end_buffer_ref -- contains the address of the end of the storage region
 		 * 
 		*/
-		bool prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) {
+		bool prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) {
 			//
 			//
 			atomic<uint32_t> *a_c_bits = _get_member_bits_slice_info(h_bucket,which_table,cbits,cbits_op,cbits_base_ops,bucket_ref,buffer_ref,end_buffer_ref,cbit_stashes);
@@ -3205,7 +3236,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * 
 		*/
 		// el_key == hull_hash (usually)
-		uint64_t update(uint32_t el_key, uint32_t h_bucket, uint32_t v_value, uint8_t thread_id, uint32_t el_key_update = 0) {
+		uint64_t update(uint32_t el_key, uint32_t h_bucket, uint32_t v_value) {
 			//
 			if ( v_value == 0 ) return UINT64_MAX;
 			if ( el_key == UINT32_MAX ) return UINT64_MAX;
@@ -3361,6 +3392,11 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * short_list_old_entry - calls on the application's method for puting displaced values, new enough to be kept,
 		 * into a short list that may be searched in the order determined by the application (e.g. first for preference, last
 		 * for normal lookup except fails.)
+		 * 
+		 * If the key value and time info result in a decision to pass the data out, either to a new tier or to a seconday 
+		 * database or to final removal, then the caller's method set in `_timout_tester` will perform the necessary action 
+		 * to send the data item along. In the case of the shared LRU, the item will have to be identified by its time and
+		 * be removed from a timer list. 
 		 * 
 		*/
 		bool (*_timout_tester)(uint32_t,uint32_t,uint32_t){nullptr};
@@ -4058,7 +4094,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			auto tbits_n_val_2 = a_b2_tbits->exchange(tbits_n_val_1,std::memory_order_acq_rel);
 			a_b2_tbits->store(tbits_n_val_1,std::memory_order_release);
 			//
-			cbits_stash_swap_offses(csh1,csh2);
+			cbits_stash_swap_offset(csh1,csh2);
 			//
 			auto cbits_n_ky_1 = a_b1_cbits->load(std::memory_order_acquire);
 			auto cbits_n_ky_2 = a_b2_cbits->exchange(cbits_n_ky_1,std::memory_order_acq_rel);
@@ -4070,6 +4106,8 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 		/**
 		 * a_swap_next
+		 * 
+		 * For deleting the base element
 		*/
 
 		void a_swap_next(atomic<uint64_t> *base_bits_n_ky, h_element *base, uint32_t cbits, uint32_t key, uint32_t value, hh_element *buffer, hh_element *end, uint32_t modifier = 0) {

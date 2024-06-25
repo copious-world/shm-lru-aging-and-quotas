@@ -3298,6 +3298,34 @@ class HH_map : public HMap_interface, public Random_bits_generator<> {
 
 
 
+		/**
+		 * load_real_cbits
+		 * 
+		*/
+
+		uint32_t load_real_cbits(hh_element *base) {
+			atomic<uint32_t> *a_cbits_base = (atomic<uint32_t> *)(&(base->c.bits));
+			auto cbits = a_cbits_base->load(std::memory_order_acquire);
+			if ( !(is_base_noop(cbits)) ) {
+				cbits = fetch_real_cbits(cbits);
+			}
+			return cbits;
+		}
+
+
+
+
+
+
+		void erase_stashed_key_value(uint16_t already_stashed) {
+			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(already_stashed);
+			if ( csh != nullptr ) {
+				csh->_key = 0;
+				csh->_value = 0;
+			}
+		}
+
+
 	public:
 
 		// ---- ---- ---- STATUS

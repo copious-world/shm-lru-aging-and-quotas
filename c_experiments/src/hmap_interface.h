@@ -466,14 +466,6 @@ static inline uint32_t gen_bitsmember_backref_offset(uint32_t cbits,uint8_t bkre
 }
 
 
-/**
- * stamp_offset
-*/
-
-static inline uint32_t stamp_offset(uint32_t time,[[maybe_unused]]uint8_t offset) {
-	return time;
-}
-
 
 
 class hh_element;
@@ -890,12 +882,9 @@ class FreeOperatorStashStack : public AtomicStack<StackEl> {
 			}
 		}
 
-
 		StackEl *stash_el_reference(uint32_t el_index) {
 			_region_start + el_index;  // el_offset is 
 		}
-
-
 
 
 	public:
@@ -910,16 +899,19 @@ class FreeOperatorStashStack : public AtomicStack<StackEl> {
 
 class HMap_interface {
 	public:
-		virtual void 		value_restore_runner(uint8_t slice_for_thread) = 0;
+		virtual void 		value_restore_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) = 0;
 		virtual void		random_generator_thread_runner(void) = 0;
-		virtual uint64_t	update(uint32_t el_match_key, uint32_t hash_bucket, uint32_t v_value,uint8_t thread_id = 1) = 0;
+		virtual void		set_random_bits(void *shared_bit_region) = 0;
+
+		virtual uint64_t	update(uint32_t el_match_key, uint32_t hash_bucket, uint32_t v_value) = 0;
+
 		virtual uint32_t	get(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
 		virtual uint32_t	get(uint32_t el_match_key,uint32_t hash_bucket,uint8_t thread_id = 1) = 0;
+
 		virtual uint32_t	del(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
 		virtual uint32_t	del(uint32_t el_match_key,uint32_t hash_bucket,uint8_t thread_id = 1) = 0;
+
 		virtual void		clear(void) = 0;
-		virtual uint64_t	add_key_value(uint32_t el_match_key,uint32_t hash_bucket,uint32_t offset_value,uint8_t thread_id = 1) = 0;
-		virtual void		set_random_bits(void *shared_bit_region) = 0;
 		//
 		virtual bool		prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) = 0;
 		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) = 0;
