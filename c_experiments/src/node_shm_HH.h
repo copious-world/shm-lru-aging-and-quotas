@@ -3264,14 +3264,14 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * del
 		*/
 
-		uint32_t del(uint64_t loaded_key,uint8_t thread_id = 1) {
+		uint32_t del(uint64_t loaded_key) {
 			uint32_t el_key = (uint32_t)((loaded_key >> HALF) & HASH_MASK);  // just unloads it (was index)
 			uint32_t h_bucket = (uint32_t)(loaded_key & HASH_MASK);
-			return del(el_key, h_bucket,thread_id);
+			return del(el_key, h_bucket);
 		}
 
 
-		uint32_t del(uint32_t el_key, uint32_t h_bucket,uint8_t thread_id) {
+		uint32_t del(uint32_t el_key, uint32_t h_bucket) {
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 			//
@@ -3403,6 +3403,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		void set_timeout_test(bool (*timeouter)(uint32_t,uint32_t,uint32_t)) {
 			_timout_tester = timeouter;
 		}
+		//
 		bool short_list_old_entry(uint32_t key,uint32_t value,uint32_t store_time) {
 			if ( _timout_tester !== nullptr ) {
 				return (*_timout_tester)(key,value,store_time);
@@ -3545,6 +3546,8 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 		/**
 		 * ensure_is_member
+		 * 
+		 * 
 		*/
 
 		bool ensure_is_member(hh_element *bucket) {
@@ -3566,6 +3569,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 		/**
 		 * seek_next_base
+		 * 
 		*/
 		hh_element *seek_next_base(hh_element *base_probe, uint32_t &c, uint32_t &base_cbits, uint32_t &offset_nxt_base, hh_element *buffer, hh_element *end) {
 			hh_element *hash_base = base_probe;
@@ -3575,7 +3579,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				base_probe = el_check_end_wrap(base_probe,buffer,end);
 				auto cbits = get_real_base_cbits(base_probe);
 				//
-				if ( popcount(cbits) > 1 ) {   // any hole at all
+				if ( popcount(cbits) > 1 ) {   // any possible hole at all, that is a member (not base) which may be uprooted
 					base_cbits = cbits;
 					offset_nxt_base = offset_nxt;
 					return base_probe;
@@ -3592,13 +3596,14 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * The min member could change if there is a usurpation.
 		*/
 
-		void seek_min_member(hh_element **min_probe_ref, uint32_t &min_base_offset, hh_element *base_probe, uint32_t &time, uint32_t lowest_free_member,  uint32_t offset_nxt_base, hh_element *buffer, hh_element *end) {
-			atomic<uint32_t> *a_cbits = (atomic<uint32_t> *)(&(base_probe->c.bits));
-			auto c = a_cbits->load(std::memory_order_acquire);		// nxt is the membership of this bucket that has been found
-			c = c & (~((uint32_t)0x1));   // the interleaved bucket does not give up its base... (should already be zero)
-			if ( offset_nxt_base < lowest_free_member ) {
-				c = c & ones_above(lowest_free_member - offset_nxt_base);  // don't look beyond the window of our base hash bucket
-			}
+		void seek_min_member(hh_element **min_probe_ref, uint32_t &min_base_offset, hh_element *base_probe, uint32_t &time, uint32_t offset_nxt_base, hh_element *buffer, hh_element *end) {
+			uint32_t cbits = 0;
+			uint32_t cbits_op = 0;
+			atomic<uint32_t> *a_cbits = load_cbits(base_probe,cbits,cbits_op);
+
+			auto c = cbits;					// offset_nxt_base is the membership of this bucket that has been found
+			c = c & (~((uint32_t)0x1));		// the interleaved bucket does not give up its base... (should already be zero)
+			// zero offset of base probe is shifted by offset_nxt_base from the originating base
 			c = c & zero_above((NEIGHBORHOOD-1) - offset_nxt_base); // don't look outside the window
 			//
 			while ( c ) {			// 
@@ -3607,6 +3612,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				vb_probe += offset_min;
 				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
 				if ( ensure_is_member(vb_probe) ) {
+					// tbits of a member are never stashed
 					if ( vb_probe->->tv.taken < time ) {
 						time = vb_probe->->tv.taken;
 						*min_probe_ref = vb_probe;
@@ -3617,7 +3623,6 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			}
 			//
 		}
-
 
 
 		/**
@@ -3633,7 +3638,6 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * don't change the taken map, which is all spots taken, but clear the bit of the donating bucket.
 		 * Then, add the bit at the offset to the cbit membership map of the base. Then, add the old member back into 
 		 * the base if possible. Add it back in doing the equivalent of HH_FROM_BASE_AND_WAIT
-		 * 
 		 * 
 		*/
 		hh_element *handle_full_bucket_by_usurp(hh_element *hash_base, uint32_t cbits, uint32_t &el_key, uint32_t &value, uint32_t &time, hh_element *buffer, hh_element *end) {
@@ -3655,12 +3659,8 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			//
 			auto a = cbits;
 			auto b = tbits;
-			auto c = (a ^ b);  // these are base positions.
+			auto c = (a ^ b) | 0x1;  // these are base positions including the yielding bucket, which may have an older member
 			//
-			auto lowest_free_member = countr_zero(cbits);   // a zero will be here ... 
-			c = c & zero_above(lowest_free_member);
-			//
-			//    lowest_free_member
 			//
 			while ( c ) {
 				uint32_t base_cbits = 0;	// the next base that is within range of the base and a place to keep a member.
@@ -4241,7 +4241,7 @@ class HH_map : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 					//
 
 					// cbits
-					stash_bits_clear((cbits_update),csh);
+					stash_bits_clear(cbits_update,csh);
 					unstash_base_cbits(base,csh,buffer,end);
 					//
 					// tbits

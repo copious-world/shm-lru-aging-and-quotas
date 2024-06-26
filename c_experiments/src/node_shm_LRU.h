@@ -959,7 +959,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		uint64_t		update_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset,uint8_t thread_id = 1) {
 			HMap_interface *T = this->_hmap;
-			uint64_t result = T->update(full_hash,hash_bucket,new_el_offset,thread_id);
+			uint64_t result = T->update(full_hash,hash_bucket,new_el_offset);
 			return result;
 		}
 
@@ -970,7 +970,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		void 			remove_key(uint32_t full_hash, uint32_t h_bucket,uint8_t thread_id, uint32_t timestamp) {
 			_timeout_table->remove_entry(timestamp);
-			_hmap->del(full_hash,h_bucket,thread_id);
+			_hmap->del(full_hash,h_bucket);
 		}
 
 

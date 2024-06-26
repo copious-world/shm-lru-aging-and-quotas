@@ -908,8 +908,8 @@ class HMap_interface {
 		virtual uint32_t	get(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
 		virtual uint32_t	get(uint32_t el_match_key,uint32_t hash_bucket,uint8_t thread_id = 1) = 0;
 
-		virtual uint32_t	del(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
-		virtual uint32_t	del(uint32_t el_match_key,uint32_t hash_bucket,uint8_t thread_id = 1) = 0;
+		virtual uint32_t	del(uint64_t augemented_hash) = 0;
+		virtual uint32_t	del(uint32_t el_match_key,uint32_t hash_bucket) = 0;
 
 		virtual void		clear(void) = 0;
 		//
