@@ -900,6 +900,8 @@ class FreeOperatorStashStack : public AtomicStack<StackEl> {
 class HMap_interface {
 	public:
 		virtual void 		value_restore_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) = 0;
+		virtual void		cropper_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) = 0;
+
 		virtual void		random_generator_thread_runner(void) = 0;
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 
