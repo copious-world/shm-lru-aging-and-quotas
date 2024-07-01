@@ -611,7 +611,7 @@ namespace node_shm {
 			size_t rsz = g_tiers_procs->record_size();
 			char data[rsz];
 			//
-			int status = g_tiers_procs->get_method(process, hash_bucket, full_hash, data, rsz, timestamp, tier, allow_delay);
+			int status = g_tiers_procs->get_method(hash_bucket, full_hash, data, rsz, timestamp, tier, allow_delay);
 			if ( status < -1 ) {
 				info.GetReturnValue().Set(Nan::New<Boolean>(false));
 				return;

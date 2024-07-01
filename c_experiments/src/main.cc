@@ -37,7 +37,7 @@
 
 
 static constexpr bool noisy_test = true;
-static constexpr uint8_t THREAD_COUNT = 64;
+[[maybe_unused]] static constexpr uint8_t THREAD_COUNT = 64;
 
 using namespace std;
 using namespace chrono;
@@ -80,7 +80,7 @@ using namespace node_shm;
 
 
 
-#include "node_shm_HH_for_test.h"
+// #include "node_shm_HH_for_test.h"
 
 // ---- ---- ---- ---- ---- ---- ---- ---
 
@@ -115,77 +115,15 @@ void print_stored(pair<uint32_t,uint32_t> *primary_storage,uint32_t print_max = 
 
 
 
-class Test_HH : public HH_map<> {
-
-  public:
-      Test_HH(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false)
-          : HH_map<>(region,seg_sz,max_element_count,num_threads,am_initializer) {
-      }
-
-
-		// get an idea, don't try locking or anything  (combined counts)
-		uint32_t get_buckt_count(uint32_t h_bucket) {
-			uint32_t *controllers = _region_C;
-			auto controller = (atomic<uint32_t>*)(&controllers[h_bucket]);
-			return get_buckt_count(controller);
-		}
-
-		uint32_t get_buckt_count(atomic<uint32_t> *controller) {
-			uint32_t controls = controller->load(std::memory_order_relaxed);
-			uint8_t counter = (uint8_t)((controls & DOUBLE_COUNT_MASK) >> QUARTER);  
-			return counter;
-		}
-
-
-
-		/**
-		 * get_bucket -- bucket probing -- return a whole bucket... (all values)
-		*/
-		uint8_t get_bucket(uint32_t h_bucket, uint32_t xs[32]) {
-			//
-			uint8_t selector = 0;
-			if ( selector_bit_is_set(h_bucket,selector) ) {
-				h_bucket = clear_selector_bit(h_bucket);
-			} else return UINT8_MAX;
-
-			//
-			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
-			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
-			//
-			hh_element *next = bucket_at(buffer,h_bucket);
-			next = el_check_end(next,buffer,end);
-			auto c = next->c_bits;
-			if ( ~(c & 0x1) ) {
-				uint8_t offset = (c >> 0x1);
-				next -= offset;
-				next = el_check_beg_wrap(next,buffer,end);
-				c =  next->c_bits;
-			}
-			//
-			uint8_t count = 0;
-			hh_element *base = next;
-			while ( c ) {
-				next = base;
-				uint8_t offset = get_b_offset_update(c);				
-				next = el_check_end(next + offset,buffer,end);
-				xs[count++] = next->_kv.value;
-			}
-			//
-			return count;	// no value  (values will always be positive, perhaps a hash or'ed onto a 0 value)
-		}
-
-
-};
-
-
-
 
 
 // -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
 
 SharedSegmentsManager *g_ssm_catostrophy_handler = nullptr;
-SharedSegmentsTForm<HH_map_test<>> *g_ssm_catostrophy_handler_custom = nullptr;
 
+/*
+SharedSegmentsTForm<HH_map_test<>> *g_ssm_catostrophy_handler_custom = nullptr;
+*/
 
 volatile std::sig_atomic_t gSignalStatus;
 
@@ -483,29 +421,29 @@ void random_bits_test(Random_bits_generator<> &bs) {
 }
 
 
-chrono::system_clock::time_point shared_random_bits_test() {
+// chrono::system_clock::time_point shared_random_bits_test() {
 
-  auto bs = new Random_bits_generator<65000,8>();
-  //random_bits_test(*bs);
+//   auto bs = new Random_bits_generator<65000,8>();
+//   //random_bits_test(*bs);
 
-  for ( int i = 0; i < 8; i++ ) {
-    uint32_t *bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
-    bs->set_region(bits_for_test,i);
-    bs->regenerate_shared(i);
-  }
-  //
+//   for ( int i = 0; i < 8; i++ ) {
+//     uint32_t *bits_for_test = new uint32_t[bs->_bits.size()+ 4*sizeof(uint32_t)];
+//     bs->set_region(bits_for_test,i);
+//     bs->regenerate_shared(i);
+//   }
+//   //
 
-	auto start = chrono::system_clock::now();
+// 	auto start = chrono::system_clock::now();
 
-  for ( uint32_t j = 0; j < 1000; j++ ) {
-    for ( uint32_t i = 0; i < 65000; i++ ) {
-      bs->pop_shared_bit();
-    }
-    bs->swap_prepped_bit_regions();
-  }
+//   for ( uint32_t j = 0; j < 1000; j++ ) {
+//     for ( uint32_t i = 0; i < 65000; i++ ) {
+//       bs->pop_shared_bit();
+//     }
+//     bs->swap_prepped_bit_regions();
+//   }
 
-  return start;
-}
+//   return start;
+// }
 
 const char *paths[4] = {
   "/Users/richardalbertleddy/Documents/GitHub/universal-content/shm-lru-aging-and-quotas/c_experiments/data/bits_buffer.txt",
@@ -676,803 +614,6 @@ constexpr auto extract_N2 = decltype(extract2(std::declval<T>()))::N;
 
 
 
-
-
-void test_hh_map_creation_and_initialization() {
-
-  int status = 0;
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  uint32_t max_obj_size = 128;
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint32_t num_procs = 4;
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-
-
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-  
-  cout << "seg_sz: " << seg_sz << endl;
-
-  //
-  try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-
-
-    cout << "template value: " << extract_N<HH_map<24>> << endl;    /// extract parameter ????
-    cout << "template randoms: " << extract_N2<Random_bits_generator<>> << endl;    /// extract parameter ????
-
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
-
-
-// test_lru_creation_and_initialization
-//
-void test_lru_creation_and_initialization() {
-
-  int status = 0;
-
-  uint32_t max_obj_size = 128;
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint32_t num_procs = 4;
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                            num_procs, num_tiers, els_per_tier, max_obj_size, com_key, randoms_key);
-
-
-  size_t reserve = 0;
-
-  auto check_lru_sz = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier,num_procs);
-  auto check_hh_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
-  for ( auto p : ssm->_seg_to_lrus ) {
-    cout << "LRU SEG SIZE: " << p.first << " .. " <<  ssm->_ids_to_seg_sizes[p.first] << ", " << check_lru_sz << endl;
-  }
-  for ( auto p : ssm->_seg_to_hh_tables ) {
-    cout << " HH SEG SIZE: " << p.first << " .. "  <<  ssm->_ids_to_seg_sizes[p.first] << ", " << check_hh_sz << endl;
-  }
-
-  key_t lru_key = lru_keys.front();
-  cout << "lru_key: " << lru_key << endl;
-
-  uint8_t *region = (uint8_t *)(ssm->get_addr(lru_key));
-  uint32_t seg_sz = ssm->get_size(lru_key);
-  
-  cout << "seg_sz: " << seg_sz << endl;
-
-  //
-  try {
-    LRU_cache *lru_c = new LRU_cache(region, max_obj_size, seg_sz, els_per_tier, reserve, num_procs, true, 0);
-    cout << lru_c->ok() << endl;
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
-
-
-bool stop_printing_dots = false;
-void try_sleep_for() {
-   using namespace std::chrono_literals;
- 
-    cout << "Hello waiter\n" << std::flush;
- 
-    const auto start = std::chrono::high_resolution_clock::now();
-    std::this_thread::sleep_for(std::chrono::microseconds(20));
-    const auto end = std::chrono::high_resolution_clock::now();
-    const std::chrono::duration<double, std::micro> elapsed = end - start;
- 
-    stop_printing_dots = true;
-    cout << "Waited " << elapsed.count() << endl;
-}
-
-
-void try_spin_for() {
-   using namespace std::chrono_literals;
- 
-    cout << "Hello waiter\n" << std::flush;
- 
-    const auto start = std::chrono::high_resolution_clock::now();
-
-    int j = 0;
-    while ( j++ < 64 );
-    auto k = j + 1;
-   
-    const auto end = std::chrono::high_resolution_clock::now();
-    const std::chrono::duration<double, std::nano> elapsed = end - start;
- 
-    stop_printing_dots = true;
-    cout << "Waited " << k << " " << elapsed.count() << endl;
-}
-
-
-
-
-void test_sleep_methods() {
-
-    thread t1(try_sleep_for);
-    int i = 0;
-    while ( !(stop_printing_dots) )  {
-      i++;
-      if ( i > 10000000 ) i = 0;
-      if ( !(i%1000000) ) {
-        cout << '.'; cout.flush();
-      }
-    }
-    t1.join();
-
-
-    thread t2(try_spin_for);
-    i = 0;
-    stop_printing_dots = false;
-    while ( !(stop_printing_dots) )  {
-      i++;
-      if ( i > 10000000 ) i = 0;
-      if ( !(i%1000000) ) {
-        cout << '.'; cout.flush();
-      }
-    }
-    t2.join();
-
-
-    cout << (UINT32_MAX - 1) << endl;
-    cout << (UINT64_MAX - 1) << endl;
-    //
-    uint32_t x = UINT32_MAX;
-    cout << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
-    uint64_t y = UINT32_MAX;
-    cout << (BIGWORD - CLZ(y)) << " :: " <<  CLZ(y)  << endl;
-    cout << " --- " << endl;
-    x = 10000000;
-    cout << x << " ... " << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
-    x = 4000000;
-    cout << x << " ... "  << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
-    x = 800000000;
-    cout << x << " ... "  << (WORD - CLZ(x)) << " :: " <<  CLZ(x) << endl;
-
-
-}
-
-
-
-
-static HH_map<> *sg_share_test_hh = nullptr;
-
-int done_cntr = 0;
-
-void hash_counter_bucket_access(void) {
-  	HHash *T = nullptr;
-		hh_element *buffer = nullptr;
-		hh_element *end = nullptr;
-		uint8_t which_table = 0;
-    // 
-    for ( uint16_t j =  0; j < 1000; j++ ) {
-      if ( sg_share_test_hh ) {
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts_refs(20,1,&T,&buffer,&end,which_table) ) {
-          //
-          int i = 0; while ( i < 100 ) i++;
-          //
-          sg_share_test_hh->slice_bucket_count_incr_unlock(20,which_table,1); // 
-        }
-      }
-    }
-    //cout << "finished thread: " << done_cntr++ << endl;
-}
-
-
-
-
-
-void test_hh_map_operation_initialization_linearization() {
-
-  int status = 0;
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  uint32_t max_obj_size = 128;
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint32_t num_procs = 10;
-  uint32_t num_threads = num_procs;
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-
-
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-  
-  if ( noisy_test ) cout << "seg_sz: " << seg_sz << endl;
-
-  //
-  try {
-    //
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-    //
-    uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
-    // uint32_t r_seg_sz = ssm->get_size(randoms_key);
-    //
-    test_hh->set_random_bits(r_region);
-
-    sg_share_test_hh = test_hh;
-
-    if ( noisy_test ) {
-      for ( int i = 0; i < 100; i++ ) {
-        auto bit = sg_share_test_hh->pop_shared_bit();
-        cout << (bit ? "1" : "0"); cout.flush();
-      } 
-      cout << endl;
-    }
-
-    thread *testers[num_threads];
-    for ( uint32_t i = 0; i < num_threads; i++ ) {
-      testers[i] = new thread(hash_counter_bucket_access);   // uses default consts for els_per_tier,thread_id
-    }
-
-    for ( uint32_t i = 0; i < num_threads; i++ ) {
-      testers[i]->join();
-    }
-
-    if ( noisy_test ) {
-        uint8_t count1;
-        uint8_t count2;
-        uint32_t controls;
-        sg_share_test_hh->bucket_counts_lock(20,controls,1,count1,count2);
-        cout << "counts: " << (int)count1 << " :: " << (int)count2 << endl;
-    }
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
-
-
-
-
-
-
-
-uint32_t my_zero_count[256][2048];
-uint32_t my_false_count[256][2048];
-
-
-// thread func
-
-void hash_counter_bucket_access_many_buckets_random(uint32_t num_elements,uint8_t thread_num) {
-  	HHash *T = nullptr;
-		hh_element *buffer = nullptr;
-		hh_element *end = nullptr;
-		uint8_t which_table = 0;
-    //
-    std::random_device rd;  // a seed source for the random number engine
-    std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
-    std::uniform_int_distribution<uint32_t> ud(0, num_elements-1);
-    //
-    for ( uint32_t j =  0; j < 15000; j++ ) {
-      if ( sg_share_test_hh ) {
-        uint32_t h_bucket = ud(gen_v);
-        my_zero_count[thread_num][h_bucket]++;
-        //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts_refs(h_bucket,thread_num,&T,&buffer,&end,which_table) ) {
-          //
-          int i = 0; while ( i < 100 ) i++;
-          //
-          sg_share_test_hh->slice_bucket_count_incr_unlock(h_bucket,which_table,thread_num);
-        } else {
-          my_false_count[thread_num][h_bucket]++;
-        }
-      }
-    }
-    //cout << "finished thread: " << done_cntr++ << endl;
-}
-
-
-// thread func
-
-void hash_counter_bucket_access_many_buckets(uint32_t num_elements,uint8_t thread_num) {
-  	HHash *T = nullptr;
-		hh_element *buffer = nullptr;
-		hh_element *end = nullptr;
-		uint8_t which_table = 0;
-    //
-    uint32_t  bucket_counter = 0;
-    uint8_t skip = 1;
-    for ( uint32_t j =  0; j < 15000; j++ ) {
-      if ( sg_share_test_hh ) {
-        //
-        bucket_counter = ((bucket_counter + skip) >= num_elements) ? 0 : bucket_counter;
-        uint32_t h_bucket = bucket_counter += skip;
-        //
-        if ( sg_share_test_hh->wait_if_unlock_bucket_counts_refs(h_bucket,thread_num,&T,&buffer,&end,which_table) ) {
-          //
-          int i = 0; while ( i < 100 ) i++;
-          //
-          sg_share_test_hh->slice_bucket_count_incr_unlock(h_bucket,which_table,thread_num);
-        } else {
-          my_false_count[thread_num][h_bucket]++;
-        }
-      }
-    }
-    //cout << "finished thread: " << done_cntr++ << endl;
-}
-
-
-
-// thread func
-
-void hash_counter_bucket_access_many_buckets_primitive(uint32_t num_elements,uint8_t thread_num) {
-  	// HHash *T = nullptr;
-		// hh_element *buffer = nullptr;
-		// hh_element *end = nullptr;
-		//uint8_t which_table = 0;
-    //
-    uint32_t  bucket_counter = 0;
-    uint8_t skip = 1;
-    if ( sg_share_test_hh ) {
-      for ( uint32_t j =  0; j < 15000; j++ ) {
-          //
-          bucket_counter = ((bucket_counter + skip) >= num_elements) ? 0 : bucket_counter;
-          uint32_t h_bucket = bucket_counter += skip;
-          //
-          uint8_t count1, count2;
-          uint32_t controls;
-
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,controls,thread_num,count1,count2);
-          if ( ui != nullptr ) {
-            //
-            int i = 0; while ( i < 100 ) i++;
-            //
-            sg_share_test_hh->store_unlock_controller(ui,thread_num);
-          }
-      }
-    }
-    //cout << "finished thread: " << done_cntr++ << endl;
-}
-
-
-
-// thread func
-
-void hash_counter_bucket_access_many_buckets_shared_incr(uint32_t num_elements,uint8_t thread_id) {
-  	// HHash *T = nullptr;
-		// hh_element *buffer = nullptr;
-		// hh_element *end = nullptr;
-		//uint8_t which_table = 0;
-    //
-    uint32_t  bucket_counter = 0;
-    uint8_t skip = 1;
-    if ( sg_share_test_hh ) {
-      for ( uint32_t j =  0; j < 15000; j++ ) {
-          bucket_counter = (bucket_counter >= num_elements) ? 0 : bucket_counter;
-          uint32_t h_bucket = bucket_counter;
-          //
-          uint8_t count1, count2;
-          uint32_t controls;
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,controls,thread_id,count1,count2);
-          if ( ui != nullptr ) {
-            //
-            int i = 0; while ( i < 100 ) i++;
-            //
-            sg_share_test_hh->bucket_count_incr(ui,thread_id);
-          }
-          bucket_counter += skip;
-      }
-    }
-    //cout << "finished thread: " << done_cntr++ << endl;
-}
-
-
-
-
-void test_hh_map_operation_initialization_linearization_many_buckets() {
-
-  int status = 0;
-
-  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  g_ssm_catostrophy_handler = ssm;
-
-  uint32_t max_obj_size = 128;
-
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint8_t num_threads = THREAD_COUNT;
-  uint32_t num_procs = num_threads;
-
-  cout << "test_hh_map_operation_initialization_linearization_many_buckets: # els: " << els_per_tier << endl;
-
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-  g_ssm_catostrophy_handler = ssm;
-
-
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
-
-  if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
-
-  //
-  try {
-    Test_HH *test_hh = new Test_HH(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-
-    //
-    uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
-    // uint32_t r_seg_sz = ssm->get_size(randoms_key);
-    //
-    test_hh->set_random_bits(r_region);
-
-    sg_share_test_hh = test_hh;
-
-
-    thread *testers[256];
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    for ( int i = 0; i < num_threads; i++ ) {
-      uint8_t thread_id = (i + 1);
-      testers[i] = new thread(hash_counter_bucket_access_many_buckets_shared_incr,els_per_tier/2,thread_id);
-    }
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    for ( int i = 0; i < num_threads; i++ ) {
-      testers[i]->join();
-    }
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    
-  
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
-
-
-
-
-// thread func
-
-void hash_counter_bucket_access_try_a_few(uint32_t num_elements,uint8_t thread_id) {
-  	// HHash *T = nullptr;
-		// hh_element *buffer = nullptr;
-		// hh_element *end = nullptr;
-		//uint8_t which_table = 0;
-    //
-    uint32_t  bucket_counter = 0;
-    uint8_t skip = 1;
-    if ( sg_share_test_hh ) {
-      uint32_t N = 10;
-      for ( uint32_t j =  0; j < N; j++ ) {
-          bucket_counter = (bucket_counter >= num_elements) ? 0 : bucket_counter;
-          uint32_t h_bucket = bucket_counter;
-          //
-          uint8_t count1, count2;
-          uint32_t controls;
-          atomic<uint32_t> *ui = sg_share_test_hh->bucket_counts_lock(h_bucket,controls,thread_id,count1,count2);
-          if ( ui != nullptr ) {
-            //
-            int i = 0; while ( i < 100 ) i++;
-            //
-            sg_share_test_hh->bucket_count_incr(ui,thread_id);
-          } else {
-            sg_share_test_hh->bucket_count_incr(h_bucket,thread_id);
-          }
-          bucket_counter += skip;
-      }
-    }
-    cout << "finished thread: " << done_cntr++ << endl;
-}
-
-
-void handle_catastrophic(int signal) {
-  gSignalStatus = signal;
-  if ( g_ssm_catostrophy_handler != nullptr ) {
-    g_ssm_catostrophy_handler->detach_all(true);
-    exit(0);
-  }
-  if ( g_ssm_catostrophy_handler_custom != nullptr ) {
-    g_ssm_catostrophy_handler_custom->detach_all();
-    exit(0);
-  }
-}
-
-void test_hh_map_operation_initialization_linearization_small_noisy() {
-
-  int status = 0;
-
-  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  uint32_t max_obj_size = 128;
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint32_t num_procs = 4;
-  uint8_t NUM_THREADS = 4;
-
-  cout << "test_hh_map_operation_initialization_linearization_small_noisy: # els: " << els_per_tier << endl;
-
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-
-  g_ssm_catostrophy_handler = ssm;
-
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
-
-  if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
-
-
-  //
-  try {
-    Test_HH *test_hh = new Test_HH(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-
-    //
-    uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
-    // uint32_t r_seg_sz = ssm->get_size(randoms_key);
-    //
-    test_hh->set_random_bits(r_region);
-
-    sg_share_test_hh = test_hh;
-
-
-    thread *testers[256];
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    for ( int i = 0; i < NUM_THREADS; i++ ) {
-      uint8_t thread_id = (i + 1);
-      testers[i] = new thread(hash_counter_bucket_access_try_a_few,els_per_tier/2,thread_id);
-    }
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    for ( int i = 0; i < NUM_THREADS; i++ ) {
-      testers[i]->join();
-    }
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    
-    cout << "reading bucket counts" << endl;
-    uint32_t nn = 10; //els_per_tier/2;   // same as loop constant in thread
-    for ( uint32_t i = 0; i < nn; i++ ) {
-      uint8_t count1;
-      count1 = test_hh->get_buckt_count(i);
-      cout << "combined count: " << (int)count1 << endl;
-      pair<uint8_t,uint8_t> p = test_hh->get_bucket_counts(i);
-      cout << "odd bucket: " << (int)(p.first) << " :: " << (int)(p.second) << endl;
-    }
-
-  
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
-
-
-void test_method_checks() {
-
-  int status = 0;
-
-  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  uint32_t max_obj_size = 128;
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint32_t num_procs = 4;
-
-
-  cout << "test_method_checks: # els: " << els_per_tier << endl;
-
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  //  region initialization
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-
-  g_ssm_catostrophy_handler = ssm;
-
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
-
-  if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
-
-  [[maybe_unused]] uint8_t NUM_THREADS = 4;
-  //
-  try {
-
-    //  HH_map sg_share_test_hh
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-    //
-    sg_share_test_hh = test_hh;
-
-    //
-    uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
-    //
-    test_hh->set_random_bits(r_region);
-
-    uint32_t controls = 0;
-    uint32_t thread_id = 63 - 6;
-    uint32_t lock_on_controls = test_hh->bitp_stamp_thread_id(controls,thread_id) | HOLD_BIT_SET;
-
-    cout << "thread_id:\t\t" << bitset<32>{thread_id} << endl;
-    cout << "lock_on_controls:\t"  << bitset<32>{lock_on_controls} << endl;
-    controls = lock_on_controls;
-
-    cout << "check_thread_id:\t"  << test_hh->check_thread_id(controls,lock_on_controls) << endl;
-
-    controls |= 1;
-    cout << "check_thread_id:\t"  << test_hh->check_thread_id(controls,lock_on_controls) << endl;
-    controls &= ~1;
-    cout << "controls:\t"   << bitset<32>{controls} << endl;
-
-    controls = test_hh->bitp_clear_thread_stamp_unlock(controls);
-    cout << "controls:\t"   << bitset<32>{controls} << endl;
-    cout << "check_thread_id:\t"  << test_hh->check_thread_id(controls,lock_on_controls) << endl;
-
-
-
-
-    cout << " << test_method_checks << -----------------------> "  << endl;
-
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-}
-
-
-
-
 void butter_bug_nothing() {
 
   uint32_t nowish_1 = 0;
@@ -1594,7 +735,7 @@ void butter_bug_walk_struct() {
   }
   // ----
   chrono::duration<double> dur_2 = chrono::system_clock::now() - right_now_2;
-  cout << "butter_bug test walk_struct: " << (int)bb_tmp->_kv.key << "     " << dur_2.count() << " seconds" << endl;
+  cout << "butter_bug test walk_struct: " << (int)bb_tmp->c.key << "     " << dur_2.count() << " seconds" << endl;
 
 }
 
@@ -1614,13 +755,13 @@ void butter_bug_walk_struct_n_store() {
   nowish_2 = std::chrono::system_clock::to_time_t(right_now_2);
   // ----
   for ( uint32_t ii = 0; ii < 4000000000L; ii++ ) {               // bb_tmp->key = ii;
-    bb_tmp->_kv.key = ii;
+    bb_tmp->c.key = ii;
     bb_tmp++;
     if ( bb_tmp >= bb_end ) bb_tmp = (hh_element *)butter_bug;
   }
   // ----
   chrono::duration<double> dur_2 = chrono::system_clock::now() - right_now_2;
-  cout << "butter_bug test walk_struct_n_store: " << bb_tmp->_kv.key << "     " << dur_2.count() << " seconds" << endl;
+  cout << "butter_bug test walk_struct_n_store: " << bb_tmp->c.key << "     " << dur_2.count() << " seconds" << endl;
 
 }
 
@@ -1781,19 +922,19 @@ void calc_prob_limis() {
 
   cout << "MASK VALUES" << endl;
 
-  n = sizeof(uint32_t)*8;
-  uint32_t tst_i = DOUBLE_COUNT_MASK_BASE;
-  cout << "DOUBLE_COUNT_MASK_BASE:  " << bitset<32>{tst_i} << endl;
-  tst_i = DOUBLE_COUNT_MASK;
-  cout << "DOUBLE_COUNT_MASK:       " << bitset<32>{tst_i} << endl;
-  cout << std::hex << DOUBLE_COUNT_MASK_BASE << endl;
-  cout << std::hex << DOUBLE_COUNT_MASK << endl;
-  tst_i = HOLD_BIT_SET;
-  cout << "HOLD_BIT_SET:            " << bitset<32>{tst_i} << endl;
-  cout << std::hex << HOLD_BIT_SET << endl;
-  tst_i = FREE_BIT_MASK;
-  cout << "FREE_BIT_MASK:           " << bitset<32>{tst_i} << endl;
-  cout << std::hex << HOLD_BIT_SET << endl;
+  // n = sizeof(uint32_t)*8;
+  // uint32_t tst_i = DOUBLE_COUNT_MASK_BASE;
+  // cout << "DOUBLE_COUNT_MASK_BASE:  " << bitset<32>{tst_i} << endl;
+  // tst_i = DOUBLE_COUNT_MASK;
+  // cout << "DOUBLE_COUNT_MASK:       " << bitset<32>{tst_i} << endl;
+  // cout << std::hex << DOUBLE_COUNT_MASK_BASE << endl;
+  // cout << std::hex << DOUBLE_COUNT_MASK << endl;
+  // tst_i = HOLD_BIT_SET;
+  // cout << "HOLD_BIT_SET:            " << bitset<32>{tst_i} << endl;
+  // cout << std::hex << HOLD_BIT_SET << endl;
+  // tst_i = FREE_BIT_MASK;
+  // cout << "FREE_BIT_MASK:           " << bitset<32>{tst_i} << endl;
+  // cout << std::hex << HOLD_BIT_SET << endl;
 
   cout << std::dec;
   cout << endl;
@@ -1887,8 +1028,8 @@ void test_zero_above(void) {
   cout << "test_pattern:\t\t" << bitset<32>(test_pattern) << endl;
   cout << "test_patt(a):\t\t" << bitset<32>(a) << endl;
 
-  //vb_probe->c_bits = a;
-  //vb_probe->taken_spots = b | hbit;
+  //vb_probe->c.bits = a;
+  //vb_probe->tv.taken = b | hbit;
   cout << "test_hole(a):\t\t" << bitset<32>(zero_above(hole)) << endl;
   a = a & zero_above(hole);
   cout << "test_patt(a):\t\t" << bitset<32>(a) << endl;
@@ -1903,7 +1044,7 @@ void test_zero_above(void) {
     vb_probe += offset;
     swap(v_passed,*vb_probe);
     cout << "test_patt(a):\t\t" << bitset<32>(a) << " ++ " << v_passed << endl;
-    //swap(time,vb_probe->taken_spots);  // when the element is not a bucket head, this is time... 
+    //swap(time,vb_probe->tv.taken);  // when the element is not a bucket head, this is time... 
   }
   //
   cout << "v_passed: " << bitset<64>(v_passed) << endl;
@@ -1943,412 +1084,9 @@ const uint64_t HH_SELECT_BIT_MASK64 = (~HH_SELECT_BIT64);
 
 
 
-void test_hh_map_methods(void) {
+uint32_t my_zero_count[256][2048];
+uint32_t my_false_count[256][2048];
 
-  int status = 0;
-
-  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  g_ssm_catostrophy_handler = ssm;
-
-  uint32_t max_obj_size = 128;
-
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint8_t num_threads = THREAD_COUNT;
-  uint32_t num_procs = num_threads;
-
-  cout << "test_hh_map_methods: # els: " << els_per_tier << endl;
-
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-
-
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-  uint32_t expected_sz = HH_map<>::check_expected_hh_region_size(els_per_tier,num_procs);
-
-  if ( noisy_test ) cout << "seg_sz: " << seg_sz << "  " <<  expected_sz << endl;
-
-  //
-  try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-
-    //
-    // uint8_t *r_region = (uint8_t *)(ssm->get_addr(randoms_key));
-    // // uint32_t r_seg_sz = ssm->get_size(randoms_key);
-    // //
-    // test_hh->set_random_bits(r_region);
-    // //
-
-
-    hh_element test_buffer[128];
-    memset(test_buffer,0,sizeof(hh_element)*128);
-
-    hh_element *hash_ref = &test_buffer[64];
-    hh_element *buffer = test_buffer;
-    hh_element *end = test_buffer + 128;
-    //
-    uint32_t hole = 0;
-    //
-    hh_element *prev_a = hash_ref - 2;
-    prev_a->c_bits = (3 << 1);
-    hh_element *prev_b = hash_ref - 5;
-    prev_b->c_bits = 0b01001;
-    prev_b->taken_spots = 0b01001;
-    //
-    hash_ref->c_bits = 1;
-    hash_ref->taken_spots = 1;
-    //
-    auto a = prev_b->c_bits;
-    uint8_t offset = get_b_offset_update(a);
-
-    cout << (int)(offset) << " :: " << bitset<32>(a) << endl;
-    offset = get_b_offset_update(a);
-    cout << (int)(offset) << " :: " << bitset<32>(a) <<  " :: " <<  bitset<32>(1 << offset) << endl;
-
-    test_hh->place_back_taken_spots(hash_ref,hole,buffer,end);
-
-    cout << "----" << endl;
-
-    for ( int i = 0; i < 8; i++ ) {
-      cout << "(" << i + 58   <<  ")" << bitset<32>(prev_b->c_bits) << "  " << bitset<32>(prev_b->taken_spots) << endl;
-      prev_b++;
-    }
-    cout << "--- t2 ---" << endl;
-
-    prev_b = prev_a - (prev_a->c_bits >> 1);
-    cout << bitset<32>(prev_b->c_bits) << "  " << bitset<32>(prev_b->taken_spots) << endl;
-
-    auto c = prev_b->c_bits & ~(0x1);
-    offset = countr_zero(c);
-
-    prev_a = prev_b + offset;
-    cout << bitset<32>(prev_a->c_bits) << "  " << bitset<32>(prev_a->taken_spots) << endl;
-
-
-    cout << "--- t3 ---" << endl;
-    c = prev_b->c_bits;
-    while ( c ) {
-      offset = get_b_offset_update(c);
-      prev_a = prev_b + offset;
-      cout << bitset<32>(prev_a->c_bits) << "  " << bitset<32>(prev_a->taken_spots) << endl;
-    }
-
-    cout << "--- t3 -- p2 ---" << endl;
-    c = prev_b->taken_spots;
-    while ( c ) {
-      offset = get_b_offset_update(c);
-      prev_a = prev_b + offset;
-      cout << bitset<32>(prev_a->c_bits) << "  " << bitset<32>(prev_a->taken_spots) << endl;
-    }
-
-    cout << "--- t4 -- + ---" << endl;
-
-
-    test_hh->remove_back_taken_spots(hash_ref,hole,buffer,end);
-    for ( int i = 0; i < 8; i++ ) {
-      cout << "(" << i + 58   <<  ")" << bitset<32>(prev_b->c_bits) << "  " << bitset<32>(prev_b->taken_spots) << endl;
-      prev_b++;
-    }
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
-
-
-
-
-
-
-void test_hh_map_methods2(void) {
-
-  int status = 0;
-
-  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  g_ssm_catostrophy_handler = ssm;
-
-  uint32_t max_obj_size = 128;
-
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint8_t num_threads = THREAD_COUNT;
-  uint32_t num_procs = num_threads;
-
-  cout << "test_hh_map_methods2: # els: " << els_per_tier << endl;
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-  //
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-
-  try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-
-    hh_element test_buffer[128];
-    memset(test_buffer,0,sizeof(hh_element)*128);
-
-    hh_element *hash_ref = &test_buffer[64];
-    hh_element *buffer = test_buffer;
-    hh_element *end = test_buffer + 128;
-    //
-    uint32_t hole = 0;
-    //
-    uint32_t counter = 0xFF;
-
-    hh_element *prev_b = hash_ref - 5;
-    prev_b->c_bits = 1;
-    prev_b->taken_spots = 1;
-
-    auto a = prev_b->c_bits;
-    auto b = prev_b->taken_spots;
-
-
-    cout << "1(" << (unsigned int)(prev_b - &test_buffer[0]) <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
-
-    hole = 3;
-    hh_element *vb_probe = prev_b + hole;
-    vb_probe->c_bits = (hole << 1);
-    vb_probe->taken_spots = (counter++ << 16);
-
-
-    //
-    uint32_t hbit = (1 << hole);
-    a = a | hbit;
-    b =  b | hbit;
-    prev_b->c_bits = a;
-    prev_b->taken_spots = b;
-    // //
-    //
-    auto c = a ^ b;
-    cout << bitset<32>(a) << endl;
-    cout << bitset<32>(b) << endl;
-    cout << bitset<32>(c) << endl;
-    test_hh->place_taken_spots(prev_b,hole,c,buffer,end);
-
-    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-    cout << "2(" << (unsigned int)(prev_b - &test_buffer[0]) <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
-
-
-    hash_ref->c_bits = 1;
-    hash_ref->taken_spots = 1;
-    a = 1;
-    b = 1;
-    //
-    c = a ^ b;
-    cout << bitset<32>(a) << endl;
-    cout << bitset<32>(b) << endl;
-    cout << bitset<32>(c) << endl;
-
-
-    hole = 0;
-
-    test_hh->place_taken_spots(hash_ref,hole,c,buffer,end);
-    cout << "3(" << (unsigned int)(prev_b - &test_buffer[0]) <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
-    cout << "3(" << (unsigned int)(hash_ref - &test_buffer[0]) <<  ")\t" << bitset<32>(hash_ref->c_bits) << " :: " << bitset<32>(hash_ref->taken_spots) << endl;
-
-    cout << "CHECK offset and update" << endl;
-    auto w = prev_b->taken_spots;
-    cout <<  bitset<32>(w) << endl;
-    auto w_offset = get_b_offset_update(w);
-    cout << "1. w_offset: " << (int)w_offset << " " <<  bitset<32>(w) << endl;
-    cout << bitset<32>((prev_b + w_offset)->taken_spots) << endl;
-    cout << bitset<32>((prev_b + w_offset)->c_bits) << endl;
-
-    w_offset = get_b_offset_update(w);
-    cout << "2. w_offset: " << (int)w_offset << " " <<  bitset<32>(w) << endl;
-    cout << bitset<32>((prev_b + w_offset)->taken_spots) << endl;
-    cout << bitset<32>((prev_b + w_offset)->c_bits) << endl;
-
-    w_offset = get_b_offset_update(w);
-    cout << "3. w_offset: " << (int)w_offset << " " <<  bitset<32>(w) << endl;
-    cout << bitset<32>((prev_b + w_offset)->taken_spots) << endl;
-    cout << bitset<32>((prev_b + w_offset)->c_bits) << endl;
-
-
-    cout << endl << endl;
-
-
-    // put an element into hash_ref position
-
-    hole = 2;
-    vb_probe = hash_ref + hole;
-    vb_probe->c_bits = (hole << 1);
-    vb_probe->taken_spots = (counter++ << 16);
-
-    a = hash_ref->c_bits;
-    b = hash_ref->taken_spots;
-
-    hbit = (1 << hole);
-    a = a | hbit;
-    b =  b | hbit;
-    hash_ref->c_bits = a;
-    hash_ref->taken_spots = b;
-    c = a ^ b;
-    test_hh->place_taken_spots(hash_ref,hole,c,buffer,end);
-
-
-    cout << "4(" << (unsigned int)(hash_ref - &test_buffer[0]) <<  ")\t" << bitset<32>(hash_ref->c_bits) << " :: " << bitset<32>(hash_ref->taken_spots) << endl;
-
-    cout << "CHECK offset and update" << endl;
-    w = hash_ref->taken_spots;
-    cout <<  bitset<32>(w) << endl;
-    w_offset = get_b_offset_update(w);
-    cout << "1. w_offset: " << (int)w_offset << " " <<  bitset<32>(w) << endl;
-    cout << bitset<32>((hash_ref + w_offset)->taken_spots) << endl;
-    cout << bitset<32>((hash_ref + w_offset)->c_bits) << endl;
-
-    w_offset = get_b_offset_update(w);
-    cout << "2. w_offset: " << (int)w_offset << " " <<  bitset<32>(w) << endl;
-    cout << bitset<32>((hash_ref + w_offset)->taken_spots) << endl;
-    cout << bitset<32>((hash_ref + w_offset)->c_bits) << endl;
-
-    w_offset = get_b_offset_update(w);
-    cout << "3. w_offset: " << (int)w_offset << " " <<  bitset<32>(w) << endl;
-    cout << bitset<32>((hash_ref + w_offset)->taken_spots) << endl;
-    cout << bitset<32>((hash_ref + w_offset)->c_bits) << endl;
-
-
-    cout << "4(" << (unsigned int)(prev_b - &test_buffer[0]) <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
-
-    cout << endl << endl;
-
-    //
-    hh_element *next_a = hash_ref + 6;
-    hh_element *next_a_a = hash_ref + 11;
-    hh_element *next_a_a_a = hash_ref + 5;
-
-    hole = 0;   // each of these will be at the base
-    c = 0;      // neither has a list of memberships 
-
-    next_a->c_bits = 1;
-    next_a->taken_spots = 1;
-    test_hh->place_taken_spots(next_a,hole,c,buffer,end);
-    //
-    next_a_a->c_bits = 1;
-    next_a_a->taken_spots = 1;
-    test_hh->place_taken_spots(next_a_a,hole,c,buffer,end);
-    //
-    uint32_t value = 345;
-    uint32_t el_key = 4774;
-
-    test_hh->place_in_bucket_at_base(next_a_a_a,value, el_key);
-    test_hh->place_back_taken_spots(next_a_a_a, 0, buffer, end);
-
-    prev_b = hash_ref - 8;
-    for ( int i = 0; i < 32; i++ ) {
-      cout << "(" << (i + 56 - 64)  <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
-      prev_b++;
-    }
-
-    a = hash_ref->c_bits; // membership mask
-    b = hash_ref->taken_spots;
-      //
-    for ( int i = 0; i < 10; i++ ) {
-      hole = i*2;
-      vb_probe = hash_ref + hole;
-      vb_probe->c_bits = (hole << 1);
-      vb_probe->taken_spots = (counter++ << 16);
-
-      //
-      uint32_t hbit = (1 << hole);
-      a = a | hbit;
-      b =  b | hbit;
-      hash_ref->c_bits = a;
-      hash_ref->taken_spots = b;
-      // //
-      //
-      auto c = a ^ b;
-  cout << "Q: " << bitset<32>(c) << " "  << bitset<32>(a) << " " << bitset<32>(b) << " " << endl;
-      test_hh->place_taken_spots(hash_ref,hole,c,buffer,end);
-    }
-
-    cout << "----" << endl;
-
-    prev_b = hash_ref - 8;
-    for ( int i = 0; i < 32; i++ ) {
-      cout << "(" << (i + 56 - 64) <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
-      prev_b++;
-    }
-
-    cout << "-- remove back --" << endl;
-
-    test_hh->remove_back_taken_spots(hash_ref,2,buffer,end);
-    test_hh->remove_back_taken_spots(hash_ref,4,buffer,end);
-    test_hh->remove_back_taken_spots(hash_ref,6,buffer,end);
-    //
-    test_hh->remove_back_taken_spots(next_a,0,buffer,end);
-    test_hh->remove_back_taken_spots(next_a_a,0,buffer,end);
-    test_hh->remove_back_taken_spots(next_a_a_a,0,buffer,end);
-    //
-
-    prev_b = hash_ref - 8;
-    for ( int i = 0; i < 32; i++ ) {
-      cout << "(" << (i + 56 - 64) <<  ")\t" << bitset<32>(prev_b->c_bits) << " :: " << bitset<32>(prev_b->taken_spots) << endl;
-      prev_b++;
-    }
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
 
 
 
@@ -2357,316 +1095,11 @@ void test_hh_map_methods2(void) {
 
 void print_values_elems(hh_element *elems,uint8_t N,uint8_t start_at = 0) {
   for ( int i = 0; i < N; i++ ) {
-    cout << "p values: " << elems->_V << " .. (" << (start_at + i) << ")" << endl;
+    cout << "p values: " << elems->tv.value << " .. (" << (start_at + i) << ")" << endl;
     elems++;
   }
 }
 
-
-
-void test_hh_map_methods3(void) {
-
-  int status = 0;
-
-  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  g_ssm_catostrophy_handler = ssm;
-
-  uint32_t max_obj_size = 128;
-
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint8_t num_threads = THREAD_COUNT;
-  uint32_t num_procs = num_threads;
-
-  cout << "test_hh_map_methods3: # els: " << els_per_tier << endl;
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-  //
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-
-  try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-
-    hh_element test_buffer[128];
-    memset(test_buffer,0,sizeof(hh_element)*128);
-
-    hh_element test_buffer_copy[128];
-    memset(test_buffer_copy,0,sizeof(hh_element)*128);
-
-    hh_element *hash_ref = &test_buffer[64];
-    hh_element *buffer = test_buffer;
-    hh_element *end = test_buffer + 128;
-    //
-    uint32_t hole = 0;
-    uint32_t counter = 0xFFFD;
-
-
-    uint8_t test_base_offset = 3;
-
-    /* test 3 */
-    hash_ref->c_bits = 0b00010101111100111101010111110111;
-    hash_ref->taken_spots = 0xFFFFFFFF;
-    //   
-    auto tester = (hash_ref + test_base_offset);  
-    tester->c_bits = ~(hash_ref->c_bits >> test_base_offset);
-    tester->taken_spots = 0xFFFFFFFF;
-
-    cout << "hash ref and test base: " << bitset<32>(hash_ref->c_bits) << " :: " << endl;
-    cout << "hash ref and test base: " << bitset<32>(tester->c_bits  << test_base_offset) << " :: " << endl;
-    cout << "hash ref and test base: " << bitset<32>(tester->c_bits) << " :: " << endl;
-
-    auto q = hash_ref->c_bits;
-    auto r = tester->c_bits;
-    cout << "hash ref and test base: " << bitset<32>((r << test_base_offset) & q) << " :: " <<  bitset<32>((r << test_base_offset) | q) << endl;
-
-
-    uint64_t B = hash_ref->c_bits;
-    uint64_t C = tester->c_bits;
-    uint64_t VV = C;
-    VV = B | (VV << test_base_offset);
-    VV &= UINT32_MAX;
-
-    uint32_t c = (uint32_t)VV;
-    uint8_t offset = countr_one(c);
-
-    if ( offset < 32 ) {
-      //
-      (hash_ref + offset)->c_bits = 1;
-      (hash_ref + offset)->taken_spots = 0xFFFFFFFF;
-
-      cout <<  "COUNTR ONE FFFFFFFF: " << countr_one((hash_ref + offset)->taken_spots) << endl;
-
-      cout << bitset<32>(c) << "  "  << (int)offset  << endl;
-
-      VV = VV | (1 << offset);
-      VV &= UINT32_MAX;
-      c = (uint32_t)VV;
-
-      offset = countr_one(c);
-      cout << bitset<32>(c) << "  "  << (int)offset  << endl;
-      //
-    }
-
-
-    hh_element *tmp = hash_ref;
-    c = hash_ref->c_bits;
-    offset = 0;
-    while ( c ) {
-      c = c & ~(0x1 << offset);
-      offset = countr_zero(c);
-      tmp = hash_ref + offset;
-      tmp->c_bits = offset << 1;
-      tmp->taken_spots = (counter-- << 18) | (1 << 16);
-    }
-
-
-    c = (hash_ref + test_base_offset)->c_bits;
-    offset = 0;
-    while ( c ) {
-      c = c & ~(0x1 << offset);
-      offset = countr_zero(c);
-      tmp = (hash_ref + test_base_offset) + offset;
-      tmp->c_bits = offset << 1;
-      tmp->taken_spots = (counter-- << 18) | (1 << 16);
-    }
-
-
-    memcpy(test_buffer_copy,test_buffer,sizeof(hh_element)*128);
-
-    tmp = hash_ref - 1;
-    for ( int i = 0; i < 36; i++ ) {
-      uint32_t backref = 0;
-      if ( !(tmp->c_bits & 1) ) {
-        backref = (tmp->c_bits >> 1);
-      }
-      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp->c_bits) << " :: " << bitset<32>(tmp->taken_spots) <<  " :: " << backref << endl;
-      tmp++;
-    }
-
-
-    uint64_t v_passed = 20;
-    uint32_t time = 0xEDCABEEE;
-
-    auto a = hash_ref->c_bits;
-    auto b = hash_ref->taken_spots;
-		c = a ^ b;
-
-    offset = 0;
-    hole = 32;
-    //
-    offset = test_hh->inner_bucket_time_swaps(hash_ref,hole,v_passed,time, buffer, end, 1);
-
-    cout << "before pop_oldest_full_bucket: " <<  bitset<32>(c) << endl;
-    cout << "before pop_oldest_full_bucket: " << (int)offset << endl;
-    cout << "before pop_oldest_full_bucket: " << std::hex << time << std::dec << endl;
-
-
-    tmp = hash_ref - 1;
-    for ( int i = 0; i < 36; i++ ) {
-      uint32_t backref = 0;
-      if ( !(tmp->c_bits & 1) ) {
-        backref = (tmp->c_bits >> 1);
-      }
-      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp->c_bits) << " :: " << bitset<32>(tmp->taken_spots) <<  " :: " << backref << endl;
-      tmp++;
-    }
-
-    hh_element *tmp2 = &test_buffer_copy[64];
-
-    cout << "------------- ------------- ------------- ------------- ------------- ------------- -------------" << endl;
-
-    tmp = hash_ref - 1;
-    tmp2--;
-    for ( int i = 0; i < 36; i++ ) {
-      uint32_t backref = 0;
-      if ( !(tmp->c_bits & 1) ) {
-        backref = (tmp->c_bits >> 1);
-      }
-      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp->c_bits) << " :: "  << std::hex << tmp->taken_spots <<  " :: " << std::dec << backref << endl;
-      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp2->c_bits) << " :: " << std::hex << tmp2->taken_spots <<  " :: " << std::dec << backref << endl;
-      cout << "---" << endl;
-      tmp++;
-      tmp2++;
-    }
-
-    cout << " a^b "  << " -- " << bitset<32>(c) <<  " offset: " << (int)(offset) << endl;
-
-    test_hh->pop_oldest_full_bucket(hash_ref, c, v_passed, time, offset, buffer, end);
-
-    tmp = hash_ref - 1;
-    tmp2 = &test_buffer_copy[64];
-    tmp2--;
-    for ( int i = 0; i < 36; i++ ) {
-      uint32_t backref = 0;
-      if ( !(tmp->c_bits & 1) ) {
-        backref = (tmp->c_bits >> 1);
-      }
-      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp->c_bits) << " :: "  << std::hex << tmp->taken_spots <<  " :: " << std::dec << backref << endl;
-      cout << "(" << (i + 63 - 64) <<  ")\t" << bitset<32>(tmp2->c_bits) << " :: " << std::hex << tmp2->taken_spots <<  " :: " << std::dec << backref << endl;
-      cout << "---" << endl;
-      tmp++;
-      tmp2++;
-    }
-
-    tmp = buffer;
-    uint8_t k = 1;
-    while ( tmp < end ) {
-      tmp->_V = k++;
-      tmp++;
-    }
-    
-
-    cout << endl << endl;
-
-
-    cout << "NOW REMOVING THINGS" << endl;
-
-    cout << "hash ref: " << bitset<32>(hash_ref->c_bits) << " " << bitset<32>(hash_ref->taken_spots)  << endl;
-    //
-    {
-      auto hash_base = hash_ref;
-
-      print_values_elems(hash_base,32,64);
-
-      uint32_t a = hash_base->c_bits; // membership mask
-      uint8_t nxt = countr_one(a);
-      cout << "prev_ref: " << (hash_base+nxt)->_V << " " <<  bitset<32>((hash_base+nxt)->c_bits) <<  " nxt: " << (int)nxt  << endl;
-      nxt--;
-      hash_ref += nxt;
-      cout << "hash_ref: " << hash_ref->_V << " " <<  bitset<32>(hash_ref->c_bits) <<  " nxt: " << (int)nxt  << endl;
-      uint32_t b = hash_base->taken_spots;
-      //
-      hh_element *vb_last = nullptr;
-
-      auto c = a;   // use c as temporary
-      cout << bitset<32>(c) << endl;
-      //
-      if ( hash_base != hash_ref ) {  // if so, the bucket base is being replaced.
-        uint32_t offset = (hash_ref - hash_base);
-        cout << "offset: " << offset << endl;
-        c = c & ones_above(offset);
-      }
-      cout << bitset<32>(c) << endl;
-      //
-      a = hash_base->c_bits; // membership mask
-      cout << bitset<32>(a) << " " << bitset<32>(b) <<  endl;
-      vb_last = test_hh->shift_membership_spots(hash_base,hash_ref,c,buffer,end);
-      a = hash_base->c_bits; // membership mask
-      b = hash_base->taken_spots;
-      cout << bitset<32>(a) << " " << bitset<32>(b) <<  endl;
-      if ( vb_last == nullptr ) {
-        cout << "REMOVALS: " << "got a null pointer" << endl;
-      } else {
-        cout << "VB LAST: " << vb_last->_V << " " <<  bitset<32>(vb_last->c_bits) << endl;
-      }
-      print_values_elems(hash_base,32,64);
-
-			uint8_t nxt_loc = (vb_last - hash_base);   // the spot that actually cleared...
-
-      cout << "nxt_loc LAST: " << (int)(nxt_loc) << " " <<  (int)(vb_last->c_bits >> 1) << endl;
-
-      //
-			// vb_probe should now point to the last position of the bucket, and it can be cleared...
-			vb_last->c_bits = 0;
-			vb_last->taken_spots = 0;
-			vb_last->_V = 0;
-
-
-			// recall, a and b are from the base
-			// clear the bits for the element being removed
-			UNSET(a,nxt_loc);
-			UNSET(b,nxt_loc);
-			hash_base->c_bits = a;
-			hash_base->taken_spots = b;
-      
-      
-      cout << "BEFORE remove bucket: " <<  bitset<32>(a) << " " <<  bitset<32>(b) << endl;
-
-			c = a ^ b;   // now look at the bits within the range of the current bucket indicating holdings of other buckets.
-
-      cout << "BEFORE remove bucket: " <<  bitset<32>(c) << endl;
-			c = c & zero_above(nxt_loc);
-
-      cout << "BEFORE remove bucket: " <<  bitset<32>(c) << endl;
-
-      test_hh->remove_bucket_taken_spots(hash_base,nxt_loc,a,b,buffer,end);
-
-    }
-
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
 
 
 
@@ -2719,9 +1152,6 @@ void test_some_bit_patterns_2(void) {   //  ----  ----  ----  ----  ----  ----  
     std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
     std::uniform_int_distribution<uint32_t> ud(0, num_elements-1);
     //
-    for ( uint32_t j =  0; j < 15000; j++ ) {
-      if ( sg_share_test_hh ) {
-        uint32_t h_bucket = ud(gen_v);
 */
 
 
@@ -2734,28 +1164,28 @@ uint8_t test_usurp_membership_position(hh_element *hash_ref, uint32_t c_bits, hh
   cout << "test_usurp_membership_position: " << (int)k << endl;
   //
   hh_element *base_ref = (hash_ref - k);  // base_ref ... the base that owns the spot
-  cout << "test_usurp_membership_position: cbits =  " << bitset<32>(base_ref->c_bits) << endl;
+  cout << "test_usurp_membership_position: cbits =  " << bitset<32>(base_ref->c.bits) << endl;
 
   base_ref = el_check_beg_wrap(base_ref,buffer,end);
-  UNSET(base_ref->c_bits,k);   // the element has been usurped...
-  cout << "test_usurp_membership_position: cbits =  " << bitset<32>(base_ref->c_bits) << endl;
+  UNSET(base_ref->c.bits,k);   // the element has been usurped...
+  cout << "test_usurp_membership_position: cbits =  " << bitset<32>(base_ref->c.bits) << endl;
   //
-  uint32_t c = 1 | (base_ref->taken_spots >> k);   // start with as much of the taken spots from the original base as possible
+  uint32_t c = 1 | (base_ref->tv.taken >> k);   // start with as much of the taken spots from the original base as possible
   //
   cout << "test_usurp_membership_position(0): c =  " << bitset<32>(c) << endl;
   auto hash_nxt = base_ref + (k + 1);
   for ( uint8_t i = (k + 1); i < NEIGHBORHOOD; i++, hash_nxt++ ) {
-    if ( hash_nxt->c_bits & 0x1 ) { // if there is another bucket, use its record of taken spots
-      cout << "test_usurp_membership_position(1):  =  " << bitset<32>(hash_nxt->taken_spots << i) << " -> c_bits " << bitset<32>(hash_nxt->c_bits) << endl;
-      c |= (hash_nxt->taken_spots << i); // this is the record, but shift it....
+    if ( hash_nxt->c.bits & 0x1 ) { // if there is another bucket, use its record of taken spots
+      cout << "test_usurp_membership_position(1):  =  " << bitset<32>(hash_nxt->tv.taken << i) << " -> c.bits " << bitset<32>(hash_nxt->c.bits) << endl;
+      c |= (hash_nxt->tv.taken << i); // this is the record, but shift it....
       cout << "test_usurp_membership_position(a): c =  " << bitset<32>(c) << endl;
       break;
-    } else if ( hash_nxt->_kv.value != 0 ) {  // set the bit as taken
+    } else if ( hash_nxt->tv.value != 0 ) {  // set the bit as taken
       SET(c,i);
       cout << "test_usurp_membership_position(b): c =  " << bitset<32>(c) << endl;
     }
   }
-  hash_ref->taken_spots = c;
+  hash_ref->tv.taken = c;
   cout << "test_usurp_membership_position(c): c =  " << bitset<32>(c) << endl;
   return k;
 }
@@ -2768,7 +1198,7 @@ hh_element *test_seek_next_base(hh_element *base_probe, uint32_t &c, uint32_t &o
     auto offset_nxt = get_b_offset_update(c);
     base_probe += offset_nxt;
     base_probe = el_check_end_wrap(base_probe,buffer,end);
-    if ( base_probe->c_bits & 0x1 ) {
+    if ( base_probe->c.bits & 0x1 ) {
       offset_nxt_base = offset_nxt;
       return base_probe;
     }
@@ -2780,7 +1210,7 @@ hh_element *test_seek_next_base(hh_element *base_probe, uint32_t &c, uint32_t &o
 
 
 void test_seek_min_member(hh_element **min_probe_ref, hh_element **min_base_ref, uint32_t &min_base_offset, hh_element *base_probe, uint32_t time, uint32_t offset, uint32_t offset_nxt_base, hh_element *buffer, hh_element *end) {
-  auto c = base_probe->c_bits;		// nxt is the membership of this bucket that has been found
+  auto c = base_probe->c.bits;		// nxt is the membership of this bucket that has been found
   c = c & (~((uint32_t)0x1));   // the interleaved bucket does not give up its base...
   if ( offset_nxt_base < offset ) {
     c = c & ones_above(offset - offset_nxt_base);  // don't look beyond the window of our base hash bucket
@@ -2794,10 +1224,10 @@ void test_seek_min_member(hh_element **min_probe_ref, hh_element **min_base_ref,
     vb_probe += offset_min;
     vb_probe = el_check_end_wrap(vb_probe,buffer,end);
 
-cout << "test_seek_min_member: offset_min = " << (int)offset_min << " time .. " << vb_probe->taken_spots << " " << time << endl;
+cout << "test_seek_min_member: offset_min = " << (int)offset_min << " time .. " << vb_probe->tv.taken << " " << time << endl;
 
-    if ( vb_probe->taken_spots <= time ) {
-			time = vb_probe->taken_spots;
+    if ( vb_probe->tv.taken <= time ) {
+			time = vb_probe->tv.taken;
       *min_probe_ref = vb_probe;
       *min_base_ref = base_probe;
       min_base_offset = offset_min;
@@ -2807,430 +1237,6 @@ cout << "----" << endl;
 
   }
 }
-
-
-
-
-void test_some_bit_patterns_3(void) {   //  ----  ----  ----  ----  ----  ----  ----
-  //
-
-  std::random_device rd;  // a seed source for the random number engine
-  std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
-  std::uniform_int_distribution<uint32_t> ud(1, 31);
-
-
-  std::uniform_int_distribution<uint32_t> ud_wide(1, UINT32_MAX/3);
-
-  //
-  uint32_t buffer[128];
-  uint32_t cbits[128];
-  memset(buffer,0xFF,128*sizeof(uint32_t));
-  memset(cbits,0,128*sizeof(uint32_t));
-
-
-  for ( int j = 0; j < 5; j++ ) {
-    uint32_t h_bucket = ud(gen);
-    cbits[64 - h_bucket] = 1;
-  }
-
-  uint32_t cbit_gen = ud_wide(gen);
-  uint32_t cbit_update = cbit_gen;
-  uint32_t cbit_accumulate = cbit_gen;
-  uint32_t prev_pos = 0;
-  for ( int j = 32; j < 64; j++ ) {
-    if ( cbits[j] == 1 ) {
-      cbits[j] |= cbit_update;
-      if ( prev_pos > 0 ) {
-        uint32_t shft = (j - prev_pos);
-        cbit_accumulate = cbit_accumulate << shft;
-      }
-      //
-      cbit_accumulate |= cbits[j];
-      cbit_gen = ud_wide(gen);
-      cbit_update = cbit_gen & ~cbit_accumulate;
-      prev_pos = j;
-    }
-  }
-
-  cout << "cbit_accumulate: " << bitset<32>(cbit_accumulate) << endl;
-
-  cbit_accumulate = 0;
-  prev_pos = 0;
-  for ( int j = 32; j < 64; j++ ) {
-    if ( cbits[j]  & 0x1 ) {
-      auto stored_bits = cbits[j];
-      if ( prev_pos > 0 ) {
-        uint32_t shft = (j - prev_pos);
-        cbit_accumulate <<= shft;
-      }
-      cbit_accumulate |= stored_bits;
-      cout << "cbits: " << j << " :: " << bitset<32>(stored_bits) << endl;
-      prev_pos = j;
-    }
-  }
-
-  cout << "cbit_accumulate: " << bitset<32>(cbit_accumulate) << endl;
-
-
-  // 01011111011111110110110011100001
-  // 01011111011111110110110011100001
-  // 01111110111110011100001001100101
-
-  uint8_t dist_base = 31;
-  uint8_t g = NEIGHBORHOOD - 1;
-  while ( dist_base ) {
-    //
-    cout << " DISTANCE TO BASE IS: " << dist_base << endl;
-    uint32_t last_view = (g - dist_base);
-    //
-    uint32_t c = 1 << g;
-    cout << bitset<32>(c) << " last_view = " <<  last_view << endl;
-
-    if ( last_view > 0 ) {
-      uint32_t *base = &buffer[64];
-      uint32_t *cbits_base = &cbits[64];
-      //
-      uint32_t *viewer = base - last_view;
-      uint32_t *cbts_v = cbits_base - last_view;
-      uint8_t k = g;      ///  (dist_base + last_view) :: dist_base + (g - dist_base) ::= dist_base + (NEIGHBORHOOD - 1) - dist_base ::= (NEIGHBORHOOD - 1) ::= g
-      while ( viewer != base ) {
-        cout << " base - viewer:  " << (base - viewer) << endl;
-        //
-        if ( *cbts_v & 0x1 ) {
-          cout << " cbit = " << k << " dist_base = " << (int)dist_base << " last_view = " << last_view << endl;
-          auto vbits = *viewer;
-          vbits = vbits & ~((uint32_t)0x1 << k);
-          *viewer = vbits;
-          c = *cbts_v;
-          break;
-        }
-        viewer++; k--; cbts_v++;
-      }
-      // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-      cout << "c = "  << bitset<32>(c) << endl;
-      c = ~c & zero_above(last_view - (g - k)); // these are not the members of the first found bucket, necessarily in range of hole.
-      cout << "c = "  << bitset<32>(c) << "  *viewer= " << bitset<32>(*viewer) << endl;
-      c = c & *viewer;   // taken bits
-      cout << "c = "  << bitset<32>(c) << endl;
-
-      while ( c ) {
-        auto base_probe = viewer;
-        auto base_cbts = cbts_v;
-        auto offset_nxt = get_b_offset_update(c);
-        base_probe += offset_nxt;
-        base_cbts += offset_nxt;
-        if ( *base_cbts & 0x1 ) {
-          auto j = k;
-          j -= offset_nxt;
-          *base_probe = *base_probe & ~((uint32_t)0x1 << j);  // the bit is not as far out
-          cout << "members nxt :: c = "  << bitset<32>(c) << "  ~(*base_cbts): " <<  bitset<32>(~(*base_cbts)) << " : " << (int)j << " : " << (int)k << " : " << (int)offset_nxt << endl;
-          c = c & ~(*base_cbts);  // no need to look at base probe members anymore ... remaining bits are other buckets
-          cout << "members nxt :: c = "  << bitset<32>(c) << endl;
-        }
-        cout << "members :: c = "  << bitset<32>(c) << endl;
-      }
-
-
-      uint32_t *reporter = &buffer[32];
-
-      base++;
-      while ( reporter < base ) {
-        cout << bitset<32>(*reporter) << endl;
-        reporter++;
-      }
-      // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    }
-    dist_base--;
-    cout << endl;
-  }
-
-  {
-    hh_element test_hh_elements[128];
-    hh_element *buffer = test_hh_elements;
-    hh_element *end = &test_hh_elements[128];
-
-    hh_element *base_probe = &test_hh_elements[64];
-    hh_element *base_probe_2 = &test_hh_elements[66];
-
-    base_probe->c_bits = 1;
-    base_probe->_V = 1;
-
-    (base_probe + 1)->c_bits = 1 << 1;
-
-
-    base_probe_2->c_bits = 1;
-    base_probe_2->_V = 5;
-
-    uint32_t c = 0b1011;
-    uint32_t offset_nxt_base = 0;
-
-    cout << "test seek_next_base" << endl;
-
-    c = ~c;
-    base_probe_2 = test_seek_next_base(base_probe, c, offset_nxt_base, buffer, end);
-
-    cout << "offset_nxt_base = " << offset_nxt_base <<  " " << bitset<32>(c) <<  " "  << base_probe_2->_V << endl;
-
-    hh_element *min_probe = nullptr;
-    hh_element *min_base = nullptr;
-
-
-    uint32_t min_base_offset = 2;
-    uint32_t offset = 3;
-
-       base_probe->c_bits =   0b0001011;
-       base_probe_2->c_bits = 0b11101;
-  base_probe->taken_spots = 0b1111111;
- base_probe_2->taken_spots = 0b00001111;
-
-    //
-    c = base_probe_2->c_bits;
-    uint32_t time = 200;
-    //
-    base_probe_2 = base_probe;
-    for ( int i = 0; i < 10; i++ ) {
-      base_probe_2++;
-      base_probe_2->taken_spots = --time;
-      base_probe_2->_V = 10*i;
-    }
-    base_probe_2 = &test_hh_elements[66];
-
-
-    time = 200 - 2;
-    //
-    test_seek_min_member(&min_probe, &min_base, min_base_offset, base_probe_2, time, offset, offset_nxt_base, buffer, end);
-    //
-    if ( min_probe != nullptr ) {
-      cout << bitset<32>(min_base->c_bits) << " " << bitset<32>(min_base->taken_spots) << endl;
-      cout << min_probe->_V  << " " << min_probe->taken_spots << endl;
-      cout << min_base_offset << endl;
-    }
-    //
-
-       base_probe->c_bits =   0b0001011;
-       base_probe_2->c_bits = 0b11101;
-      base_probe->taken_spots =   0b1111111;
- base_probe_2->taken_spots = 0b1011111111;
-
-    auto hash_ref = base_probe + 1;
-    hash_ref->c_bits = (1 << 1);
-    auto c_bits = hash_ref->c_bits;
-
-    auto K = test_usurp_membership_position(hash_ref, c_bits,  buffer, end);
-
-    cout << (int)K << endl;
-    cout << "bitset<32>(0b1111111 | (0b1011111111 << 1))::  "<< bitset<32>((0b1111111 >> 1) | (0b1011111111 << 1)) << endl;
-  }
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-void test_hh_map_for_test_methods(void) {
-
-  int status = 0;
-
-  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsTForm<HH_map_test<>> *ssm = new SharedSegmentsTForm<HH_map_test<>>();
-
-  g_ssm_catostrophy_handler_custom = ssm;
-
-  uint32_t max_obj_size = 128;
-
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint8_t num_threads = THREAD_COUNT;
-  uint32_t num_procs = num_threads;
-
-  cout << "test_hh_map_for_test_methods: # els: " << els_per_tier << endl;
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-  //
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-
-  try {
-    HH_map_test<> *test_hh = new HH_map_test<>(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-
-    uint64_t loaded_value = ((uint64_t)0xFFFFF << 32 | 0x1234);
-    auto time = now_time();
-    uint32_t back_to_base = 4;   // not an offset, since for the testing, this will just be the ref
-
-    //
-    cout << "T0: " << test_hh->_T0 << " buffer: " << test_hh->_T0->buffer << endl;
-    cout << "T1: " << test_hh->_T1 << " buffer: " << test_hh->_T1->buffer << endl;
-
-    hh_element *h1 = (hh_element *)(test_hh->_T0 + 1);
-    hh_element *h2 = (hh_element *)(test_hh->_T1 + 1);
-    //
-    cout << "h1: " << h1 << endl;
-    cout << "h2: " << h2 << endl;
-
-    test_hh->allocate_hh_element(test_hh->_T0,back_to_base,loaded_value,time);
-    test_hh->allocate_hh_element(test_hh->_T1,back_to_base,loaded_value,time+1);
-
-    back_to_base = 6;
-    loaded_value = ((uint64_t)0xFFFF7  << 32 | 0x2346);
-    test_hh->allocate_hh_element(test_hh->_T0,back_to_base,loaded_value,time+2);
-    test_hh->allocate_hh_element(test_hh->_T1,back_to_base,loaded_value,time+3);
-
-
-    loaded_value = ((uint64_t)0xEEEE7  << 32 | 0x9876);
-    time = now_time();
-
-
-    uint32_t el_key = 0xEEEE7;
-    uint32_t h_bucket = 24;
-    // ----
-    uint32_t value = loaded_value & UINT32_MAX;
-    el_key = (loaded_value >> 32) & UINT32_MAX;
-
-    test_hh->add_into_test_storage(nullptr,h_bucket,el_key,value,time,test_hh->_T0->buffer);
-    test_hh->add_into_test_storage(nullptr,h_bucket,el_key,value,time,test_hh->_T1->buffer);
-
-
-    uint32_t el_key_2 = 0xEEEE8;
-    uint32_t h_bucket_2 = 29;
-    uint32_t value_2 = 0xAE26;
-
-
-    test_hh->add_into_test_storage(nullptr,h_bucket_2,el_key_2,value_2,time,test_hh->_T0->buffer);
-    test_hh->add_into_test_storage(nullptr,h_bucket_2,el_key_2,value_2,time,test_hh->_T1->buffer);
-
-
-    for ( auto p : *(test_hh->_T0->test_it) ) {
-      cout << "T0 BUCKET:: " << p.first  << endl;
-      for ( auto p2 : p.second ) {
-        cout << "\tBUCKETS " << hex << p2.first << "  " <<  p2.second->_V << dec << endl;
-      }
-    }
-
-    for ( auto p : *(test_hh->_T1->test_it) ) {
-      cout << "T1 BUCKET:: " << p.first  << endl;
-      for ( auto p2 : p.second  ) {
-        cout << "\tBUCKETS " << hex << p2.first << "  " <<  p2.second->_V << dec << endl;
-      }
-    }
-
-    uint32_t h_start = 24;
-    el_key = (loaded_value >> 32) & UINT32_MAX;
-
-    hh_element *ba = test_hh->bucket_at(test_hh->_T0->buffer,h_start,el_key);
-    //
-    cout << ba << endl;
-    if ( ba != nullptr ) {
-        cout << "BA " << hex <<  ba->_V << dec << endl;
-    }
-
-    try {
-
-      if ( test_hh-> remove_from_storage(h_start, el_key, test_hh->_T0->buffer) ) {
-        cout << "successfully removed" << endl;
-      }
-      //
-      if ( test_hh-> remove_from_storage(h_start, el_key, test_hh->_T0->buffer) ) {
-        cout << "successfully removed twice " << endl;
-      }
-
-    } catch ( void *err ) {
-      cout << "something broke" << endl;
-    }
-
-    //
-
-    for ( int i = 0; i < 8; i++ ) {
-      cout << std::hex << h1->_V << std::dec << "  --  " << bitset<32>(h1->c_bits)<< endl;
-      cout << std::hex << h2->_V << std::dec << "  --  " << bitset<32>(h2->c_bits)<< endl;
-      h1++; h2++;
-    }
-
-    cout << " get ref, del ref " << endl;
-    //
-    hh_element *hel = test_hh->get_ref(h_start, el_key, test_hh->_T0->buffer, test_hh->_T0->end);
-    //
-    cout << "hello .... " << hel << endl;
-    //
-
-    h_bucket = stamp_key(h_bucket,1);
-    uint32_t big_V = test_hh->get(el_key,h_bucket,1);
-
-    cout << "big_V: " <<  std::hex <<  big_V << std::dec << endl;
-
-    hel = test_hh->get_ref(h_start, el_key, test_hh->_T1->buffer, test_hh->_T1->end);
-
-    cout << "hello delete.... " << hel << endl;
-    if ( hel ) {
-      cout << "Give em: " << hex << hel->_V << dec << endl;
-      test_hh->del_ref(h_start, el_key, test_hh->_T1->buffer, test_hh->_T1->end);
-    }
-
-    hel = test_hh->get_ref(h_bucket_2, el_key_2, test_hh->_T1->buffer, test_hh->_T1->end);
-    if ( hel ) {
-      cout << "Give em: " << hex << hel->_V << dec << endl;
-      cout << " now delete " << endl;
-      //
-      h_bucket_2 = stamp_key(h_bucket_2,1);
-
-      uint32_t v_value = 0xABADFEE;
-      test_hh->update(el_key_2,h_bucket_2,v_value,1);
-      //
-      auto was_stored = test_hh->get(el_key_2,h_bucket_2,1);
-
-      cout << "was_stored: " << hex << was_stored << dec << endl;
-      //
-      test_hh->del(el_key_2,h_bucket_2,1);
-      //
-      hel = test_hh->get_ref(h_bucket_2, el_key_2, test_hh->_T1->buffer, test_hh->_T1->end);
-      if ( hel ) {
-        cout << "WHAT THE " << hel << endl;
-      }
-    }
-
-    //
-    cout << endl << endl;
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
-
-
 
 
 typedef struct Q_ENTRY_TEST {
@@ -3465,11 +1471,16 @@ void entry_holder_threads_test(void) {
 
 
 typedef struct LRU_ELEMENT_HDR_test {
+
 	uint32_t	_info;
 	uint32_t	_next;
 	uint64_t 	_hash;
 	time_t		_when;
 	uint32_t	_share_key;
+
+  void		init([[maybe_unused]] uint64_t hash_init = UINT64_MAX) {
+  }
+
 } LRU_element_test;
 
 
@@ -3721,7 +1732,7 @@ void test_tiers_and_procs() {
   void *com_buffer = nullptr;
 
 
-  cout << "test_hh_map_methods3: # els: " << els_per_tier << endl;
+  cout << "test_tiers_and_procs: # els: " << els_per_tier << endl;
 
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -3954,7 +1965,7 @@ static inline void cleared_for_alloc(atomic<COM_BUFFER_STATE> *read_marker) {
 
 class Spinlock{
 public:
-  Spinlock(): flag{ATOMIC_FLAG_INIT} {}
+  Spinlock() { unlock(); }
 
   virtual ~Spinlock(void) { unlock(); }
 
@@ -3988,7 +1999,7 @@ void tryout_cpp_example(void) {
     bool start = false;
     bool read_start = false;
     
-    auto reader = [&](int id) {
+    auto reader = [&]([[maybe_unused]] int id) {
       while ( !read_start ) std::this_thread::sleep_for(1ms);
       while (true) {
           //
@@ -4129,7 +2140,7 @@ void tryout_atomic_counter(void) {
   
   };
 
-  auto requester = [&](int id) {
+  auto requester = [&]([[maybe_unused]] int id) {
     while ( !start ) std::this_thread::sleep_for(1ms);
     uint32_t breakout = 0;
     for (int n = 0; n < loop_n; n++ ) {
@@ -4227,7 +2238,7 @@ void try_out_relaxed_atomic_counter(void) {
     }
     atomic_thread_fence(std::memory_order_acquire);
 
-    bool chck = false;
+    // bool chck = false;
     for (int i = 0; i<500; i++) { std::cout << "A"; }
     // for (int i = 0; i<500; i++) { 
     //   if ( !chck ) { chck = done.load(std::memory_order_relaxed); i--; cout << "."; cout.flush(); }
@@ -4252,193 +2263,23 @@ void try_out_relaxed_atomic_counter(void) {
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
-void test_hh_map_methods_collisions_and_randoms(void) {
-
-  int status = 0;
-
-  memset(my_zero_count,0,2048*256*sizeof(uint32_t));
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-  //
-  SharedSegmentsManager *ssm = new SharedSegmentsManager();
-
-  g_ssm_catostrophy_handler = ssm;
-
-  uint32_t max_obj_size = 128;
-
-  uint32_t els_per_tier = 1024;
-  uint8_t num_tiers = 3;
-  uint8_t num_threads = THREAD_COUNT;
-  uint32_t num_procs = num_threads;
-
-  cout << "test_hh_map_methods3: # els: " << els_per_tier << endl;
-
-  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-  key_t com_key = ftok(paths[0],0);
-  key_t randoms_key = ftok(paths[1],0);
-
-  list<uint32_t> lru_keys;
-  list<uint32_t> hh_keys;
-
-  for ( uint8_t i = 0; i < num_tiers; i++ ) {
-    key_t t_key = ftok(paths[2],i);
-    key_t h_key = ftok(paths[3],i);
-    lru_keys.push_back(t_key);
-    hh_keys.push_back(h_key);
-  }
-
-  status = ssm->region_intialization_ops(lru_keys, hh_keys, true,
-                                  num_procs, num_tiers, els_per_tier, max_obj_size,  com_key, randoms_key);
-  //
-  key_t hh_key = hh_keys.front();
-  uint8_t *region = (uint8_t *)(ssm->get_addr(hh_key));
-  uint32_t seg_sz = ssm->get_size(hh_key);
-
-  try {
-    HH_map<> *test_hh = new HH_map<>(region, seg_sz, els_per_tier, num_procs, true);
-    cout << test_hh->ok() << endl;
-
-
-    cout << test_hh->_region_C << " " << ((test_hh->_region_C == nullptr )? "false" : "true" ) << endl;
-
-    hh_element test_buffer[128];
-    memset(test_buffer,0,sizeof(hh_element)*128);
-
-    hh_element test_buffer_copy[128];
-    memset(test_buffer_copy,0,sizeof(hh_element)*128);
-
-    hh_element *hash_ref = &test_buffer[64];
-    hh_element *buffer = test_buffer;
-    hh_element *end = test_buffer + 128;
-    //
-    uint32_t hole = 0;
-    uint32_t counter = 0xFFFD;
-
-
-    uint8_t test_base_offset = 3;
-
-    /* test 3 */
-    hash_ref->c_bits = 0b00010101111100111101010111110111;
-    hash_ref->taken_spots = 0xFFFFFFFF;
-    //   
-    auto tester = (hash_ref + test_base_offset);  
-    tester->c_bits = ~(hash_ref->c_bits >> test_base_offset);
-    tester->taken_spots = 0xFFFFFFFF;
-
-    cout << "hash ref and test base: " << bitset<32>(hash_ref->c_bits) << " :: " << endl;
-    cout << "hash ref and test base: " << bitset<32>(tester->c_bits  << test_base_offset) << " :: " << endl;
-    cout << "hash ref and test base: " << bitset<32>(tester->c_bits) << " :: " << endl;
-
-    auto q = hash_ref->c_bits;
-    auto r = tester->c_bits;
-    cout << "hash ref and test base: " << bitset<32>((r << test_base_offset) & q) << " :: " <<  bitset<32>((r << test_base_offset) | q) << endl;
-
-
-    uint64_t B = hash_ref->c_bits;
-    uint64_t C = tester->c_bits;
-    uint64_t VV = C;
-    VV = B | (VV << test_base_offset);
-    VV &= UINT32_MAX;
-
-    uint32_t c = (uint32_t)VV;
-    uint8_t offset = countr_one(c);
-
-
-    uint8_t shared_bit_region[4096];
-    test_hh->set_random_bits(shared_bit_region);
-
-    HMap_interface *T = test_hh;
-
-    uint32_t h_bucket = 2;
-    uint32_t full_hash = ((UINT16_MAX - 230) << 16) | 2;
-    uint8_t which_table = 1;
-    uint8_t thread_id = 1;
-    uint8_t thread_id_2 = 2;
-    uint8_t thread_id_3 = 3;
-
-    T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table);
-    cout << "which_table: " << (int)which_table << endl;
-    T->wait_if_unlock_bucket_counts(h_bucket,thread_id_2,which_table);
-    cout << "which_table: " << (int)which_table << endl;
-    T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table);
-    cout << "which_table: " << (int)which_table << endl;
-
-    // for ( uint8_t k = 0; k < 4; k++ ) {
-    //   uint64_t result = UINT64_MAX;
-    //   //
-    //   uint8_t seletor_bit = 0;
-
-    //   // a bit for being entered and one or more for which slab...
-    //   if ( !(selector_bit_is_set(h_bucket,seletor_bit)) ) {
-    //     uint8_t which_table = 0;
-    //     if ( T->wait_if_unlock_bucket_counts(h_bucket,thread_id,which_table) ) {
-    //       h_bucket = stamp_key(h_bucket,which_table);   // in LRU hash ... store in the reference to h_bucket...
-    //       result = h_bucket | ((uint64_t)full_hash << HALF);
-    //     }
-    //   }
-
-    //   T->add_key_value_known_slice(full_hash,h_bucket,offset,which_table,thread_id);
-
-    // }
-
-
-
-  } catch ( const char *err ) {
-    cout << err << endl;
-  }
-
-  //
-  pair<uint16_t,size_t> p = ssm->detach_all(true);
-  cout << p.first << ", " << p.second << endl;
-
-}
-
-
 
 void test_atomic_stack_and_timeout_buffer(void) {
   //
 }
 
-
-/*
-
-*/
-
-
-/**
-#include <signal.h>
-#include <stdlib.h>
-#include <stdio.h>
-
-static volatile sig_atomic_t keep_running = 1;
-
-static void sig_handler(int _)
-{
-    (void)_;
-    keep_running = 0;
-}
-
-int main(void)
-{
-    signal(SIGINT, sig_handler);
-
-    while (keep_running)
-        puts("Still running...");
-
-    puts("Stopped by signal `SIGINT'");
-    return EXIT_SUCCESS;
-}
-*/
-
-
 int main(int argc, char **argv) {
 	//
 
+  if ( noisy_test ) {
+    cout << "--->>>  THIS IS A NOISY TEST" << endl;
+  }
+
   // int status = 0;
+  auto start = chrono::system_clock::now();
 
 
-  std::signal(SIGINT, handle_catastrophic);
+  //std::signal(SIGINT, handle_catastrophic);
 
 	if ( argc == 2 ) {
 		cout << argv[1] << endl;
@@ -4457,48 +2298,6 @@ int main(int argc, char **argv) {
 
   // ----
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
-
-
-
-
-  // test 2
-  auto start = chrono::system_clock::now();
-  // auto start = shared_random_bits_test();
-
-    //test_hh_map_creation_and_initialization();
-    //test_lru_creation_and_initialization();
-    //
-    // test_hh_map_operation_initialization_linearization_many_buckets();
-    // test_hh_map_operation_initialization_linearization_small_noisy();
-    // test_method_checks();
-    // test_sleep_methods();
-    // test_some_bit_patterns();
-
-    //test_hh_map_methods2();      
-    //test_hh_map_methods3(); 
-
-    // test_some_bit_patterns_2();  // auto last_view = (NEIGHBORHOOD - 1 - dist_base);
-    // test_some_bit_patterns_3();
-
-    //test_hh_map_for_test_methods();
-
-    //test_zero_above();
-
-    // entry_holder_test();
-
-    // entry_holder_threads_test();
-
-    // stack_threads_test();
-
-    // test_tiers_and_procs();
-
-    // tryout_cpp_example();
-
-    // tryout_atomic_counter();
-
-    // try_out_relaxed_atomic_counter();
-
-    test_hh_map_methods_collisions_and_randoms();//
 
   chrono::duration<double> dur_t2 = chrono::system_clock::now() - start;
 

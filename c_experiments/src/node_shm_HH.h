@@ -28,7 +28,6 @@
 #include "hmap_interface.h"
 #include "random_selector.h"
 #include "entry_holder.h"
-#include "thread_activity.h"
 
 
 /**
@@ -154,37 +153,6 @@ std::uint8_t padding[S_CACHE_PADDING - (sizeof(Object) % S_CACHE_PADDING)];
 using namespace std;
 // 
 
-// Bringing in code from libhhash  // until further changes...
-template<typename T>
-struct KEY_VALUE {
-	T			value;
-	T			key;
-};
-
-
-template<typename T>
-struct BITS_KEY {
-	T			bits;
-	T			key;
-};
-
-typedef struct BITS_KEY<uint32_t> cbits_key;
-
-
-template<typename T>
-struct MEM_VALUE {
-	T			taken;
-	T			value;
-};
-
-typedef struct MEM_VALUE<uint32_t> taken_values;
-
-
-typedef struct HH_element {
-	cbits_key			c;
-	taken_values		tv;
-} hh_element;
-
 
 typedef enum {
 	HH_FROM_EMPTY,			// from zero 
@@ -249,10 +217,10 @@ typedef struct C_ENTRY {
 template<uint16_t const ExpectedMax = 100>
 class QueueEntryHolder : public  SharedQueue_SRSW<q_entry,ExpectedMax> {
 
-	bool		compare_key(uint32_t key,q_entry *el,uint32_t &value) {
-		auto V = el->loaded_value;
-		uint32_t v = (uint32_t)(V & UINT32_MAX);
-		return (v == key);
+	bool		compare_key(uint32_t key, q_entry *el,uint32_t &value) {
+		uint32_t ky = el->el_key;
+		value = el->value;
+		return (ky == key);
 	}
 
 };
@@ -275,7 +243,6 @@ typedef struct PRODUCT_DESCR {
 	//
 	uint32_t						partner_thread;
 	uint32_t						stats;
-	ThreadActivity::ta_ops			op;
 	QueueEntryHolder<>				_process_queue[2];
 	CropEntryHolder<>				_to_cropping[2];
 
@@ -399,24 +366,6 @@ typedef enum {
 
 
 
-
-// THREAD CONTROL
-
-inline void tick() {
-	this_thread::sleep_for(chrono::nanoseconds(20));
-}
-
-inline void thread_sleep(uint8_t ticks) {
-	microseconds us = microseconds(ticks);
-	auto start = high_resolution_clock::now();
-	auto end = start + us;
-	do {
-		std::this_thread::yield();
-	} while ( high_resolution_clock::now() < end );
-}
-
-
-
 // ---- ---- ---- ---- ---- ----  HHash
 // HHash <- HHASH
 
@@ -429,16 +378,22 @@ inline void thread_sleep(uint8_t ticks) {
  * 
 */
 
+// HH_thread_manager  SliceSelector
 
-class SliceSelector : public Random_bits_generator<> {
+template<const uint32_t NEIGHBORHOOD = 32>
+class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 	public:
 
-		SliceSelector() {
-		}
+		// HH_thread_manager(uint32_t num_threads) {
+		// 	_num_threads = num_threads;
+		// }
 
-		virtual ~SliceSelector() {
-		}
+		// HH_thread_manager(void) {
+		// }
+
+		// virtual ~HH_thread_manager() {
+		// }
 
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -458,12 +413,12 @@ class SliceSelector : public Random_bits_generator<> {
 		}
 		
 
+		// * set_random_bits
 		/**
-		 * set_random_bits
 		*/
 		// 4*(this->_bits.size() + 4*sizeof(uint32_t))
 
-		void set_random_bits(void *shared_bit_region) {
+		void set_random_bits(void *shared_bit_region) override {
 			uint32_t *bits_for_test = (uint32_t *)(shared_bit_region);
 			for ( int i = 0; i < _max_r_buffers; i++ ) {
 				this->set_region(bits_for_test,i);    // inherited method set the storage (otherwise null and not operative)
@@ -471,7 +426,6 @@ class SliceSelector : public Random_bits_generator<> {
 				bits_for_test += this->_bits.size() + 4*sizeof(uint32_t);  // 
 			}
 		}
-
 
 
 		/**
@@ -525,7 +479,7 @@ class SliceSelector : public Random_bits_generator<> {
 		 * override the lock for shared random bits (in parent this is a no op)
 		*/
 
-		void random_generator_thread_runner(void) {
+		void random_generator_thread_runner(void) override {
 			while ( true ) {
 #ifndef __APPLE__
 				do {
@@ -607,6 +561,7 @@ class SliceSelector : public Random_bits_generator<> {
 					return tbits;
 				}
 			}
+			return 0;
 		}
 
 
@@ -617,7 +572,7 @@ class SliceSelector : public Random_bits_generator<> {
 		*/
 
 		uint32_t get_real_base_cbits(hh_element *base_probe) {
-			atomic<uint32_t> *a_cbits = (atomic<uint32_t> *)(base_probe->c.bits);
+			atomic<uint32_t> *a_cbits = (atomic<uint32_t> *)(&(base_probe->c.bits));
 			auto cbits = a_cbits->load(std::memory_order_acquire);
 			if ( is_base_in_ops(cbits) ) {
 				cbits = fetch_real_cbits(cbits);
@@ -636,7 +591,7 @@ class SliceSelector : public Random_bits_generator<> {
 		*/
 
 		uint32_t get_real_base_tbits(hh_element *base_probe) {
-			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(base_probe->tv.taken);
+			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base_probe->tv.taken));
 			auto tbits = a_tbits->load(std::memory_order_acquire);
 			if ( !(is_base_tbits(tbits)) ) {
 				tbits = fetch_real_cbits(tbits);
@@ -658,7 +613,7 @@ class SliceSelector : public Random_bits_generator<> {
 		 * 
 		 */
 		atomic<uint32_t> *load_cbits(atomic<uint32_t> *a_cbits_base,uint32_t &cbits,uint32_t &cbits_op) {
-			auto cbits = a_cbits_base->load(std::memory_order_acquire);
+			cbits = a_cbits_base->load(std::memory_order_acquire);
 			if ( !(is_base_noop(cbits)) &&  (cbits != 0) ) {
 				cbits_op = cbits;
 				cbits = fetch_real_cbits(cbits);
@@ -764,7 +719,7 @@ class SliceSelector : public Random_bits_generator<> {
 		 * 
 		*/
 
-		void stash_cbits(atomic<uint32_t> *a_cbits, hh_element *base, uint32_t &c_bits, uint32_t &c_bits_op, uint32_t &c_bits_base_ops, CBIT_stash_holder *cbit_stashes[4],hh_element *buffer,hh_element *end) {
+		void stash_cbits(atomic<uint32_t> *a_cbits, hh_element *base, uint32_t &c_bits, uint32_t &c_bits_op, uint32_t &c_bits_base_ops, CBIT_stash_holder *cbit_stashes[4]) {
 			//
 			if ( base == nullptr ) {  // not a member  i.e. this is a base
 
@@ -842,7 +797,7 @@ class SliceSelector : public Random_bits_generator<> {
 		void _unstash_member_cbits(atomic<uint32_t> *a_cbits,uint32_t mem_cbits,CBIT_stash_holder *csh) {
 			csh->_updating--;
 			if ( csh->_updating == 0 ) {
-				auto updating_cbits = 0;
+				uint32_t updating_cbits = 0;
 				if ( mem_cbits & USURPED_CBIT_SET ) {  // restore to real roots
 					updating_cbits = csh->_real_bits;
 				} else {
@@ -850,7 +805,6 @@ class SliceSelector : public Random_bits_generator<> {
 				}
 				while ( !(a_cbits->compare_exchange_weak(mem_cbits,updating_cbits,std::memory_order_release)) && (mem_cbits != updating_cbits) );
 			}
-
 		}
 
 
@@ -942,7 +896,7 @@ class SliceSelector : public Random_bits_generator<> {
 
 		TBIT_stash_el *stash_taken_spots(atomic<uint32_t> *a_tbits) {
 			//
-			auto tbits = a_tbits->load(std::memory_order_acquire);
+			uint32_t tbits = a_tbits->load(std::memory_order_acquire);
 			if ( is_base_tbits(tbits) || (tbits == 0) ) {
 				//
 				uint8_t stash_index = _tbit_stash.pop_one_wait_free();
@@ -954,6 +908,7 @@ class SliceSelector : public Random_bits_generator<> {
 						// maybe update a stash counter
 						TBIT_stash_el *tse = _tbit_stash.stash_el_reference(already_stashed);
 						tse->_updating++;
+						tbits = tse->_real_bits;
 						_tbit_stash.return_one_to_free(stash_index);
 						return tse;
 					}
@@ -967,6 +922,7 @@ class SliceSelector : public Random_bits_generator<> {
 				auto already_stashed = tbits_stash_index_of(tbits);
 				TBIT_stash_el *tse = _tbit_stash.stash_el_reference(already_stashed);
 				if ( tse != nullptr ) {
+					tbits = tse->_real_bits;
 					tse->_updating++;
 					return tse;
 				}
@@ -1024,6 +980,7 @@ class SliceSelector : public Random_bits_generator<> {
 
 
 
+		/// atomic<uint32_t> *a_tbits
 		TBIT_stash_el *stash_taken_spots(atomic<uint32_t> *a_tbits,uint32_t &real_tbits,uint32_t &tbits_op) {
 			TBIT_stash_el *tse = stash_taken_spots(a_tbits);
 			real_tbits = tse->_real_bits;
@@ -1032,12 +989,14 @@ class SliceSelector : public Random_bits_generator<> {
 		}
 
 
+
+
 		atomic<uint32_t> *load_tbits(atomic<uint32_t> *a_tbits_base,uint32_t &tbits,uint32_t &tbits_op) {
 			tbits_op = 0;
-			auto tbits = a_tbits_base->load(std::memory_order_acquire);
+			tbits = a_tbits_base->load(std::memory_order_acquire);
 			if ( !(is_base_noop(tbits)) &&  (tbits != 0) ) {
-				tbits_op = tbits_op;
-				tbits = fetch_real_tbits(tbits);
+				tbits_op = tbits;		// these are the op tbits
+				tbits = fetch_real_tbits(tbits);		// get the mem alloc pattern
 			}
 			return a_tbits_base;
 		}
@@ -1064,10 +1023,11 @@ class SliceSelector : public Random_bits_generator<> {
 
 		CBIT_stash_holder *from_member_to_base(uint32_t &cbits_op,CBIT_stash_holder *csm) {
 			// Can change the nature of what it is, but leaves the stash key, value for readers until it is unstashed by the original base
-			auto stashed_member_cbits = csm->stored._csm._member_bits.load(std::memory_order_acquire);
+			cbits_op = csm->stored._csm._member_bits.load(std::memory_order_acquire);
 			csm->stored._cse._add_update = 0x1;
 			csm->stored._cse._remove_update = 0;
 			csm->_is_base_mem = CBIT_BASE;
+			csm->_real_bits = 0x1;
 			return csm;
 		}
 
@@ -1115,6 +1075,23 @@ class SliceSelector : public Random_bits_generator<> {
 		}
 
 
+		bool is_deletion_marked(hh_element *bucket) {
+			atomic<uint32_t> *a_b_cbits = (atomic<uint32_t> *)(&(bucket->c.bits));
+			auto cbits = a_b_cbits->load(std::memory_order_acquire);
+			if ( cbits & 0x1 ) return false;
+			if ( cbits & DELETE_CBIT_SET ) return true;
+			return false;
+		}
+
+
+
+		bool ready_for_delete(hh_element *bucket,uint32_t &cbits) {
+			atomic<uint32_t> *a_b_cbits = (atomic<uint32_t> *)(&(bucket->c.bits));
+			cbits = a_b_cbits->load(std::memory_order_acquire);
+			if ( cbits & 0x1 ) return false;
+			if ( cbits & MOBILE_CBIT_SET ) return true;
+			return false;
+		}
 
 		/**
 		 * stash_key_value
@@ -1226,6 +1203,8 @@ class SliceSelector : public Random_bits_generator<> {
 
 
 
+
+
 		// TBITS READERS
 		// 		-- 	alert operators that readers a searching a bucket with out regard to other ops
 		// 			generally enforce a wait until readers a clear
@@ -1277,7 +1256,6 @@ class SliceSelector : public Random_bits_generator<> {
 			//
 			auto tbits = a_tbits->load(std::memory_order_acquire);
 			//
-			auto reader_tbits = tbits;
 			if ( tbits & 0x1 ) {  // already unstashed
 				return;  // the tbits are where they are supposed to be
 			}
@@ -1338,7 +1316,6 @@ class SliceSelector : public Random_bits_generator<> {
 
 			auto tbits = a_tbits->load(std::memory_order_acquire);
 			//
-			auto reader_tbits = tbits;
 			if ( tbits & 0x1 ) {  // already unstashed
 				return;  // the tbits are where they are supposed to be
 			}
@@ -1350,9 +1327,6 @@ class SliceSelector : public Random_bits_generator<> {
 			_unstash_base_tbits(a_tbits,tse_base);    // unstash if last out
 
 		}
-
-
-
 
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -1368,7 +1342,7 @@ class SliceSelector : public Random_bits_generator<> {
 		 * for other state change conditions.
 		 * 
 		*/
-		void a_swap_values(h_element *b1,h_element *b2) {
+		void a_swap_values(hh_element *b1,hh_element *b2) {
 			//
 			uint32_t cbits_op_1 = 0;
 			CBIT_stash_holder *csh1 = stash_or_get_member_bits(b1,cbits_op_1,IMMOBILE_CBIT_SET);
@@ -1386,13 +1360,13 @@ class SliceSelector : public Random_bits_generator<> {
 			//
 			auto tbits_n_val_1 = a_b1_tbits->load(std::memory_order_acquire);
 			auto tbits_n_val_2 = a_b2_tbits->exchange(tbits_n_val_1,std::memory_order_acq_rel);
-			a_b2_tbits->store(tbits_n_val_1,std::memory_order_release);
+			a_b1_tbits->store(tbits_n_val_2,std::memory_order_release);
 			//
 			cbits_stash_swap_offset(csh1,csh2);
 			//
 			auto cbits_n_ky_1 = a_b1_cbits->load(std::memory_order_acquire);
 			auto cbits_n_ky_2 = a_b2_cbits->exchange(cbits_n_ky_1,std::memory_order_acq_rel);
-			a_b2_cbits->store(cbits_n_ky_1,std::memory_order_release);
+			a_b1_cbits->store(cbits_n_ky_2,std::memory_order_release);
 			//
 		}
 
@@ -1451,7 +1425,7 @@ class SliceSelector : public Random_bits_generator<> {
 					auto save_value = a_probe_val->exchange(value,std::memory_order_acq_rel);
 					a_base_val->store(save_value);
 					//
-					auto update_key_n_cbits = (save_key_n_cbits & ((uint64_t)(UINT32_MAX) << HALF) | (cbits & UINT32_MAX));
+					auto update_key_n_cbits = (save_key_n_cbits & ((uint64_t)(UINT32_MAX) << HALF)) | (cbits & UINT32_MAX);
 					base_bits_n_ky->store(update_key_n_cbits,std::memory_order_release);
 
 					update_key_n_cbits = ((save_key_n_cbits & SWAPPY_CBIT_RESET64) | modifier) | ((uint64_t)key << HALF);
@@ -1685,10 +1659,9 @@ class SliceSelector : public Random_bits_generator<> {
 			}
 			//
 
-			stash_cbits(a_cbits,base,c_bits,c_bits_op,c_bits_base_ops,cbit_stashes,*buffer_ref,*end_buffer_ref);
+			stash_cbits(a_cbits,base,c_bits,c_bits_op,c_bits_base_ops,cbit_stashes);
 			//
 			return a_cbits;
-			
 		}
 
 
@@ -1710,20 +1683,6 @@ class SliceSelector : public Random_bits_generator<> {
 		hh_element		 				*_region_HV_0_end;
 		hh_element		 				*_region_HV_1_end;
 
-		// ---- These two regions are interleaved in reality
-		uint32_t 						*_cbits_temporary_store;    // a shared structure
-		uint32_t		 				*_end_cbits_temporary_store;
-		//
-		uint32_t 						*_cbits_temporary_store_2;    // a shared structure
-		uint32_t		 				*_end_cbits_temporary_store_2;
-		//
-		uint32_t 						*_tbits_temporary_store;    // a shared structure
-		uint32_t		 				*_end_tbits_temporary_store;
-
-		// 
-		pair<uint32_t,uint32_t>			*_key_value_temporary_store;    // a shared structure
-		pair<uint32_t,uint32_t>		 	*_end_key_value_temporary_store;
-
 		atomic_flag		 				*_rand_gen_thread_waiting_spinner;
 		atomic_flag		 				*_random_share_lock;
 
@@ -1733,30 +1692,28 @@ class SliceSelector : public Random_bits_generator<> {
 		FreeOperatorStashStack<CBIT_stash_holder,MAX_THREADS,EXPECTED_THREAD_REENTRIES>		_cbit_stash;
 		FreeOperatorStashStack<TBIT_stash_el,MAX_THREADS,EXPECTED_THREAD_REENTRIES>			_tbit_stash;
 
-
+/*
 };
 
 
-
-
-
-/**
+/ * *
  * CLASS: HH_thread_manager
  * 
-*/
+* /
 
-
-class HH_thread_manager {
+template<const uint32_t NEIGHBORHOOD = 32>
+class HH_thread_manager : public SliceSelector<NEIGHBORHOOD> {
 
 	public:
 
-		HH_thread_manager(uint32_t num_threads){
+		HH_thread_manager(uint32_t num_threads) : SliceSelector<NEIGHBORHOOD>() {
 			_num_threads = num_threads;
 		}
 		virtual ~HH_thread_manager() {}
-
+*/
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
 
 
 		/**
@@ -1970,14 +1927,14 @@ class HH_thread_manager {
 		 * wakeup_value_restore
 		*/
 
-		void wakeup_value_restore(hh_adder_states update_type, atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t cbits_op, uint32_t cbits_op_base, hh_element *bucket, uint32_t h_start, uint32_t el_key, uint32_t value, uint8_t which_table, hh_element *buffer, hh_element *end, CBIT_stash_holder &csh) {
+		void wakeup_value_restore(hh_adder_states update_type, atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t cbits_op, uint32_t cbits_op_base, hh_element *bucket, uint32_t h_start, uint32_t el_key, uint32_t value, uint8_t which_table, hh_element *buffer, hh_element *end, CBIT_stash_holder *csh) {
 			// this queue is jus between the calling thread and the service thread belonging to just this process..
 			// When the thread works it may content with other processes for the hash buckets on occassion.
-			auto service_thread = csh._service_thread;
+			auto service_thread = csh->_service_thread;
 			if ( service_thread == 0 ) {
 				_round_robbin_proc_table_threads++;
 				if ( _round_robbin_proc_table_threads >= _num_threads ) _round_robbin_proc_table_threads = 1;
-				service_thread = csh._service_thread = _round_robbin_proc_table_threads;
+				service_thread = csh->_service_thread = _round_robbin_proc_table_threads;
 			}
  
 			uint8_t require_queue = service_thread;
@@ -2006,13 +1963,12 @@ class HH_thread_manager {
 		proc_descr						*_end_procs;
 
 		uint8_t							_round_robbin_proc_table_threads{1};
-		uint32_t						_num_threads;
 		//
 		atomic_flag						_sleeping_reclaimer;
 		atomic_flag						_sleeping_cropper;
 
 
-};
+//};
 
 
 
@@ -2024,14 +1980,14 @@ class HH_thread_manager {
  * 
 */
 
-
+/* 
 template<const uint32_t NEIGHBORHOOD = 32>
-class HH_map_structure : public HMap_interface, public HH_thread_manager, public SliceSelector {
+class HH_map_structure : public HH_thread_manager<NEIGHBORHOOD> {  // HH_thread_manager  = SliceSelector<NEIGHBORHOOD>
 
 	public:
-
+*/
 		// LRU_cache -- constructor
-		HH_map_structure(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
+		void initialize_all(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
 			_reason = "OK";
 			//
 			_region = region;
@@ -2055,8 +2011,10 @@ class HH_map_structure : public HMap_interface, public HH_thread_manager, public
 		}
 
 
-		virtual ~HH_map_structure() {
-		}
+/*
+virtual ~HH_map_structure() {
+}
+*/
 
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -2091,7 +2049,7 @@ class HH_map_structure : public HMap_interface, public HH_thread_manager, public
 			_T0 = T;   // keep the reference handy
 			//
 			uint32_t vh_region_size = (sizeof(hh_element)*max_count);
-			uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
+			//uint32_t c_regions_size = (sizeof(uint32_t)*max_count);
 
 			auto hv_offset_past_header_from_start = header_size;
 			//
@@ -2153,25 +2111,11 @@ class HH_map_structure : public HMap_interface, public HH_thread_manager, public
 			T->_HV_Offset = hv_offset_2;  // from start
 			T->_C_Offset = hv_offset_2 + c_offset;  // from start
 			//
-			//
-			_cbits_temporary_store = (uint32_t *)(_region_HV_1_end);  // these start at the same place offset from start of second table
-			_end_cbits_temporary_store = _cbits_temporary_store + _num_threads;  // *sizeof(uint32_t)
-			//
-			cbits_temporary_store_2 = (uint32_t *)(_end_cbits_temporary_store);
-			_end_cbits_temporary_store_2 = _end_cbits_temporary_store_2 + _num_threads;  // *sizeof(uint32_t)
-			//
-			_tbits_temporary_store = (uint32_t *)(_end_cbits_temporary_store_2);  // these start at the same place offset from start of second table
-			_end_tbits_temporary_store = _tbits_temporary_store + _num_threads;  // *sizeof(uint32_t)
-			//
-			_key_value_temporary_store = (pair<uint32_t,uint32_t>s *)(_end_tbits_temporary_store);  // these start at the same place offset from start of second table
-			_end_key_value_temporary_store = _key_value_temporary_store + _num_threads;  // *sizeof(uint32_t)
-
 
 		// threads ...
 			auto proc_regions_size = num_threads*sizeof(proc_descr);
-			_process_table = (proc_descr *)(_end_cbits_temporary_store);
+			_process_table = (proc_descr *)(_region_HV_1_end);
 			_end_procs = _process_table + num_threads;
-
 			//
 			if ( am_initializer ) {
 				//
@@ -2179,13 +2123,6 @@ class HH_map_structure : public HMap_interface, public HH_thread_manager, public
 					memset((void *)(_region_HV_1),0,vh_region_size);
 				} else {
 					throw "hh_map (2) sizes overrun allocated region determined by region_sz";
-				}
-				// one 16 bit word for two counters
-				if ( check_end((uint8_t *)_cbits_temporary_store) && check_end((uint8_t *)_end_cbits_temporary_store) ) {
-					memset((void *)(_cbits_temporary_store), 0, c_regions_size);
-				} else {
-					cout << "WRONG HERE: " << ((uint8_t *)_end_cbits_temporary_store - _endof_region) << endl;
-					throw "hh_map (3) sizes overrun allocated region determined by region_sz";
 				}
 				// two 32 bit words for processes/threads
 				if ( check_end((uint8_t *)_process_table) && check_end((uint8_t *)_end_procs,true) ) {
@@ -2285,7 +2222,7 @@ class HH_map_structure : public HMap_interface, public HH_thread_manager, public
 		HHash							*_T1;
 		//
 
-};
+//};
 
 
 
@@ -2298,21 +2235,21 @@ class HH_map_structure : public HMap_interface, public HH_thread_manager, public
  * 
 */
 
-
+/*
 template<const uint32_t NEIGHBORHOOD = 32>
-class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_thread_manager {
+class HH_map_atomic_no_wait : public HH_thread_manager<NEIGHBORHOOD> {
 	//
 	public:
 
 		// LRU_cache -- constructor
 		HH_map_atomic_no_wait(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) :
-		 								HH_map_structure<NEIGHBORHOOD>(region, seg_sz, max_element_count, num_threads, am_initializer), HH_thread_manager(num_threads) {
+		 								HH_thread_manager<NEIGHBORHOOD>(region, seg_sz, max_element_count, num_threads, am_initializer) {
 		}
 
 		virtual ~HH_map_atomic_no_wait() {
 		}
 
-
+*/
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -2322,7 +2259,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * 
 		*/
 
-		inline bool empty_bucket(atomic<uint64_t> *a_c,hh_element *base,uint32_t &cbits,uint32_t &op_cbits,uint32_t &root_ky) {
+		inline bool empty_bucket(atomic<uint64_t> *a_c,uint32_t &cbits,uint32_t &op_cbits,uint32_t &root_ky) {
 			auto  cbits_n_key = a_c->load(std::memory_order_acquire);
 			cbits = (uint32_t)(cbits_n_key & UINT32_MAX);
 			op_cbits = 0;
@@ -2336,7 +2273,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 			return false;
 		}
 
-		inline bool empty_bucket(atomic<uint64_t> *a_c,hh_element *base,uint32_t &cbits,uint32_t &op_cbits) {
+		inline bool empty_bucket(atomic<uint64_t> *a_c,uint32_t &cbits,uint32_t &op_cbits) {
 			auto  cbits_n_key = a_c->load(std::memory_order_acquire);
 			cbits = (uint32_t)(cbits_n_key & UINT32_MAX);
 			op_cbits = 0;
@@ -2361,7 +2298,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 			atomic<uint32_t> *a_t = (atomic<uint32_t> *)(&base->tv.taken);
 			a_t->store(0,std::memory_order_release);
 			base->c.key = 0;
-			base->->tv.value = 0;
+			base->tv.value = 0;
 		}
  
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -2383,7 +2320,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * 
 		*/
 		bool bucket_is_base(hh_element *hash_ref) {
-			atomic<uint32_t>  *a_c_bits = (atomic<uint32_t>  *)hash_ref->c.bits);
+			atomic<uint32_t>  *a_c_bits = (atomic<uint32_t>  *)(&(hash_ref->c.bits));
 			auto cbits = a_c_bits->load(std::memory_order_acquire);
 			return is_base_bucket_cbits(cbits);
 		}
@@ -2394,7 +2331,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * 
 		*/
 		bool bucket_is_base(hh_element *hash_ref,uint32_t &cbits) {
-			atomic<uint32_t>  *a_c_bits = (atomic<uint32_t>  *)hash_ref->c.bits);
+			atomic<uint32_t>  *a_c_bits = (atomic<uint32_t>  *)(&(hash_ref->c.bits));
 			cbits = a_c_bits->load(std::memory_order_acquire);
 			if ( is_base_bucket_cbits(cbits) ) {
 				if ( !(is_base_noop(cbits)) ) {
@@ -2464,7 +2401,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * On failing to capture a hole, the method returns all black. 
 		 * 
 		*/
-		uint32_t a_tbit_store_reservation(atomic<uint32_t> *a_real_tbits, TBIT_stash_el *tse, uint32_t &original_tbits, uint8_t &hole, uint32_t &hbit) {
+		uint32_t a_tbit_store_reservation(TBIT_stash_el *tse, uint32_t &original_tbits, uint8_t &hole, uint32_t &hbit) {
 			//
 			hbit = (1 << hole); 	// hbit is the claiming bit
 			auto b = original_tbits | hbit;   // declare the position taken
@@ -2494,17 +2431,14 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * 
 		 * op_cbits -- the operation cbits
 		*/
-		void a_store_real_cbits(atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t op_cbits, uint32_t hbit, uint8_t thread_id) {
-			while ( (op_cbits & DELETE_CBIT_SET) && !(op_cbits & 0x1) ) {  // just wait for the deleters to finish
-				op_cbits = control_bits->load(std::memory_order_acquire); // clears a bit, might be next writing it
+		void a_store_real_cbits(atomic<uint32_t> *control_bits, uint32_t cbits_op, uint32_t hbit) {
+			while ( (cbits_op & DELETE_CBIT_SET) && !(cbits_op & 0x1) ) {  // just wait for the deleters to finish
+				cbits_op = control_bits->load(std::memory_order_acquire); // clears a bit, might be next writing it
 			}
-			if ( op_cbits & 0x1 ) {  // somehow, some thread gave up owernship of the bucket, but the current thread is supposed to own the bucket
-				control_bits->fetch_or(hbit,std::memory_order_release);
-			} else {
-				auto thrd = bits_thread_id_of(op_cbits);
-				atomic<uint32_t> *a_stash_cbit = (atomic<uint32_t> *)(&(_cbits_temporary_store[thrd]));
-				a_stash_cbit->fetch_or(hbit,std::memory_order_release);
-			}
+
+			auto stash_index = cbits_stash_index_of(cbits_op);   // stash_index == 0 -> program broken upstream
+			CBIT_stash_holder *csh = this->_cbit_stash.stash_el_reference(stash_index);
+			stash_real_cbits_immediate(hbit, csh);
 		}
 
 
@@ -2567,7 +2501,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 					//
 					bool set_it = false;
 
-					while ( get_stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
+					while ( this->get_stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
 						// try to get ahead of editors, which might delete as well 
 						while ( !(cbits_op & ROOT_EDIT_CBIT_SET) ) {
 							auto cbits_op_expected = cbits_op;
@@ -2578,7 +2512,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 								auto ref_count = get_stash_updating_count(cbits_op);
 								if ( (ref_count == 0) && (cbits_op_expected & 0x1) ) {  // an error condition, in which this is unstashed 
 									CBIT_stash_holder *cbit_stashes[4];
-									stash_cbits(control_bits,bucket,cbits,cbits_op,cbits_base_ops,cbit_stashes);
+									stash_cbits(control_bits,bucket,cbits,cbits_op,cbits_base_op,cbit_stashes);
 									break;
 								} else {
 									cbits_op_update = cbits_op_expected | ROOT_EDIT_CBIT_SET | EDITOR_CBIT_SET;
@@ -2604,7 +2538,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 				case HH_USURP: {
 					bool set_it = false;
 					//
-					while ( get_stash_member_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
+					while ( this->get_stash_member_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
 
 						while ( !(cbits_op & IMMOBILE_CBIT_SET) ) {
 							auto cbits_op_expected = cbits_op;
@@ -2612,10 +2546,10 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 							// after the new value is inserted, the next phase will be a late arrival insertion of the old value..
 							//
 							while ( !(set_it = control_bits->compare_exchange_weak(cbits_op_expected,cbits_op_update,std::memory_order_acq_rel)) && !(cbits_op_expected & IMMOBILE_CBIT_SET) && !(cbits_op_expected & USURPED_CBIT_SET) ) {
-								auto ref_count = get_stash_member_updating_count(cbits_op);
+								auto ref_count = this->get_stash_member_updating_count(cbits_op);
 								if ( (ref_count == 0) && (cbits_op_expected & 0x1) ) {  // an error condition, in which this is unstashed 
 									CBIT_stash_holder *cbit_stashes[4];
-									stash_cbits(control_bits,bucket,cbits,cbits_op,cbits_base_ops,cbit_stashes);
+									stash_cbits(control_bits,bucket,cbits,cbits_op,cbits_base_op,cbit_stashes);
 									break;
 								} else {
 									cbits_op_update = cbits_op_expected | IMMOBILE_CBIT_SET | USURPED_CBIT_SET;
@@ -2626,6 +2560,8 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 					//
 					return set_it;
 				}
+
+				default: break;
 			}
 
 			//
@@ -2638,13 +2574,13 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * 
 		 * 		should be called by the restore queue handler
 		*/
-		void release_bucket_state_master(atomic<uint32_t> *control_bits, hh_element *hh) {
+		void release_bucket_state_master(atomic<uint32_t> *control_bits) {
 			//
 			auto cbits_op = control_bits->load(std::memory_order_acquire);
 			if ( cbits_op & 0x1 ) return;
 			uint16_t stash_index = cbits_stash_index_of(cbits_op);
-			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
-			unstash_base_cbits(control_bits,csh);
+			CBIT_stash_holder *csh = this->_cbit_stash.stash_el_reference(stash_index);
+			_unstash_base_cbits(control_bits,csh);
 			cbits_op = control_bits->load(std::memory_order_acquire);
 			if ( cbits_op & 0x1 ) return;
 			// clear ROOT_EDIT_CBIT_SET  IMMOBILE_CBIT_SET | USURPED_CBIT_SET  EDITOR_CBIT_SET
@@ -2659,8 +2595,8 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 */
 
 		bool wait_become_bucket_delete_master(hh_adder_states master_context,hh_element *base,uint32_t &cbits, uint32_t &cbits_op) {  // mark the whole bucket swappy mark for delete
-			atomic<uint64_t> *a_c_bits = (atomic<uint64_t> *)(&(base->c.bits));
-			while ( get_stash_updating_count(cbits_op) > 1 ) {
+			atomic<uint32_t> *a_c_bits = (atomic<uint32_t> *)(&(base->c.bits));
+			while ( this->get_stash_updating_count(cbits_op) > 1 ) {
 				tick();
 				load_cbits(a_c_bits,cbits,cbits_op);
 			}
@@ -2674,10 +2610,11 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 						// after the new value is inserted, the next phase will be a late arrival insertion of the old value..
 						//
 						while ( !(set_it = a_c_bits->compare_exchange_weak(cbits_op_expected,cbits_op_update,std::memory_order_acq_rel)) && !(cbits_op_expected & SWAPPY_CBIT_SET) && !(cbits_op_expected & DELETE_CBIT_SET) ) {
-							auto ref_count = get_stash_updating_count(cbits_op);
+							auto ref_count = this->get_stash_updating_count(cbits_op);
 							if ( (ref_count == 0) && (cbits_op_expected & 0x1) ) {  // an error condition, in which this is unstashed 
 								CBIT_stash_holder *cbit_stashes[4];
-								stash_cbits(a_c_bits,bucket,cbits,cbits_op,cbits_base_ops,cbit_stashes);
+								uint32_t cbits_base_ops = 0;
+								stash_cbits(a_c_bits,base,cbits,cbits_op,cbits_base_ops,cbit_stashes);
 								break;
 							} else {
 								cbits_op_update = cbits_op_expected | SWAPPY_CBIT_SET | DELETE_CBIT_SET;
@@ -2688,7 +2625,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 				}
 				case HH_DELETE_BASE: {
 					bool set_it = false;
-					while ( get_stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
+					while ( this->get_stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
 						// try to get ahead of editors, which might delete as well 
 						while ( !(cbits_op & ROOT_EDIT_CBIT_SET) ) {
 							auto cbits_op_expected = cbits_op;
@@ -2699,7 +2636,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 								auto ref_count = get_stash_updating_count(cbits_op);
 								if ( (ref_count == 0) && (cbits_op_expected & 0x1) ) {  // an error condition, in which this is unstashed 
 									CBIT_stash_holder *cbit_stashes[4];
-									stash_cbits(a_c_bits,bucket,cbits,cbits_op,cbits_base_ops,cbit_stashes);
+									stash_cbits(a_c_bits,base,cbits,cbits_op,cbits_op,cbit_stashes);
 									break;
 								} else {
 									cbits_op_update = cbits_op_expected | ROOT_EDIT_CBIT_SET | DELETE_CBIT_SET;
@@ -2742,8 +2679,8 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 				auto cbits_op = a_c_bits->load(std::memory_order_acquire);
 				if ( cbits_op & 0x1 ) return;
 				uint16_t stash_index = cbits_stash_index_of(cbits_op);
-				CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
-				unstash_base_cbits(a_c_bits,csh);
+				CBIT_stash_holder *csh = this->_cbit_stash.stash_el_reference(stash_index);
+				_unstash_base_cbits(a_c_bits,csh);
 				cbits_op = a_c_bits->load(std::memory_order_acquire);
 				if ( cbits_op & 0x1 ) return;
 				release_bits = ~(release_bits);
@@ -2763,12 +2700,12 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * should be taken after failing to find a key.
 		*/
 
-		bool no_base_cbit_change(atomic<uint32_t> *base_bits,uint32_t original_bits) {
+		bool no_base_cbit_change(atomic<uint64_t> *base_bits,uint32_t original_bits) {
 			auto current_bits = base_bits->load(std::memory_order_acquire);
 			if ( current_bits & 0x1 ) {
-				return ( current_bits == original_bits );
+				return ( ((uint32_t)current_bits) == original_bits );
 			} else {
-				auto c = fetch_real_cbits(current_bits);
+				auto c = fetch_real_cbits((uint32_t)current_bits);
 				return ( c == original_bits );
 			}
 		}
@@ -2785,24 +2722,27 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		*/
 
 
-		void wait_until_immobile(atomic<uint32_t> *a_cbits, uint32_t &cbits, uint32_t &ky) {
-			while ( a_cbits->load(std::memory_order_acquire) & IMMOBILE_CBIT_SET == 0 ) {
+		void wait_until_immobile(atomic<uint64_t> *a_cbits) {
+			while ( (a_cbits->load(std::memory_order_acquire) & IMMOBILE_CBIT_SET) == 0 ) {
 				tick();
 			}
 		}
 
-		uint64_t load_marked_as_immobile(atomic<uint64_t> *a_b_n_key) {   // a little more cautious
+		uint64_t load_marked_as_immobile(atomic<uint64_t> *a_bits_n_ky) {   // a little more cautious
 			return a_bits_n_ky->fetch_or((uint64_t)IMMOBILE_CBIT_SET,std::memory_order_acquire);
 		}
 
-		void remobilize(atomic<uint64_t> *a_bits_n_ky) {
+		void remobilize(atomic<uint64_t> *a_bits_n_ky,uint32_t modifier = 0) {
 			a_bits_n_ky->fetch_and(IMMOBILE_CBIT_RESET64,std::memory_order_acq_rel);
+			if ( modifier ) {
+				a_bits_n_ky->fetch_or(modifier,std::memory_order_acq_rel);
+			}
 		}
 
 					
 		void remobilize(hh_element *storage_ref,uint32_t modifier = 0) {
 			atomic<uint64_t> *a_bits_n_ky = (atomic<uint64_t> *)(&(storage_ref->c));
-			remobilize(a_bits_n_ky);
+			remobilize(a_bits_n_ky,modifier);
 		}
 
 
@@ -2814,18 +2754,16 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * 
 		*/
 
-		bool attempt_preempt_delete(atomic<uint32_t> *control_bits, hh_element *bucket, uint32_t &cbits, uint32_t &cbits_op, uint32_t &cbits_op_base, CBIT_stash_holder cbit_stashes[4]) {
+		bool attempt_preempt_delete(atomic<uint32_t> *control_bits, hh_element *bucket, uint32_t &cbits_op, CBIT_stash_holder *cbit_stashes[4],hh_element *buffer, hh_element *end_buffer) {
 			//
 			uint8_t backref = 0;
 			uint32_t base_cbits;
-			uint32_t base_cbits_op
+			uint32_t base_cbits_op;
 
-			hh_element *base = cbits_base_from_backref(backref,bucket,buffer,end_buffer);
+			hh_element *base = cbits_base_from_backref(cbits_op,backref,bucket,buffer,end_buffer);  // the cbits_op should be member cbits
 			atomic<uint32_t> *base_control_bits = load_cbits(base,base_cbits,base_cbits_op);
 			//
-			CBIT_stash_el *cse_base = cbit_stashes[0]._is_base ? cbit_stashes[0].rf._cse :  cbit_stashes[1].rf._cse;
-			CBIT_stash_member *csm = !(cbit_stashes[0]._is_base) ? cbit_stashes[0].rf._csm :  cbit_stashes[1]._csm;
-
+			CBIT_stash_holder *csh = cbit_stashes[0];
 			// else 
 			uint32_t tbits = 0;
 			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
@@ -2835,13 +2773,13 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 			// 
 			auto state_capture = control_bits->fetch_and(~MOBILE_CBIT_SET,std::memory_order_acq_rel);
 			if ( state_capture & DELETE_CBIT_SET ) {  // cropping will have to take a breath for the restore
-				control_bits->store(state_capture,std::memory_order_acq_rel);
+				control_bits->store(state_capture,std::memory_order_release);
 				tbits_remove_reader(a_tbits, tse);
 				return false;
 			}
 			//
-			cse_base->_remove_update.fetch_or(((uint32_t)0x1) << backref);
-			unstash_base_cbits(base_control_bits,cse_base);
+			csh->stored._cse._remove_update.fetch_or(((uint32_t)0x1) << backref);
+			this->_unstash_base_cbits(base_control_bits,csh);
 			//
 			tbits_remove_reader(a_tbits, tse);
 			return true;	// if a failed and the element targeted is now filled with a valid value, a preempt will take place.
@@ -2868,10 +2806,9 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 
 
-		hh_element *_swappy_aware_search_ref(uint32_t el_key, hh_element *base, uint32_t c, uint32_t &value, uint32_t &time) {
+		hh_element *_swappy_aware_search_ref(uint32_t el_key, hh_element *base, uint32_t c, uint32_t &value, uint32_t &time, hh_element *buffer, hh_element *end) {
 			//
 			hh_element *next = base;
-			auto base_bits = c;
 			
 			c = c & (UINT32_MAX-1);  // skip checking the first postion ... this method assumes the base already checked
 			while ( c ) {
@@ -2909,7 +2846,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 						// proceed if another operation is not at the moment doing a swap.
 						// pass by reference -- values may be the bucket after swap by another thread
 						//
-						wait_until_immobile(a_bits_n_ky,nxt_bits,ky);
+						wait_until_immobile(a_bits_n_ky);
 						c_n_ky = load_marked_as_immobile(a_bits_n_ky);
 						//
 						nxt_bits = (uint32_t)(c_n_ky & UINT32_MAX);
@@ -2928,7 +2865,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 				remobilize(a_bits_n_ky);
 			}
-			return UINT32_MAX;	
+			return nullptr;	
 		}
 
 		/**
@@ -2944,11 +2881,12 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * 
 		*/
 
-		hh_element *_editor_locked_search_ref(atomic<uint32_t> *a_base_bits, uint32_t original_bits, hh_element *base, uint32_t el_key, uint32_t &value) {
+		hh_element *_editor_locked_search_ref(atomic<uint64_t> *a_base_bits, uint32_t original_bits, hh_element *base, uint32_t el_key, uint32_t &value,hh_element *buffer, hh_element *end) {
 			//
 			uint32_t H = original_bits;   // cbits are from a call to empty bucket always at this point
 			//
 			hh_element *next = base;
+			atomic<uint64_t> *a_n_b_n_key = nullptr;
 			do {
 				uint32_t c = H & (UINT32_MAX-1);  // skip checking the first postion ... this method assumes the base already checked
 				while ( c ) {
@@ -2957,11 +2895,11 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 					next += offset;
 					next = el_check_end_wrap(next,buffer,end);
 					// is this being usurped or swapped or deleted at this moment? Search on this range is locked
-					auto a_n_b_n_key = (atomic<uint64_t> *)(&(next->c));
+					a_n_b_n_key = (atomic<uint64_t> *)(&(next->c));
 					auto chk_bits_n_key = a_n_b_n_key->load(std::memory_order_acquire);
 					uint32_t n_cbits = (uint32_t)(chk_bits_n_key >> sizeof(uint32_t));
 					uint32_t chk_key = ((uint32_t)chk_bits_n_key) & UINT32_MAX;
-					if ( is_member_bucket(n_cbits) && !(is_cbits_deleted(n_cbits) || (is_cbits_in_mobile_predelete(uint32_t cbits))) ) {
+					if ( is_member_bucket(n_cbits) && !(is_cbits_deleted(n_cbits) || is_cbits_in_mobile_predelete(n_cbits)) ) {
 						if ( el_key == chk_key ) {
 							load_marked_as_immobile(a_n_b_n_key);
 							value = next->tv.value;   // maybe load
@@ -2974,7 +2912,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 				} else {
 					uint32_t cbits = 0;
 					uint32_t op_cbits = 0;
-					if ( empty_bucket(a_n_b_n_key,next,cbits,op_cbits) ) {
+					if ( empty_bucket(a_n_b_n_key,cbits,op_cbits) ) {
 						break;
 					}
 					H = is_base_noop(cbits) ? cbits : fetch_real_cbits(cbits);
@@ -3001,14 +2939,13 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * the base is always immobile
 		*/
 
-		hh_element *_get_bucket_reference(atomic<uint32_t> *bucket_bits, hh_element *base, uint32_t cbits, uint32_t cbits_op, uint32_t h_bucket, uint32_t el_key, hh_element *buffer, hh_element *end, uint32_t &value) {
+		hh_element *_get_bucket_reference(atomic<uint64_t> *bucket_bits, hh_element *base, uint32_t cbits, uint32_t cbits_op, uint32_t el_key, hh_element *buffer, hh_element *end, uint32_t &value) {
 			//
 			if ( is_empty_bucket(cbits) ) {
 				return nullptr;
 			}
 			// bucket_bits are the base of the bucket storing the state of cbits
 			uint32_t tbits = 0;
-			uint8_t stash_id = 0;
 			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
 			atomic<uint64_t> *a_base_c_n_k = (atomic<uint64_t> *)(&(base->c));
 			//
@@ -3027,7 +2964,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 			if ( !(is_swappy(cbits,tbits)) ) {  // last known cbits and tbits
 											// swappy operation occurs in this bucket for now, make it exclusive to readers 
 										  	// and don't make the readers do work on behalf of anyone
-				hh_element *hhe = _editor_locked_search_ref(bucket_bits,cbits,base,el_key,value);
+				hh_element *hh = _editor_locked_search_ref(bucket_bits,cbits,base,el_key,value,buffer,end);
 				tbits_remove_reader(a_tbits,tse);
 				return hh;
 			} else {
@@ -3035,7 +2972,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 				tbits_remove_reader(a_tbits,tse);	// if here, then this is the only non swappy reader and blocks swappy readers
 												// but, right now, thinsgs are wappy
 				uint32_t time = 0;
-				auto ref = _swappy_aware_search_ref(el_key, base, original_cbits,0,value,time);
+				auto ref = _swappy_aware_search_ref(el_key, base, cbits, value, time, buffer, end);
 				//
 				tbits_remove_swappy_op(a_tbits,tse);				// last reader out restores tbits 
 				return ref;
@@ -3050,11 +2987,11 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * 
 		*/
 
-		uint64_t _first_level_bucket_ops(atomic<uint32_t> *control_bits, uint32_t el_key, uint32_t h_bucket, uint32_t offset_value, uint8_t which_table, uint32_t cbits, uint32_t cbits_op,uint32_t cbits_base_op, hh_element *bucket, hh_element *buffer, hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) {
+		void _first_level_bucket_ops(atomic<uint32_t> *control_bits, uint32_t el_key, uint32_t h_bucket, uint32_t offset_value, uint8_t which_table, uint32_t cbits, uint32_t cbits_op,uint32_t cbits_base_op, hh_element *bucket, hh_element *buffer, hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) {
 			//
 			auto prev_bits = cbits;   // cbits are the current stored cbits at the bucket
-			atomic<uint64_t> *a_ky_n_cbits = (uint64_t)(&(bucket->c));
-			atomic<uint64_t> *a_val_n_tbits = (uint64_t)(&(bucket->tv));
+			atomic<uint64_t> *a_ky_n_cbits = (atomic<uint64_t> *)(&(bucket->c));
+			atomic<uint64_t> *a_val_n_tbits = (atomic<uint64_t> *)(&(bucket->tv));
 			do {
 				prev_bits = cbits;
 				//
@@ -3071,10 +3008,9 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 																						// since it is new, leave the map 0.
 						a_ky_n_cbits->store(ky_n_cbits,std::memory_order_release);
 
-						stash_real_cbits_immediate(0x1, cbit_stashes[0]);
-						//
+						this->stash_real_cbits_immediate(0x1, cbit_stashes[0]);
 						// -- in this case, `wakeup_value_restore` fixes the taken bits map (value corresponds to the bucket master)
-						wakeup_value_restore(HH_FROM_EMPTY, control_bits, 0x1, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end, cbit_stashes[0]);
+						this->wakeup_value_restore(HH_FROM_EMPTY, control_bits, 0x1, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 						return;
 					} else {
 						control_bits = load_cbits(bucket,cbits,cbits_op);
@@ -3088,7 +3024,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 						// make it unreadable for a brief bit (although swappy has been set)  -- tbits are zero
 						// this is at the bucket entry point (also precludes tbit updates) 
 						// readers already going through can still read, but may not be able to reduce a semaphore... (may fore a wait)
-						uint64_t val_n_tbits = a_val_n_tbits->exchange(((uint64_t)(UIN32_MAX) << HALF),std::memory_order_relaxed);
+						uint64_t val_n_tbits = a_val_n_tbits->exchange(((uint64_t)(UINT32_MAX) << HALF),std::memory_order_relaxed);
 						//
 						uint32_t tmp_value = val_n_tbits >> HALF;
 						uint32_t tmp_key = ky_n_cbits >> HALF;
@@ -3105,14 +3041,14 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 						a_val_n_tbits->store(val_n_tbits,std::memory_order_release);		// put the tbits back as they were
 						a_ky_n_cbits->store(ky_n_cbits,std::memory_order_release);			// cbits back
 						//
-						wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, tmp_key, tmp_value, which_table, buffer, end, cbit_stashes[0]);
+						this->wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, tmp_key, tmp_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 						return;
 					} else {  // THIS BUCKET IS ALREADY BEING EDITED -- let the restore thread shift the new value in
 						// not being able to control the bucket this insertion is defered (new and old alike)
 						// the control bits belong to the operation thread, but the queue increases
 						set_control_bit_state(control_bits,cbits_op,EDITOR_CBIT_SET);
 						if ( wait_on_max_queue_incr(control_bits,cbits_op) ) {
-							wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_op_base, bucket, h_bucket, el_key, offset_value, which_table, buffer, end, cbit_stashes[0]);
+							this->wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 							return;
 						}  // else, before being able to up the queue count, the bucket finished the base insertion (so, go again)
 					}
@@ -3121,17 +3057,16 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 					// usurping gives priortiy to an entry whose hash target a bucket absolutely
 					// For members, the cbits_op are the last known state of the member bucket, while the cbits
 					// are the membership bits of the base bucket in which bucket is a member. 
-					uint8_t op_thread_id = 0;
 					if ( is_cbits_usurped(cbits_op) )  {  // attempting the same operation 
 						// results in first time insertion and search for a hole (could alter time by a small amount to keep a sort)
 						set_control_bit_state(control_bits,cbits_op,EDITOR_CBIT_SET);
 						if ( wait_on_max_queue_incr(control_bits,cbits_op) ) {
-							wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_op_base, bucket, h_bucket, el_key, offset_value, which_table, buffer, end, cbit_stashes[0]);
+							this->wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 							return;
 						}
 					}
 					//
-					if ( is_delete(cbits_op) ) {
+					if ( is_deleted(cbits_op) ) {
 						tick();
 						continue;
 					}
@@ -3144,7 +3079,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 					//
 					if ( is_cbits_in_mobile_predelete(cbits_op) && !(is_cbits_swappy(base_cbits_op)) ) {
 						//
-						if ( attempt_preempt_delete(control_bits,bucket,cbits,cbits_op,cbits_op_base,cbit_stashes) ) {   // delcare immobility to the cropper
+						if ( attempt_preempt_delete(control_bits,bucket,cbits_op,cbit_stashes,buffer,end_buffer) ) {   // delcare immobility to the cropper
 							//
 							cbit_stashes[0] = from_member_to_base(cbits_op,cbit_stashes[0]);
 							//
@@ -3155,7 +3090,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 																							// since it is new, leave the map 0.
 							a_ky_n_cbits->store(ky_n_cbits,std::memory_order_release);
 
-							wakeup_value_restore(HH_FROM_EMPTY, control_bits, cbits, cbits_op, cbits_op_base, bucket, h_bucket, el_key, offset_value, which_table, buffer, end, cbit_stashes[0]);
+							this->wakeup_value_restore(HH_FROM_EMPTY, control_bits, cbits, cbits_op, base_cbits_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 							return;
 						}
 						//
@@ -3163,7 +3098,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 
 					// get sel base (header inline)
-					hh_element *cells_base = cbits_base_from_backref(backref,bucket,buffer,end_buffer);
+					hh_element *cells_base = cbits_base_from_backref(cbits_op,backref,bucket,buffer,end_buffer);
 					atomic<uint32_t> *base_control_bits = load_cbits(cells_base,base_cbits,base_cbits_op);
 					//
 
@@ -3175,7 +3110,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 					// Operations that hope to usurp but are too late to be the member cell editor, will have to try again.
 					// Note that these late operations already passed the previous gaurd, but lost the race to the next line.
 					// When those threads try again, they may encounter the usurped cell as a base. 
-					if ( become_bucket_state_master(HH_USURP,control_bits,bucket,cbits,cbits_op,cbits_op_base) ) { // OWN THIS BUCKET
+					if ( become_bucket_state_master(HH_USURP,control_bits,bucket,cbits,cbits_op,base_cbits_op) ) { // OWN THIS BUCKET
 						//
 						// become master of the cell being usurped.
 						// Does this have to lock out other base inserters? Not really, the stash holder will 
@@ -3205,18 +3140,18 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 						cse = from_member_to_base(cbits_op,cse);
 						cse->_updating++; // add an updater on behalf of the base, which will later release the member when it unstashes
 						//
-						a_val_n_tbits = (offset_value << HALF) | 0x1;
+						val_n_tbits = ((uint64_t)offset_value << HALF) | 0x1;
 						//
-						ky_n_cbits = (el_key << HALF) | (ky_n_cbits & UINT32_MAX);  // keep the reference to the stash for now
+						ky_n_cbits = ((uint64_t)el_key << HALF) | (ky_n_cbits & UINT32_MAX);  // keep the reference to the stash for now
 						a_ky_n_cbits->store(ky_n_cbits,std::memory_order_release);
-						a_val_n_tbits->store(a_val_n_tbits,std::memory_order_release);    // next fix up the taken bits
+						a_val_n_tbits->store(val_n_tbits,std::memory_order_release);    // next fix up the taken bits
 						// don't unstash_base_cbits(control_bits,cse); yet. The base should complete its operations first.
-						wakeup_value_restore(HH_FROM_EMPTY, control_bits, cbits, cbits_op, cbits_op_base, bucket, h_bucket, el_key, offset_value, which_table, buffer, end, cse);
+						this->wakeup_value_restore(HH_FROM_EMPTY, control_bits, cbits, cbits_op, base_cbits_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cse);
 						//
 						// the usurped value can occupy another spot in its base
 						// don't unstash_base_cbits(base_control_bits,base_cse), it will be done after the reinsertion is resolved
 						auto base_h_bucket = (h_bucket-backref);		// next reinser the displaced value now currently stashed
-						wakeup_value_restore(HH_FROM_BASE_AND_WAIT, base_control_bits, base_cbits, base_cbits_op, cbits_base_op, cells_base, base_h_bucket, save_key, save_value, which_table, buffer, end, base_cse);
+						wakeup_value_restore(HH_FROM_BASE_AND_WAIT, base_control_bits, base_cbits, base_cbits_op, base_cbits_op, cells_base, base_h_bucket, save_key, save_value, which_table, buffer, end_buffer, base_cse);
 						//
 					} else {
 						control_bits = load_cbits(bucket,cbits,cbits_op);
@@ -3240,10 +3175,11 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 		 * so that later it may be removed by cropping.
 		*/
 
-		uint64_t _internal_update(atomic<uint64_t> *a_c_bits, hh_element *base, uint32_t cbits, uint32_t cbits_op, uint32_t el_key, uint32_t h_bucket, uint32_t v_value, uint32_t modifier, uint32_t el_key_update = 0) {
+		uint64_t _internal_update(atomic<uint64_t> *a_c_bits, uint8_t selector, hh_element *base, uint32_t cbits, uint32_t cbits_op, uint32_t el_key, uint32_t v_value, uint32_t modifier, hh_element *buffer, hh_element *end, uint32_t el_key_update = 0) {
 			//
 			uint32_t value = 0;
-			hh_element *storage_ref = _get_bucket_reference(a_c_bits, base, cbits, cbits_op h_bucket, el_key, buffer, end, value);  // search
+			hh_element *storage_ref = _get_bucket_reference(a_c_bits, base, cbits, cbits_op, el_key, buffer, end, value);  // search
+
 			//
 			if ( storage_ref != nullptr ) {
 				// 
@@ -3278,7 +3214,7 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 			return(UINT64_MAX); // never locked
 		}
 
-};
+//};
 
 
 
@@ -3294,21 +3230,20 @@ class HH_map_atomic_no_wait : public HH_map_structure<NEIGHBORHOOD>, public HH_t
 
 
 
-
+/*
 template<const uint32_t NEIGHBORHOOD = 32>
-class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
+class HH_impl_methods : public HH_thread_manager<NEIGHBORHOOD>  {
 	//
 	public:
 
 		// LRU_cache -- constructor
 		HH_impl_methods(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) :
-		 								HH_map_atomic_no_wait<NEIGHBORHOOD>(region, seg_sz, max_element_count, num_threads, am_initializer) {
+		 								HH_thread_manager<NEIGHBORHOOD>(region, seg_sz, max_element_count, num_threads, am_initializer) {
 		}
 
 		virtual ~HH_impl_methods() {
 		}
-
-
+*/
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -3334,10 +3269,11 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * window.
 		*/
 
-		void complete_bucket_creation(atomic<uint32_t> *control_bits, uint32_t &cbits, uint32_t &cbits_ops, uint32_t &cbits_op_base, hh_element *bucket, hh_element *buffer, hh_element *end_buffer) {
+		// atomic<uint32_t> *control_bits, uint32_t &cbits, uint32_t &cbits_ops, uint32_t &cbits_op_base,
+		void complete_bucket_creation(hh_element *bucket, hh_element *buffer, hh_element *end_buffer) {
 			//
-			a_place_back_taken_spots(bucket, 0, buffer, end);
-			create_base_taken_spots(bucket, buffer, end);   // this bucket is locked 
+			a_place_back_taken_spots(bucket, 0, buffer, end_buffer);
+			create_base_taken_spots(bucket, buffer, end_buffer);   // this bucket is locked 
 			//
 		}
 
@@ -3357,11 +3293,12 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * 
 		*/
 
-		bool complete_add_bucket_member(atomic<uint32_t> *control_bits, uint32_t &cbits, uint32_t &cbits_ops, uint32_t &cbits_op_base, uint32_t el_key, uint32_t offset_value, uint32_t store_time, hh_element *base, hh_element *buffer, hh_element *end_buffer) {
-			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->->tv.taken));
+
+		bool complete_add_bucket_member(atomic<uint32_t> *control_bits, uint32_t &cbits, uint32_t &cbits_ops, uint32_t el_key, uint32_t offset_value, uint32_t store_time, hh_element *base, hh_element *buffer, hh_element *end_buffer) {
+			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
 			uint8_t hole;
 			// mark position as immobile
-			if ( reserve_membership(control_bits,base,a_tbits,cbits,cbits_ops,cbits_op_base,hole,thread_id,buffer,end_buffer) ) {
+			if ( reserve_membership(control_bits,base,a_tbits,cbits,cbits_ops,hole,buffer,end_buffer) ) {
 				//
 				// should be in the clear to write whatever at this point.
 				// At this point, the stash records for the hole should be returned 
@@ -3371,11 +3308,11 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				// might wait until the base membership is completely unstashed. If not, the base will overwrite the
 				// future delete. (So, the stash removal method can state that it failed to the calling remover given that the adder bit
 				// will be set for the same position.)
-				auto bucket = base + hole;
-				bucket = el_check_end_wrap(bucket,buffer,end);
+				hh_element *bucket = base + hole;
+				bucket = el_check_end_wrap(bucket,buffer,end_buffer);
 				//
-				atomic<uint64_t> *a_ky_n_cbits = (uint64_t)(&(bucket->c));
-				atomic<uint64_t> *a_val_n_tbits = (uint64_t)(&(bucket->tv));
+				atomic<uint64_t> *a_ky_n_cbits = (atomic<uint64_t> *)(&(bucket->c));
+				atomic<uint64_t> *a_val_n_tbits = (atomic<uint64_t> *)(&(bucket->tv));
 				//
 				uint64_t offset_to_base = (hole << 1); // always 0 in the lsb
 				uint64_t ky_n_cbits = (((uint64_t)(el_key) << HALF) | offset_to_base);
@@ -3439,9 +3376,7 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 		void seek_min_member(hh_element **min_probe_ref, uint32_t &min_base_offset, hh_element *base_probe, uint32_t &time, uint32_t offset_nxt_base, hh_element *buffer, hh_element *end) {
 			uint32_t cbits = 0;
-			uint32_t cbits_op = 0;
-			atomic<uint32_t> *a_cbits = load_cbits(base_probe,cbits,cbits_op);
-
+			// uint32_t cbits_op = 0;
 			auto c = cbits;					// offset_nxt_base is the membership of this bucket that has been found
 			c = c & (~((uint32_t)0x1));		// the interleaved bucket does not give up its base... (should already be zero)
 			// zero offset of base probe is shifted by offset_nxt_base from the originating base
@@ -3454,8 +3389,8 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				vb_probe = el_check_end_wrap(vb_probe,buffer,end);
 				if ( ensure_is_member(vb_probe) ) {
 					// tbits of a member are never stashed
-					if ( vb_probe->->tv.taken < time ) {
-						time = vb_probe->->tv.taken;
+					if ( vb_probe->tv.taken < time ) {
+						time = vb_probe->tv.taken;
 						*min_probe_ref = vb_probe;
 						min_base_offset = offset_min;
 					}
@@ -3491,12 +3426,14 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			auto base_probe = hash_base;
 
 			// 
-			TBIT_stash_el *tse = stash_taken_spots(hash_base);
+			// TBIT_stash_el *tse = 
+			stash_taken_spots(hash_base);
 
 			uint32_t tbits = 0;
 			uint32_t tbits_op = 0;
 
-			atomic<uint32_t> *a_tbits = load_tbits(hash_base,tbits,tbits_op);
+			//atomic<uint32_t> *a_tbits = 
+			load_tbits(hash_base,tbits,tbits_op);
 			//
 			auto a = cbits;
 			auto b = tbits;
@@ -3537,15 +3474,14 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				stash_cbits(a_base_bits,hash_base,cbits,cbits_op,cbits_base_ops,cbit_stashes);
 				CBIT_stash_holder *csh = cbit_stashes[0];
 
-
-				atomic<uint64_t> *a_tbits_n_val = (atomic<uint32_t> *)(&(min_probe->tv));
-				atomic<uint64_t> *a_cbits_n_ky = (atomic<uint32_t> *)(&(min_probe->c));
+				atomic<uint64_t> *a_tbits_n_val = (atomic<uint64_t> *)(&(min_probe->tv));
+				atomic<uint64_t> *a_cbits_n_ky = (atomic<uint64_t> *)(&(min_probe->c));
 
 				auto min_probe_tbits_n_val = a_tbits_n_val->load(std::memory_order_acquire);
 				auto min_brobe_cbits_n_ky = a_cbits_n_ky->load(std::memory_order_acquire);
 
 				uint32_t usurp_pos_offset = ((min_base_offset + offset_nxt_base) << 1);
-				uint64_t cbits_n_ky = ( ((uint64_t)pk << HALF) | ((uint64_t)(usurp_pos_offset) & UINT32_MAX) );
+				uint64_t cbits_n_ky = ( ((uint64_t)pky << HALF) | ((uint64_t)(usurp_pos_offset) & UINT32_MAX) );
 				uint64_t tbits_n_val = ( ((uint64_t)pval << HALF) | ((uint64_t)(time) & UINT32_MAX) );
 				//
 				a_cbits_n_ky->store(cbits_n_ky);
@@ -3587,15 +3523,15 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		/**
 		 * create_base_taken_spots
 		 * 
-		 * 
+		 * , uint32_t value, uint32_t el_key, 
 		*/
 
-		void create_base_taken_spots(hh_element *hash_ref, uint32_t value, uint32_t el_key, hh_element *buffer, hh_element *end_buffer) {
+		void create_base_taken_spots(hh_element *hash_ref, hh_element *buffer, hh_element *end_buffer) {
 			hh_element *base_ref = hash_ref;
 			uint32_t t = 1;				// c will be the new base element map of taken positions
 			TBIT_stash_el *tse_base = stash_taken_spots(base_ref,t); // taken by ref
 			for ( uint8_t i = 1; i < NEIGHBORHOOD; i++ ) {
-				hash_ref = el_check_end_wrap( ++hash_ref, buffer, end ); // keep walking forward to the end of the window
+				hash_ref = el_check_end_wrap( ++hash_ref, buffer, end_buffer); // keep walking forward to the end of the window
 				if ( bucket_is_base(hash_ref) ) {			// this is a base bucket with information beyond the window
 					uint32_t taken = 0;
 					TBIT_stash_el *tse = stash_taken_spots(hash_ref,taken); // taken by ref
@@ -3606,9 +3542,9 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				}
 			}
 
-			stash_real_tbits(t,tse);
-			atomic<uint32_t> *b_t_bits = (atomic<uint32_t> *)(&base_ref->->tv.taken);
-			_unstash_base_tbits(a_tbits,tse_base);    // unstash if last out
+			stash_real_tbits(t,tse_base);
+			atomic<uint32_t> *b_t_bits = (atomic<uint32_t> *)(&base_ref->tv.taken);
+			_unstash_base_tbits(b_t_bits,tse_base);    // unstash if last out
 		}
 
 
@@ -3625,7 +3561,7 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * it will restore the tbits to their location in the bucket upon completion of its operation.
 		 * 
 		*/
-		bool reserve_membership(atomic<uint32_t> *control_bits, hh_element *base, atomic<uint32_t> *a_tbits, uint32_t &cbits, uint32_t &cbits_ops, uint32_t &cbits_op_base, uint8_t &hole, uint8_t thread_id, hh_element *buffer, hh_element *end_buffer ) {
+		bool reserve_membership(atomic<uint32_t> *control_bits, hh_element *base, atomic<uint32_t> *a_tbits, uint32_t &cbits, uint32_t &cbits_ops, uint8_t &hole, hh_element *buffer, hh_element *end_buffer ) {
 			// first unload the taken spots... 
 			uint32_t tbits = 0;												// tbits passed by reference
 			TBIT_stash_el *tse = nullptr;
@@ -3641,26 +3577,27 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				if ( hole < sizeof(uint32_t) ) {
 					//										// tbits by reference, tbits and b should be the same after op
 																	  // hole by reference -- should settle ownership
-					b = a_tbit_store_reservation(a_tbits, tse, tbits, hole, hbit);  // store the taken spot 
+					uint32_t hbit = 0;
+					b = this->a_tbit_store_reservation(tse, tbits, hole, hbit);  // store the taken spot 
 					// in storing the spot, if another thread took it, then the value of the 
 					// cbits filed in the reserved bucket will not be zero.
 					//
 					if ( hole < sizeof(uint32_t) ) {  // or, the bucket might already be full
 						// now put a stamp on the cell that should be reserved (if not the cell will be at least partially populated)
 						hh_element *reserved = base + hole;		// nothing about reserved should be stashed at this point
-						atomic<uint32_t> *a_reserved = (atomic<uint32_t> *)(reserved->c.bits);
+						atomic<uint32_t> *a_reserved = (atomic<uint32_t> *)(&(reserved->c.bits));
 						//
 						// the member has zero cbits (if not touched by another thread)
 						uint32_t cc = 0;	// cbits of reserved match zero if not preempted by other writer
 											// put in a back reference member style cbit with immobility set
 						auto new_member = (hole << 1) | CBIT_BASE_MEMBER_BIT | IMMOBILE_CBIT_SET;
 						if ( a_reserved->compare_exchange_weak(cc,new_member,std::memory_order_acq_rel) ) {
-							// the s
+							// 
 							auto c = (a ^ b);    // c contains bucket starts..
-							a_place_taken_spots(hash_base, hole, c, buffer, end_buffer);  // add the position to the base memory record
-							a_store_real_cbits(control_bits,cbits,cbits_ops,hbit,thread_id);  // since we are here, there bucket is owned by the thread
+							a_place_taken_spots(base, hole, c, buffer, end_buffer);  // add the position to the base memory record
+							a_store_real_cbits(control_bits,cbits_ops,hbit);  // since we are here, there bucket is owned by the thread
 							tbits_remove_swappy_op(a_tbits,tse);  // expecting `tbits_remove_swappy_op` to unstash tbits
-							return true
+							return true;
 						} // else continuing
 					} else {
 						break;
@@ -3698,7 +3635,7 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				//
 				uint32_t taken_bit = (1 << (hole - offset));  // this spot has been taken
 				//
-				atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(nxt_base->->tv.taken));
+				atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(nxt_base->tv.taken));
 				//
 				TBIT_stash_el *tse = stash_taken_spots(nxt_base);
 				stash_real_tbits(taken_bit,tse);
@@ -3738,7 +3675,7 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				uint32_t c = 0;
 				uint8_t k = g;     ///  (dist_base + last_view) :: dist_base + (g - dist_base) ::= dist_base + (NEIGHBORHOOD - 1) - dist_base ::= (NEIGHBORHOOD - 1) ::= g
 				// go until vb_probe hits on a base
-				uint32_t taken;
+				uint32_t taken = 0;
 				while ( vb_probe != hash_base ) {
 					if ( bucket_is_base(vb_probe,c) ) {
 						TBIT_stash_el *tse = stash_taken_spots(vb_probe);
@@ -3800,7 +3737,6 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			auto last_view = (g - dist_base);
 			hh_element  *all_taken_spots[32];
 			TBIT_stash_el *all_taken_spot_refs[32];
-			atomic<uint32_t> *all_taken_spot_refs[32];
 			uint8_t count_bases = 0;
 			//
 			if ( last_view > 0 ) { // can't influence any change below the bucket
@@ -3809,10 +3745,10 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				uint32_t c = 0;
 				uint8_t k = g;     ///  (dist_base + last_view) :: dist_base + (g - dist_base) ::= dist_base + (NEIGHBORHOOD - 1) - dist_base ::= (NEIGHBORHOOD - 1) ::= g
 				// go until vb_probe hits on a base
-				uint32_t taken;
+				uint32_t taken = 0;
 				while ( vb_probe != hash_base ) {
 					if ( bucket_is_base(vb_probe,c) ) {
-						TBIT_stash_el *tse = stash_taken_spots(vb_probe);
+						TBIT_stash_el *tse = stash_taken_spots(vb_probe,taken);
 						all_taken_spots[count_bases] = vb_probe;
 						all_taken_spot_refs[count_bases++] = tse;
 						stash_tbits_clear((pattern << k),tse);
@@ -3903,7 +3839,7 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			// OTHER buckets
 			// now look at the bits within the range of the current bucket indicating holdings of other buckets.
 			// these buckets are ahead of the base, but behind the cleared position...
-			uint8_t nxt_loc = (NEIGBORHOOD - countl_zero(a)) - popcount(a); // they are now all consecutive
+			uint8_t nxt_loc = (NEIGHBORHOOD - countl_zero(a)) - popcount(a); // they are now all consecutive
 			a_remove_bucket_taken_spots(hash_base,bases,nxt_loc,c_pattern,buffer,end);
 			// look for bits preceding the current bucket
 			a_remove_back_taken_spots(hash_base, nxt_loc, c_pattern, buffer, end);
@@ -3922,11 +3858,11 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 		 * 
 		*/
 
-		void _cropper(hh_element *base, uint32_t del_cbits, hh_element *buffer, hh_element *end,uint8_t thread_id) {
+		void _cropper(hh_element *base, hh_element *buffer, hh_element *end) {
 			//
 			atomic<uint64_t> *base_bits_n_ky = (atomic<uint64_t> *)(&(base->c));
 			atomic<uint32_t> *base_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
-			uint32_t h_bucket = (uint32_t)(base - buffer);
+			// uint32_t h_bucket = (uint32_t)(base - buffer);
 			//
 			//
 			atomic<uint32_t> *a_base_bits = (atomic<uint32_t> *)(&(base->c.bits));
@@ -3935,7 +3871,7 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 			if ( wait_become_bucket_delete_master(HH_DELETE, base, cbits, cbits_op) ) {
 				uint32_t value = 0;
 				//
-				hh_element *href = _get_bucket_reference(base_bits_n_ky, base, cbits, cbits_op, h_bucket, UINT32_MAX, buffer, end, value);
+				hh_element *href = _get_bucket_reference(base_bits_n_ky, base, cbits, cbits_op, UINT32_MAX, buffer, end, value);
 				if ( href != nullptr ) {
 					//
 					auto tbits = base_tbits->load(std::memory_order_acquire);
@@ -3956,6 +3892,7 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 					auto cbits_update = cbits;
 
 					CBIT_stash_holder *cbit_stashes[4];
+					uint32_t cbits_base_ops = 0;
 					stash_cbits(a_base_bits,base,cbits,cbits_op,cbits_base_ops,cbit_stashes);
 					CBIT_stash_holder *csh = cbit_stashes[0];
 
@@ -4011,7 +3948,7 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 
 					// cbits
 					stash_bits_clear(cbits_update,csh);
-					unstash_base_cbits(base,csh,buffer,end);
+					this->unstash_base_cbits(base,csh,buffer,end);
 					//
 					// tbits
 					a_removal_taken_spots(base, tse, cbits, cbits_update, buffer, end);  
@@ -4030,7 +3967,8 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
 				release_delete_master(HH_DELETE,base);
 			}
 		}		//
-};
+
+// };
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -4044,31 +3982,21 @@ class HH_impl_methods : public HH_map_atomic_no_wait<NEIGHBORHOOD> {
  * 
 */
 
-
+/*
 template<const uint32_t NEIGHBORHOOD = 32>
-class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
+class HH_map : public HH_impl_methods<NEIGHBORHOOD>, public HMap_interface {
 	//
+*/
+
 	public:
 
 		// LRU_cache -- constructor
-		HH_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) :
-		 								HH_impl_methods<NEIGHBORHOOD>(region, seg_sz, max_element_count, num_threads, am_initializer) {
+		HH_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
+			initialize_all(region, seg_sz, max_element_count, num_threads, am_initializer);
 		}
 
 		virtual ~HH_map() {
 		}
-
-
-
-
-		void random_generator_thread_runner(void) {
-			SliceSelector::random_generator_thread_runner();
-		}
-
-		void set_random_bits(void *shared_bit_region) {
-			SliceSelector::set_random_bits(shared_bit_region);
-		}
-
 
 
 
@@ -4089,7 +4017,7 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 		}
 		//
 		bool short_list_old_entry(uint32_t key,uint32_t value,uint32_t store_time) {
-			if ( _timout_tester !== nullptr ) {
+			if ( _timout_tester != nullptr ) {
 				return (*_timout_tester)(key,value,store_time);
 			}
 			return true;
@@ -4102,7 +4030,7 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 		 * One loop of the main thread for restoring values that have been replaced by a new value.
 		 * The element being restored may still be in play, but 
 		*/
-		void value_restore_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) {
+		void value_restore_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) override {
 			atomic<uint32_t> *control_bits = nullptr;
 			uint32_t real_cbits = 0;
 			uint32_t cbits_op = 0;
@@ -4112,19 +4040,18 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 			uint32_t h_bucket = 0;
 			uint32_t el_key = 0;
 			uint32_t offset_value = 0;
-			uint64_t loaded_value = 0;
 			uint8_t which_table = slice_for_thread;
 			hh_element *buffer = nullptr;
-			hh_element *end = nullptr;
+			hh_element *end_buffer = nullptr;
 			hh_adder_states update_type;
 			//
 			while ( is_restore_queue_empty(assigned_thread_id,slice_for_thread) ) wait_notification_restore();
 			//
-			dequeue_restore(update_type, &control_bits, real_cbits, cbits_op, cbits_op_base, &hash_ref, h_bucket, el_key, offset_value, which_table, assigned_thread_id, &buffer, &end);
+			dequeue_restore(update_type, &control_bits, real_cbits, cbits_op, cbits_op_base, &hash_ref, h_bucket, el_key, offset_value, which_table, assigned_thread_id, &buffer, &end_buffer);
 			// store... if here, it should be locked
 			//
 			uint32_t store_time = now_time(); // now
-			hh_element *yielding_base = nullptre;
+			hh_element *yielding_base = nullptr;
 
 			switch ( update_type ) {
 				case HH_FROM_EMPTY: {
@@ -4132,10 +4059,11 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 					// the memory map (tbits) are not set up causing hole discovery and search 
 					// to have points of failure... This should be easily rectified
 					///
-					complete_bucket_creation(control_bits, real_cbits, cbits_op, cbits_op_base, hash_ref, buffer, end_buffer);
+					// control_bits, real_cbits, cbits_op, cbits_op_base,
+					complete_bucket_creation(hash_ref, buffer, end_buffer);
 					//
 					if ( q_count_decr(control_bits,cbits_op) ) {
-						release_bucket_state_master(control_bits, hash_ref);
+						release_bucket_state_master(control_bits);
 					}
 					break;
 				}
@@ -4147,14 +4075,14 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 					// it is possible that by the time the value to be restored arrives here that
 					// the taken positions available to the base are gone. In that case, a version of usurpation
 					// may occur, or the oldest elements (or deleted and not yet serviced elements) may be shifted out.
-					auto prev_bits = control_bits->load(std::memory_order_acquire);
+																// ??? auto prev_bits = control_bits->load(std::memory_order_acquire);
 					// store ....  pop until oldest
 					if ( !(complete_add_bucket_member(control_bits, real_cbits, cbits_op_base, el_key, offset_value, store_time, hash_ref, buffer, end_buffer)) ) {
-						yielding_base = handle_full_bucket_by_usurp(hash_ref, real_cbits, el_key, offset_value, time, offset, buffer, end_buffer);
+						yielding_base = handle_full_bucket_by_usurp(hash_ref, real_cbits, el_key, offset_value, store_time, buffer, end_buffer);
 					}
 					//
 					if ( q_count_decr(control_bits,cbits_op) ) {
-						release_bucket_state_master(control_bits, hash_ref);
+						release_bucket_state_master(control_bits);
 					}
 					break;
 				}
@@ -4164,27 +4092,29 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 				}
 			}
 
-			if ( yielding_base !== nullptr ) {
+			if ( yielding_base != nullptr ) {
 				// if the entry can be entered onto the short list (not too old) then allow it to be added back onto the restoration queue...
 				if ( short_list_old_entry(el_key, offset_value, store_time) ) {
 					control_bits = (atomic<uint32_t> *)(&(yielding_base->c.bits));
+					uint32_t cbits = 0;
 					load_cbits(control_bits,cbits,cbits_op);
 					set_control_bit_state(control_bits,cbits_op,EDITOR_CBIT_SET);
 					while ( !wait_on_max_queue_incr(control_bits,cbits_op) ) { tick(); }
 
 					h_bucket = (yielding_base - buffer);
 					// el_key, offset_value have been updated to contain the yield member value 
-
-					CBIT_stash_el *cse = nullptr;
+					//
+					CBIT_stash_holder *csh = nullptr;
 					if ( cbits_op != 0 ) {
-						cse = cbits_stash_index_of(cbits_op);
+						auto stash_index = cbits_stash_index_of(cbits_op);
+						csh = _cbit_stash.stash_el_reference(stash_index);
 					} else {
 						CBIT_stash_holder *cbit_stashes[4];
-						stash_cbits(control_bits, yielding_base, cbits, cbits_op, cbits_op_base, cbit_stashes, buffer, end);
-						cse = cbit_stashes[0];
+						stash_cbits(control_bits, yielding_base, cbits, cbits_op, cbits_op_base, cbit_stashes);
+						csh = cbit_stashes[0];
 					}
 
-					wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_op_base, yielding_base, h_bucket, el_key, offset_value, which_table, buffer, end, cse);
+					this->wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_op_base, yielding_base, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, csh);
 				}
 			}
 
@@ -4201,7 +4131,7 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 		 * One loop of the main thread for restoring values that have been replaced by a new value.
 		 * The element being restored may still be in play, but 
 		*/
-		void cropper_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) {
+		void cropper_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id)  override {
 			hh_element *base = nullptr;
 			uint32_t cbits = 0;
 			uint8_t which_table = slice_for_thread;
@@ -4212,8 +4142,8 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 			//
 			dequeue_cropping(&base, cbits, which_table, assigned_thread_id, &buffer, &end);
 			// store... if here, it should be locked
-			//
-			_cropper(base, cbits, buffer, end, assigned_thread_id);
+			// cbits, 
+			_cropper(base, buffer, end);
 		}
 
 
@@ -4239,7 +4169,7 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 		 * end_buffer_ref -- contains the address of the end of the storage region
 		 * 
 		*/
-		bool prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) {
+		bool prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) override {
 			//
 			//
 			atomic<uint32_t> *a_c_bits = _get_member_bits_slice_info(h_bucket,which_table,cbits,cbits_op,cbits_base_ops,bucket_ref,buffer_ref,end_buffer_ref,cbit_stashes);
@@ -4257,16 +4187,15 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 		 * 
 		 * cbits -- reflects the last known state of the bucket in op or a membership map
 		*/
-		uint64_t add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_op,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) {
+		void add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_op,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) override {
 			//
 			uint8_t selector = 0x3;
 			//
 			if ( (offset_value != 0) &&  selector_bit_is_set(h_bucket,selector) ) {
 				//
-				return _first_level_bucket_ops(atomic<uint32_t> *control_bits,full_hash,h_bucket,offset,which_table,cbits,cbits_op,cbits_base_op,bucket,buffer,end_buffer,cbit_stashes);
+				_first_level_bucket_ops(control_bits,el_key,h_bucket,offset_value,which_table,cbits,cbits_op,cbits_base_op,bucket,buffer,end_buffer,cbit_stashes);
 				//
 			}
-			return UINT64_MAX;
 		}
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -4274,16 +4203,16 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 		/**
 		 * get
 		*/
-		uint32_t get(uint64_t key,uint8_t thread_id = 1) {
+		uint32_t get(uint64_t key) override {
 			uint32_t el_key = (uint32_t)((key >> HALF) & HASH_MASK);  // just unloads it (was index)
 			uint32_t hash = (uint32_t)(key & HASH_MASK);
 			//
-			return get(hash,el_key,thread_id);
+			return get(hash,el_key);
 		}
 
 		// el_key == hull_hash (usually)
 
-		uint32_t get(uint32_t el_key, uint32_t h_bucket, uint8_t thread_id) {  // full_hash,hash_bucket
+		uint32_t get(uint32_t el_key, uint32_t h_bucket) override {  // full_hash,hash_bucket
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 			//
@@ -4292,9 +4221,6 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 				h_bucket = clear_selector_bit(h_bucket);
 			} else return UINT32_MAX;
 
-			//
-			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
-			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
 			//
 			hh_element *buffer = (selector ?_region_HV_1 : _region_HV_0 );
 			hh_element *end = (selector ?_region_HV_1_end : _region_HV_0_end);
@@ -4308,9 +4234,9 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 			uint8_t tries = 0;
 			while ( tries++ < 3 ) {
 				//
-				if ( empty_bucket(a_c_bits,base,cbits,op_cbits) ) return UINT32_MAX;   // empty_bucket cbits by ref
+				if ( empty_bucket(a_c_bits,cbits,op_cbits) ) return UINT32_MAX;   // empty_bucket cbits by ref
 				//
-				hh_element *storage_ref = _get_bucket_reference(a_c_bits, base, cbits, op_cbits, h_bucket, el_key, buffer, end, value);  // search
+				hh_element *storage_ref = _get_bucket_reference(a_c_bits, base, cbits, op_cbits, el_key, buffer, end, value);  // search
 				//
 				if ( storage_ref == nullptr ) {
 					if ( _check_key_value_stash(op_cbits,el_key,value) ) {
@@ -4338,7 +4264,7 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 		 * 
 		*/
 		// el_key == hull_hash (usually)
-		uint64_t update(uint32_t el_key, uint32_t h_bucket, uint32_t v_value) {
+		uint64_t update(uint32_t el_key, uint32_t h_bucket, uint32_t v_value) override {
 			//
 			if ( v_value == 0 ) return UINT64_MAX;
 			if ( el_key == UINT32_MAX ) return UINT64_MAX;
@@ -4355,9 +4281,9 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 			atomic<uint64_t> *a_c_bits = (atomic<uint64_t> *)(&(base->c));
 			uint32_t cbits = 0;
 			uint32_t op_cbits = 0;
-			if ( empty_bucket(a_c_bits,base,cbits,op_cbits) ) return UINT64_MAX;   // empty_bucket cbits by ref
+			if ( empty_bucket(a_c_bits,cbits,op_cbits) ) return UINT64_MAX;   // empty_bucket cbits by ref
 			// CALL UPDATE (VALUE UPDATE NO KEY UPDATE)
-			return _internal_update(a_c_bits, base, cbits, op_cbits, el_key, h_bucket, v_value, 0);
+			return _internal_update(a_c_bits, selector, base, cbits, op_cbits, el_key, v_value, 0,  buffer, end);
 		}
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -4366,14 +4292,14 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 		 * del
 		*/
 
-		uint32_t del(uint64_t loaded_key) {
+		uint32_t del(uint64_t loaded_key) override {
 			uint32_t el_key = (uint32_t)((loaded_key >> HALF) & HASH_MASK);  // just unloads it (was index)
 			uint32_t h_bucket = (uint32_t)(loaded_key & HASH_MASK);
 			return del(el_key, h_bucket);
 		}
 
 
-		uint32_t del(uint32_t el_key, uint32_t h_bucket) {
+		uint32_t del(uint32_t el_key, uint32_t h_bucket) override {
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 			//
@@ -4390,10 +4316,11 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 			uint32_t cbits = 0;
 			uint32_t op_cbits = 0;
 			uint32_t root_ky = 0;
-			if ( empty_bucket(a_c_bits,base,cbits,op_cbits,root_ky) ) return UINT32_MAX;   // empty_bucket cbits by ref
+			if ( empty_bucket(a_c_bits,cbits,op_cbits,root_ky) ) return UINT32_MAX;   // empty_bucket cbits by ref
 			//
 			// cbits are real cbits
 			if ( root_ky == el_key ) {  // deleting the base -- make it a special case
+				//
 				if ( wait_become_bucket_delete_master(HH_DELETE_BASE,base,cbits,op_cbits) ) {  // failure may mean that an adder has a value to put in 
 					if ( popcount(cbits) == 1 ) {  // Hence the whole bucket will be empty
 						atomic<uint64_t> *a_t_bits = (atomic<uint64_t> *)(&(base->tv));
@@ -4404,18 +4331,20 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 						// swap in the next element and mark its old position as deleted
 						a_swap_next(a_c_bits,base,cbits,UINT32_MAX,0,buffer,end,MOBILE_CBIT_SET);
 						submit_for_cropping(base,cbits,buffer,end,selector);  // after a total swappy read, all BLACK keys will be at the end of members
-						release_delete_master(HH_DELETE_BASE,base)
+						release_delete_master(HH_DELETE_BASE,base);
 					}
+					//
+					return el_key;
 				}
-				return;
+				return UINT32_MAX;
 			}
 			// set that edit is taking place
 			// CALL UPDATE (VALUE UPDATE PLUS KEY UPDATE) -- key update is special value
-			uint64_t loaded = _internal_update(a_c_bits, base, cbits, op_cbits, el_key, h_bucket, 0, MOBILE_CBIT_SET, UINT32_MAX);
+			uint64_t loaded = _internal_update(a_c_bits, selector, base, cbits, op_cbits, el_key, 0, MOBILE_CBIT_SET, buffer, end, UINT32_MAX);
 			if ( loaded == UINT64_MAX ) return UINT32_MAX;
 			//
 			submit_for_cropping(base,cbits,buffer,end,selector);  // after a total swappy read, all BLACK keys will be at the end of members
-			return;
+			return el_key;
 		}
 
 
@@ -4425,7 +4354,7 @@ class HH_map : public HH_impl_methods<NEIGHBORHOOD> {
 		/**
 		 * clear
 		*/
-		void clear(void) {
+		void clear(void) override {
 			if ( _initializer ) {
 				uint8_t sz = sizeof(HHash);
 				uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));

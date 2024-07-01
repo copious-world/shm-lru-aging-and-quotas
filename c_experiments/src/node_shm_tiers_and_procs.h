@@ -568,8 +568,6 @@ class TierAndProcManager : public LRU_Consts {
 			}
 			if ( (proc_count > 0) && (assigned_tier < _NTiers) ) {
 				//
-				uint8_t thread_id = 1;
-				//
 				LRU_c_impl *lru = access_tier(assigned_tier);
 				if ( lru == NULL ) {
 					return(-1);
@@ -620,7 +618,7 @@ class TierAndProcManager : public LRU_Consts {
 				//
 				if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
 					// 	-- FILTER - only allocate for new objects
-					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count,thread_id);
+					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
 					//
 					// accesses are null or zero offset if the hash already has an allocated location.
 					// If accesses[i] is a zero offset, then the element is new. Otherwise, the element 
@@ -728,7 +726,7 @@ class TierAndProcManager : public LRU_Consts {
 									atomic<uint32_t> *control_bits;
 									uint32_t cbits = 0;
 									uint32_t cbits_op = 0;
-									uint32_t cbits_base_op = 0
+									uint32_t cbits_base_op = 0;
 									hh_element *buffer = nullptr;
 									hh_element *end_buffer = nullptr;
 									hh_element *el = nullptr;
@@ -872,13 +870,13 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		*/
 
-		int get_method(uint32_t process, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t timestamp, uint32_t tier,[[maybe_unused]] void (delay_func)()) {
+		int get_method(uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t timestamp, uint32_t tier,[[maybe_unused]] void (delay_func)()) {
 			uint32_t write_offset = 0;
 			//
 			if ( tier == 0 ) {
 				LRU_c_impl *lru = access_tier(tier);
 				if ( lru != nullptr ) {
-					write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
+					write_offset = lru->getter(hash_bucket,full_hash,timestamp);
 					if ( write_offset != UINT32_MAX ) {
 						uint8_t *stored_data = lru->data_location(write_offset);
 						if ( stored_data != nullptr ) {
@@ -888,7 +886,7 @@ class TierAndProcManager : public LRU_Consts {
 					} else {
 						lru = from_time(timestamp);
 						if ( lru != nullptr ) {
-							write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
+							write_offset = lru->getter(hash_bucket,full_hash,timestamp);
 							if ( write_offset != UINT32_MAX ) {
 								uint8_t *stored_data = lru->data_location(write_offset);
 								if ( stored_data != nullptr ) {
@@ -915,14 +913,14 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		*/
 
-		int search_method(uint32_t process, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t tier, void (delay_func)()) {
+		int search_method(uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t tier, void (delay_func)()) {
 			uint32_t write_offset = 0;
 			//
 			if ( tier == 0 ) {
 				uint32_t timestamp = 0;
 				LRU_c_impl *lru = access_tier(tier);
 				if ( lru != nullptr ) {
-					write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
+					write_offset = lru->getter(hash_bucket,full_hash,timestamp);
 					if ( write_offset != UINT32_MAX ) {
 						uint8_t *stored_data = lru->data_location(write_offset);
 						if ( stored_data != nullptr ) {
@@ -932,11 +930,11 @@ class TierAndProcManager : public LRU_Consts {
 					} else {
 						// hash_table_value_restore_thread
 						memset(data,0,sz);
-						auto tier_search_runner = [this](uint32_t tier,uint32_t process, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz) {
+						auto tier_search_runner = [this](uint32_t tier, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz) {
 							uint32_t timestamp = 0;
 							for ( ; tier < this->_NTiers; tier++ ) {
 								LRU_c_impl *lru = this->access_tier(tier);
-								uint32_t write_offset = lru->getter(hash_bucket,full_hash,process,timestamp);
+								uint32_t write_offset = lru->getter(hash_bucket,full_hash,timestamp);
 								if ( write_offset != UINT32_MAX ) {
 									uint8_t *stored_data = lru->data_location(write_offset);
 									if ( stored_data != nullptr ) {
@@ -947,7 +945,7 @@ class TierAndProcManager : public LRU_Consts {
 							}
 						};
 						//
-						thread th(tier_search_runner,tier,process,hash_bucket,full_hash,data,sz);
+						thread th(tier_search_runner,tier,hash_bucket,full_hash,data,sz);
 						while ( data[0] == 0 ) {
 							delay_func();  // let other parts of the process/thread run
 						}
@@ -980,34 +978,34 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		*/
 
-		int del_action(uint32_t process,uint32_t hash_bucket, uint32_t full_hash, uint32_t timestamp, uint32_t tier) {
+		int del_action(uint32_t hash_bucket, uint32_t full_hash, uint32_t timestamp, uint32_t tier) {
 			LRU_c_impl *lru = access_tier(tier);
 			if ( lru != nullptr ) {
-				auto write_offset = lru->getter(hash_bucket,full_hash,process);
+				auto write_offset = lru->getter(hash_bucket,full_hash);
 				if ( write_offset != UINT32_MAX ) {
 					uint8_t *stored_data = lru->data_location(write_offset);
 					if ( stored_data != nullptr ) {
 						// uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
-						uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,UINT32_MAX,(uint8_t)process);
+						uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,UINT32_MAX);
 						if ( loaded_key != UINT64_MAX ) {
 							LRU_element *le = (LRU_element *)(stored_data);
 							uint32_t found_timestamp = le->_when;
-							lru->free_memory_and_key(le,process,hash_bucket,hash_bucket,found_timestamp);
+							lru->free_memory_and_key(le,hash_bucket,hash_bucket,found_timestamp);
 						}
 						return 0;
 					}
 				} else {
 					lru = from_time(timestamp);
 					if ( lru != nullptr ) {
-						write_offset = lru->getter(hash_bucket,full_hash,process);
+						write_offset = lru->getter(hash_bucket,full_hash);
 						if ( write_offset != UINT32_MAX ) {
 							uint8_t *stored_data = lru->data_location(write_offset);
 							if ( stored_data != nullptr ) {
 								// uint32_t new_el_offset = UINT32_MAX;   // block out the position until it is removed...
-								uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,UINT32_MAX,(uint8_t)process);
+								uint64_t loaded_key = lru->update_in_hash(full_hash,hash_bucket,UINT32_MAX);
 								if ( loaded_key != UINT64_MAX ) {
 									LRU_element *le = (LRU_element *)(stored_data);
-									lru->free_memory_and_key(le,process,hash_bucket,hash_bucket,timestamp);
+									lru->free_memory_and_key(le,hash_bucket,hash_bucket,timestamp);
 								}
 								return 0;
 							}
@@ -1035,12 +1033,11 @@ class TierAndProcManager : public LRU_Consts {
 			while ( !_removal_work[tier].empty() ) {
 				r_entry re;
 				if ( _removal_work[tier].pop(re) ) {
-					uint32_t process = re.process;
 					uint32_t timestamp = re.timestamp;
 					uint32_t hash_bucket = re.h_bucket;
 					uint32_t full_hash = re.full_hash;
 					//
-					this->del_action(process,hash_bucket,full_hash,timestamp,tier);
+					this->del_action(hash_bucket,full_hash,timestamp,tier);
 				}
 			}
 		}

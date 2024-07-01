@@ -265,7 +265,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 					_count_free->store(count_free);
 				}
 			} else {
-				attach_region_free_list(_start, _step,(_end - _start));
+				attach_region_free_list(_start,(_end - _start));
 			}
 			//
 		}
@@ -399,7 +399,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		*/
 
 		void hash_table_value_restore_thread(uint8_t slice_for_thread) {  // a wrapper (parent must call a while loop... )
-			_hmap->value_restore_runner(slice_for_thread);
+			_hmap->value_restore_runner(slice_for_thread,this->_thread_id);
 		}
 
 
@@ -451,12 +451,12 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * The `_cel` parameter refers to the process table.
 		*/
 
-		uint32_t		filter_existence_check(com_or_offset **messages,com_or_offset **accesses,uint32_t ready_msg_count,uint8_t thread_id) {
+		uint32_t		filter_existence_check(com_or_offset **messages,com_or_offset **accesses,uint32_t ready_msg_count) {
 			uint32_t new_msgs_count = 0;
 			while ( --ready_msg_count >= 0 ) {  // walk this list backwards...
 				//
 				uint64_t hash = (uint64_t)(messages[ready_msg_count]->_cel->_hash);
-				uint32_t data_loc = _hmap->get(hash,thread_id);  // this thread contends with others to get the value
+				uint32_t data_loc = _hmap->get(hash);  // this thread contends with others to get the value
 				//
 				if ( data_loc != UINT32_MAX ) {    // check if this message is already stored
 					messages[ready_msg_count]->_offset = data_loc;  // just putting in an offset... maybe something better
@@ -698,8 +698,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 					uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
 					auto target_offset = *current++;
 
-					uint8_t thread_id = this->_thread_id;
-					auto thread_id = this->_thread_id;
 					uint8_t which_slice;
 					atomic<uint32_t> *control_bits;
 					uint32_t cbits = 0;
@@ -910,7 +908,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			return result;
 		}
 
-		/**
+		/ * *
 		 * store_in_hash
 		*       /
 
@@ -948,9 +946,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * getter
 		*/
 
-		uint32_t		getter(uint32_t full_hash,uint32_t h_bucket,uint8_t thread_id,[[maybe_unused]] uint32_t timestamp = 0) {
+		uint32_t		getter(uint32_t full_hash,uint32_t h_bucket,[[maybe_unused]] uint32_t timestamp = 0) {
 			// can check on the limits of the timestamp if it is not zero
-			return _hmap->get(full_hash,h_bucket,thread_id);
+			return _hmap->get(full_hash,h_bucket);
 		}
 
 
@@ -958,7 +956,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * update_in_hash
 		*/
 
-		uint64_t		update_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset,uint8_t thread_id = 1) {
+		uint64_t		update_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
 			HMap_interface *T = this->_hmap;
 			uint64_t result = T->update(full_hash,hash_bucket,new_el_offset);
 			return result;
@@ -969,7 +967,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * remove_key
 		*/
 
-		void 			remove_key(uint32_t full_hash, uint32_t h_bucket,uint8_t thread_id, uint32_t timestamp) {
+		void 			remove_key(uint32_t full_hash, uint32_t h_bucket, uint32_t timestamp) {
 			_timeout_table->remove_entry(timestamp);
 			_hmap->del(full_hash,h_bucket);
 		}
@@ -980,9 +978,9 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 *	two, a second method to remove the object hash from the hash table... 
 		*/
 
-		void			free_memory_and_key(LRU_element *le,uint32_t process,uint32_t hash_bucket, uint32_t full_hash, uint32_t timestamp) {
+		void			free_memory_and_key(LRU_element *le,uint32_t hash_bucket, uint32_t full_hash, uint32_t timestamp) {
 			this->return_to_free_mem(le);
-			this->remove_key(hash_bucket,full_hash,process,timestamp);
+			this->remove_key(hash_bucket,full_hash,timestamp);
 		}
 
 		uint64_t		get_augmented_hash_locking(uint32_t full_hash, atomic<uint32_t> **control_bits_ref, uint32_t *h_bucket_ref,uint8_t *which_table_ref,uint32_t *cbits_ref,uint32_t *cbits_op_ref,uint32_t *cbits_base_op_ref,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) {

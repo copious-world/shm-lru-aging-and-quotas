@@ -149,7 +149,7 @@ class SharedQueue_SRSW {    // single reader, single writer
 			}
 		}
 
-		bool		compare_key(uint32_t key,Entry *el,uint32_t &value) {
+		bool		compare_key([[maybe_unused]] uint32_t key,[[maybe_unused]] Entry *el,[[maybe_unused]] uint32_t &value) {
 			return false;
 		}
 

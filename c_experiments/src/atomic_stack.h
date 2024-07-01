@@ -195,7 +195,7 @@ class AtomicStack {
 		}
 
 
-		void attach_region_free_list(uint8_t *start, size_t step, size_t region_size) {
+		void attach_region_free_list(uint8_t *start, size_t region_size) {
 			_stack_region_end = start + region_size;
 			_count_free = (atomic<uint32_t>*)(start);		// whereever this is pointing now (may be UINT32_MAX)
 			_max_free = (atomic<uint32_t>*)(start + sizeof(atomic<uint32_t>*));		// whereever this is pointing now (may be UINT32_MAX)

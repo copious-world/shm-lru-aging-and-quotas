@@ -13,7 +13,7 @@
 #include <bit>
 #include <atomic>
 
-#include <atomic_stack.h>
+#include "atomic_stack.h"
 
 using namespace std;
 
@@ -187,7 +187,7 @@ typedef enum STASH_TYPE {
 } stash_type;
 
 
-typedef struct CBIT_STASH_ELEMENT {
+typedef struct CBIT_STASH_BASE {
 	//
 	atomic<uint32_t>	_updating{0};
 	uint32_t			_real_bits;			// 64
@@ -198,11 +198,11 @@ typedef struct CBIT_STASH_ELEMENT {
 	uint8_t				_service_thread{0};
 	stash_type			_is_base_mem{CBIT_UNDECIDED};	// +16
 	//
-};
+} CBIT_stash_base;
 
 
 
-typedef struct CBIT_STASH_BASE {
+typedef struct CBIT_STASH_ELEMENT {
 	//
 	atomic<uint32_t>	_add_update;
 	atomic<uint32_t>	_remove_update;		// + 64
@@ -218,7 +218,7 @@ typedef struct CBIT_MEMBER_STASH_MEMBER  {
 } CBIT_stash_member;
 
 
-typedef struct CBIT_STASH_HOLDER : CBIT_STASH_ELEMENT {
+typedef struct CBIT_STASH_HOLDER : CBIT_STASH_BASE {
 	uint32_t				_next;
 	union {
 		CBIT_stash_el		_cse;
@@ -252,6 +252,43 @@ typedef enum _op_type {
 } op_type;
 
 
+
+
+
+// Bringing in code from libhhash  // until further changes...
+template<typename T>
+struct KEY_VALUE {
+	T			value;
+	T			key;
+};
+
+
+template<typename T>
+struct BITS_KEY {
+	T			bits;
+	T			key;
+};
+
+typedef struct BITS_KEY<uint32_t> cbits_key;
+
+
+template<typename T>
+struct MEM_VALUE {
+	T			taken;
+	T			value;
+};
+
+typedef struct MEM_VALUE<uint32_t> taken_values;
+
+
+typedef struct HH_element {
+	cbits_key			c;
+	taken_values		tv;
+} hh_element;
+
+
+
+
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
@@ -277,7 +314,30 @@ static inline bool is_member_bucket(uint32_t cbits) {
 }
 
 
+static inline bool is_cbits_swappy(uint32_t cbits) {
+	if ( !is_base_noop(cbits) && (cbits & SWAPPY_CBIT_SET) ) {
+		return true;
+	}
+	return false;
+}
+
+
+static inline bool is_base_tbits(uint32_t tbits) {
+	auto bit_state = (tbits & TBIT_ACTUAL_BASE_ROOT_BIT);
+	return (bit_state != 0);
+}
+
+
+
+static inline bool tbits_are_stashed(uint32_t tbits) {
+	return !is_base_tbits(tbits);
+}
+
+
+
+
 // THREAD OWNER ID CONTROL
+
 
 
 static inline uint32_t cbit_clear_bit(uint32_t cbits,uint8_t i) {
@@ -392,16 +452,6 @@ static inline bool tbits_swappy_at_max(uint32_t tbits) {
 
 
 
-static inline bool tbits_are_stashed(uint32_t tbits) {
-	return !is_base_tbits(tbits);
-}
-
-
-static inline bool is_base_tbits(uint32_t tbits) {
-	auto bit_state = (tbits & TBIT_ACTUAL_BASE_ROOT_BIT);
-	return (bit_state != 0);
-}
-
 
 
 static inline uint32_t swappy_count_incr(uint32_t tbits,uint8_t &count_result) {
@@ -468,12 +518,12 @@ static inline uint32_t gen_bitsmember_backref_offset(uint32_t cbits,uint8_t bkre
 
 
 
-class hh_element;
+
 template<class HHE>
-static inline HHE *cbits_base_from_backref(uint32_t cbits,uint8_t &backref,HHE *from,HHE *begin,HHE *end) {
+static inline HHE *cbits_base_from_backref(uint32_t cbits, uint8_t &backref, HHE *from, HHE *begin, HHE *end) {
 	backref = ((cbits & CBIT_BACK_REF_BITS) >> 1);
 	from -= backref;
-	if ( backref < begin ) {
+	if ( from < begin ) {
 		from = end - (begin - from);
 	}
 	return from;
@@ -616,25 +666,11 @@ static inline bool is_cbits_deleted(uint32_t cbits) {
 // 	return rdr;
 // }
 
-template<typename T>
-static inline T set_bitsdeleted(uint8_t thread_id,T cbits) {
-	auto rdr = (cbits | DELETE_CBIT_SET);
-	return rdr;
-}
-
 
 template<typename T>
 static inline T clear_bitsdeleted(T cbits) {
 	auto clear_del_bit = ~(DELETE_CBIT_SET);
 	return cbits & clear_del_bit;
-}
-
-
-static inline bool is_cbits_swappy(uint32_t cbits) {
-	if ( !is_base_noop(cbits) && (cbits & SWAPPY_CBIT_SET) ) {
-		return true;
-	}
-	return false;
 }
 
 
@@ -745,10 +781,31 @@ typedef struct HHASH {
 
 
 
+
+
+
+
+// THREAD CONTROL
+
+inline void tick() {
+	this_thread::sleep_for(chrono::nanoseconds(20));
+}
+
+inline void thread_sleep(uint8_t ticks) {
+	microseconds us = microseconds(ticks);
+	auto start = high_resolution_clock::now();
+	auto end = start + us;
+	do {
+		std::this_thread::yield();
+	} while ( high_resolution_clock::now() < end );
+}
+
+
+
 class Spinners {
 
 	public:
-		Spinners(): _flag(ATOMIC_FLAG_INIT) {}
+		Spinners() { unlock(); }
 
 		virtual ~Spinners(void) { unlock(); }
 
@@ -776,7 +833,7 @@ class Spinners {
 
 
 template<class StackEl,const uint8_t THREAD_COUNT,const uint8_t MAX_EXPECTED_THREAD_REENTRIES>
-class FreeOperatorStashStack : public AtomicStack<StackEl> {
+class FreeOperatorStashStack : public AtomicStack<StackEl>  {
 	public:
 
 		FreeOperatorStashStack() {
@@ -791,26 +848,26 @@ class FreeOperatorStashStack : public AtomicStack<StackEl> {
 
 
 		uint32_t pop_one_free(void) {
-			auto head = (atomic<uint32_t>*)(&(_ctrl_free->_next));
+			auto head = (atomic<uint32_t>*)(&(this->_ctrl_free->_next));
 			uint32_t hdr_offset = head->load(std::memory_order_relaxed);
 			//
 			if ( hdr_offset == UINT32_MAX ) {
-				_status = false;
-				_reason = "out of free memory: free count == 0";
+				this->_status = false;
+				this->_reason = "out of free memory: free count == 0";
 				return(UINT32_MAX);
 			}
 			//
 			// POP as many as needed
 			//
-			auto fc = _count_free->load(std::memory_order_acquire);
+			auto fc = this->_count_free->load(std::memory_order_acquire);
 
 			if ( fc == 0) {
-				_status = false;
-				_reason = "potential free memory overflow: free count == 0";
-				return(nullptr);			/// failed memory allocation...
+				this->_status = false;
+				this->_reason = "potential free memory overflow: free count == 0";
+				return(UINT32_MAX);			/// failed memory allocation...
 			}
 
-			reduce_free_count(fc,1);
+			this->reduce_free_count(fc,1);
 			//
 			std::atomic_thread_fence(std::memory_order_acquire);
 			// ----
@@ -821,8 +878,8 @@ class FreeOperatorStashStack : public AtomicStack<StackEl> {
 			do {
 				//
 				if ( hdr_offset == UINT32_MAX ) {
-					_status = false;
-					_reason = "out of free memory: free count == 0";
+					this->_status = false;
+					this->_reason = "out of free memory: free count == 0";
 					return(UINT32_MAX);			/// failed memory allocation...
 				}
 				//
@@ -845,19 +902,19 @@ class FreeOperatorStashStack : public AtomicStack<StackEl> {
 
 
 		void return_one_to_free(uint32_t el_index) {
-			_atomic_stack_push(_region_start, el_index*sizeof(StackEl));
+			this->_atomic_stack_push((uint8_t *)_region_start, el_index*sizeof(StackEl));
 		}
 
 
 		uint32_t pop_one_wait_free(void) {
 			uint32_t attempt = UINT32_MAX;
-			while ( (attmempt == UINT32_MAX) && check_max_timeout() ) {
+			while ( (attempt == UINT32_MAX) && check_max_timeout() ) {
 				attempt = pop_one_free();
-				if ( attmempt == UINT32_MAX ) {
+				if ( attempt == UINT32_MAX ) {
 					tick();
 				}
 			}
-			if ( attmempt == UINT32_MAX ) return UINT32_MAX;
+			if ( attempt == UINT32_MAX ) return UINT32_MAX;
 			uint32_t el_index = attempt/sizeof(StackEl);
 			StackEl *se = stash_el_reference(el_index);
 			se->_index = el_index;		// elements implement index... as well as _next
@@ -875,15 +932,15 @@ class FreeOperatorStashStack : public AtomicStack<StackEl> {
 			_region_start = (StackEl *)start;   // the process's version of the start of the region
 			//
 			if ( am_initializer ) {
-				return setup_region_free_list(start, step, region_size);
+				return this->setup_region_free_list(start, step, region_size);
 			} else {
-				attach_region_free_list(start, step, region_size);
+				this->attach_region_free_list(start, step, region_size);
 				return (reserved_positions - 2);
 			}
 		}
 
 		StackEl *stash_el_reference(uint32_t el_index) {
-			_region_start + el_index;  // el_offset is 
+			return _region_start + el_index;  // el_offset is 
 		}
 
 
@@ -907,8 +964,8 @@ class HMap_interface {
 
 		virtual uint64_t	update(uint32_t el_match_key, uint32_t hash_bucket, uint32_t v_value) = 0;
 
-		virtual uint32_t	get(uint64_t augemented_hash,uint8_t thread_id = 1) = 0;
-		virtual uint32_t	get(uint32_t el_match_key,uint32_t hash_bucket,uint8_t thread_id = 1) = 0;
+		virtual uint32_t	get(uint64_t augemented_hash) = 0;
+		virtual uint32_t	get(uint32_t el_match_key,uint32_t hash_bucket) = 0;
 
 		virtual uint32_t	del(uint64_t augemented_hash) = 0;
 		virtual uint32_t	del(uint32_t el_match_key,uint32_t hash_bucket) = 0;
@@ -916,7 +973,7 @@ class HMap_interface {
 		virtual void		clear(void) = 0;
 		//
 		virtual bool		prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) = 0;
-		virtual uint64_t	add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) = 0;
+		virtual void		add_key_value_known_refs(atomic<uint32_t> *control_bits,uint32_t el_key,uint32_t h_bucket,uint32_t offset_value,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) = 0;
 };
 
 

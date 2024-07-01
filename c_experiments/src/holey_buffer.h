@@ -799,7 +799,7 @@ class KeyValueManager {
 
 class SpinlockNonReaders {
 public:
-  SpinlockNonReaders(): flag{ATOMIC_FLAG_INIT} {}
+  SpinlockNonReaders() { }
 
   virtual ~SpinlockNonReaders(void) { unlock(); }
 
@@ -819,7 +819,7 @@ public:
 
 class SpinlockWriters {
 public:
-  SpinlockWriters(): flag{ATOMIC_FLAG_INIT} {}
+  SpinlockWriters() { }
 
   virtual ~SpinlockWriters(void) { unlock(); }
 
