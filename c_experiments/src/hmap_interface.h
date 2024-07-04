@@ -403,6 +403,29 @@ static inline bool cbits_q_count_at_zero(uint32_t cbits) {
 
 
 
+/**
+ * is_stashed_empty_bucket
+ */
+
+static inline bool is_stashed_empty_bucket(uint32_t cbits,uint32_t cbits_op) {
+	bool clear_cbits = (cbits == 0);
+	if ( (BITS_STASH_INDEX_MASK & cbits_op) == 0 ) { return false; }		// no stash index
+	bool ops_clear = ((cbits_op & BITS_STASH_INDEX_CLEAR_MASK) == 0);	//	if it is empty and being left alone, there are no ops
+	return clear_cbits && ops_clear;
+}
+
+
+/**
+ * is_stashed_base_bucket
+ */
+
+static inline bool is_stashed_base_bucket(uint32_t cbits,uint32_t cbits_op) {
+	bool is_real_cbits = ((cbits & 0x1) != 0);
+	bool ops_clear = ((cbits_op & BITS_STASH_INDEX_MASK) != 0);  // there may be ops
+	return ( is_real_cbits && ops_clear );
+}
+
+
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 // THREAD OWNER OF TBITS for readers
@@ -697,10 +720,10 @@ const uint32_t HH_SELECT_BIT_INFO_MASK = (HH_SELECTION_BIT_MASK & HH_SELECTOR_SE
 
 static inline bool selector_bit_is_set(uint64_t hash64,uint8_t &selector) {
 	if ( (hash64 & HH_SELECTOR_SET_BIT64) != 0 ) {
-		if ( selector != 0x3 ) {
+		if ( selector != 0x3 ) {	// the selector is set to a mask indicating that this method should not return the seletor
 			selector = hash64 & HH_SELECTION_BIT ? 1 : 0;
-			return true;
 		}
+		return true;
 	}
 	return false;
 }
@@ -708,10 +731,10 @@ static inline bool selector_bit_is_set(uint64_t hash64,uint8_t &selector) {
 
 static inline bool selector_bit_is_set(uint32_t hash_bucket,uint8_t &selector) {
 	if ( (hash_bucket & HH_SELECTOR_SET_BIT) != 0 ) {
-		if ( selector != 0x3 ) {
+		if ( selector != 0x3 ) {	// the selector is set to a mask indicating that this method should not return the seletor
 			selector =  hash_bucket & HH_SELECTION_BIT ? 1 : 0;
-			return true;
 		}
+		return true;
 	}
 	return false;
 }
