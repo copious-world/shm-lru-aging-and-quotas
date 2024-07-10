@@ -229,11 +229,12 @@ class QueueEntryHolder : public  SharedQueue_SRSW<q_entry,ExpectedMax> {
 
 /**
  * QueueEntryHolder uses q_entry in SharedQueue_SRSW<q_entry,ExpectedMax>
+ * 
+ * 
 */
 
 template<uint16_t const ExpectedMax = 64>
 class CropEntryHolder : public  SharedQueue_SRSW<crop_entry,ExpectedMax> {
-
 };
 
 
@@ -299,6 +300,9 @@ static constexpr uint32_t one_levels[32] {
 };
 
 //
+/**
+ * zero_above
+ */
 static uint32_t zero_above(uint8_t hole) {
 	if ( hole >= 31 ) {
 		return  0xFFFFFFFF;
@@ -306,6 +310,10 @@ static uint32_t zero_above(uint8_t hole) {
 	return zero_levels[hole];
 }
 
+
+/**
+ * ones_above
+ */
 
 		//
 static uint32_t ones_above(uint8_t hole) {
@@ -413,7 +421,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			uint8_t header_size = (sz  + (sz % sizeof(uint64_t)));
 			//
 			// initialize from constructor
-			this->setup_region(am_initializer,header_size,(max_element_count/2),num_threads);
+			setup_region(am_initializer,header_size,(max_element_count/2),num_threads);
 			//
 			initialize_randomness();
 		}
@@ -445,7 +453,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			HHash *T = (HHash *)(start);
 
 			//
-			this->_max_n = max_count;
+			_max_n = max_count;
 
 			//
 			_T0 = T;   // keep the reference handy
@@ -543,6 +551,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 		/**
 		 * check_expected_hh_region_size
+		 * 
 		*/
 
 
@@ -629,14 +638,14 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		// * set_random_bits
 		/**
 		*/
-		// 4*(this->_bits.size() + 4*sizeof(uint32_t))
+		// 4*(_bits.size() + 4*sizeof(uint32_t))
 
 		void set_random_bits(void *shared_bit_region) override {
 			uint32_t *bits_for_test = (uint32_t *)(shared_bit_region);
 			for ( int i = 0; i < _max_r_buffers; i++ ) {
-				this->set_region(bits_for_test,i);    // inherited method set the storage (otherwise null and not operative)
-				this->regenerate_shared(i);
-				bits_for_test += this->_bits.size() + 4*sizeof(uint32_t);  // 
+				set_region(bits_for_test,i);    // inherited method set the storage (otherwise null and not operative)
+				regenerate_shared(i);
+				bits_for_test += _bits.size() + 4*sizeof(uint32_t);  // 
 			}
 		}
 
@@ -704,7 +713,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				}
 #endif
 				bool which_region = _random_gen_region->load(std::memory_order_acquire);
-				this->regenerate_shared(which_region);		
+				regenerate_shared(which_region);		
 			}
 		}
 
@@ -743,6 +752,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		// C BITS
 		/**
 		 * fetch_real_cbits
+		 * 
 		 */
 		uint32_t fetch_real_cbits(uint32_t cbit_carrier) {
 			if ( is_base_noop(cbit_carrier) ) {
@@ -762,6 +772,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		// T BITS
 		/**
 		 * fetch_real_tbits
+		 * 
 		 */
 		uint32_t fetch_real_tbits(uint32_t tbit_carrier) {
 			if ( is_base_tbits(tbit_carrier) ) {
@@ -813,6 +824,11 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		}
 
 
+		/**
+		 * cbits_base_from_backref_or_stashed_backref
+		 * 
+		 */
+
 		hh_element *cbits_base_from_backref_or_stashed_backref(uint32_t cbits, uint8_t &backref, hh_element *from, hh_element *begin, hh_element *end) {
 			auto stash_index = cbits_member_stash_index_of(cbits);
 			if ( stash_index == 0 ) {
@@ -841,9 +857,10 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * load_cbits
 		 * 
 		 */
+
 		atomic<uint32_t> *load_cbits(atomic<uint32_t> *a_cbits_base,uint32_t &cbits,uint32_t &cbits_op) {
 			cbits = a_cbits_base->load(std::memory_order_acquire);
-			if ( !(is_base_noop(cbits)) &&  (cbits != 0) ) {
+			if ( !(is_base_noop(cbits)) && (cbits != 0) ) {
 				cbits_op = cbits;
 				cbits = fetch_real_cbits(cbits);
 			}
@@ -854,6 +871,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * load_cbits
 		 * 
 		 */
+
 		atomic<uint32_t> *load_cbits(hh_element *base,uint32_t &cbits,uint32_t &cbits_op) {
 			atomic<uint32_t> *a_cbits_base = (atomic<uint32_t> *)(&(base->c.bits));
 			return load_cbits(a_cbits_base,cbits,cbits_op);
@@ -864,6 +882,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * 
 		 * Out Parameter: base_ky --- the key for that value in the base
 		 */
+
 		atomic<uint64_t> *load_cbits(atomic<uint64_t> *a_cbits_n_ky,uint32_t &cbits,uint32_t &cbits_op,uint32_t &base_ky) {
 			auto cbits_n_ky = a_cbits_n_ky->load(std::memory_order_acquire);
 			cbits = ((uint32_t)cbits_n_ky & UINT32_MAX);
@@ -913,7 +932,6 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * stash_member_bits
 		 * 
 		 */
-
 
 		CBIT_stash_holder 	*stash_member_bits(atomic<uint32_t> *a_mem_bits,uint32_t c_bits,uint32_t &c_bits_op) {
 			uint8_t stash_index = _cbit_stash.pop_one_wait_free();
@@ -1072,6 +1090,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * stash_or_get_member_bits
 		 * 
 		 */
+
 		CBIT_stash_holder 	*stash_or_get_member_bits(hh_element *mem, uint32_t &cbits_op, uint32_t modifier = 0) {
 			//
 			atomic<uint32_t> *a_mem_bits = (atomic<uint32_t> *)(&(mem->c.bits));
@@ -1165,6 +1184,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		///
 		/**
 		 * _unstash_base_tbits
+		 * 
 		 */
 		void _unstash_base_tbits(atomic<uint32_t> *a_tbits,TBIT_stash_el *tse) {
 			if ( tse->_updating > 0 ) {
@@ -1183,6 +1203,17 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			}
 		}
 
+
+		void _unstash_base_tbits(hh_element *base,TBIT_stash_el *tse) {
+			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
+			 _unstash_base_tbits(a_tbits,tse);
+		}
+
+
+
+		/**
+		 * stash_taken_spots
+		 */
 
 
 		TBIT_stash_el *stash_taken_spots(hh_element *nxt_base) {
@@ -1218,6 +1249,9 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		}
 
 
+		/**
+		 * load_tbits
+		 */
 
 
 		atomic<uint32_t> *load_tbits(atomic<uint32_t> *a_tbits_base,uint32_t &tbits,uint32_t &tbits_op) {
@@ -1302,6 +1336,9 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		}
 
 
+		/**
+		 * ready_for_delete
+		 */
 
 		bool ready_for_delete(hh_element *bucket,uint32_t &cbits) {
 			atomic<uint32_t> *a_b_cbits = (atomic<uint32_t> *)(&(bucket->c.bits));
@@ -1341,6 +1378,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * stash_real_cbits
 		 * 
 		 * adds (by or) a membership bit(s) that will be set when the use of the stash ends for a base element
+		 * 
 		 */
 
 
@@ -1349,6 +1387,10 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		}
 
 		
+		/**
+		 * stash_real_cbits_immediate
+		 * 
+		 */
 
 		void stash_real_cbits_immediate(uint32_t add_bits, CBIT_stash_holder *csh) {
 			auto update = csh->stored._cse._add_update | add_bits;
@@ -1413,13 +1455,14 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			return tbits;
 		}
 
+		/**
+		 * stash_real_tbits
+		 * 
+		 */
 
 		void stash_real_tbits(uint32_t add_bits, TBIT_stash_el *tse) {
 			tse->_add_update |= add_bits;
 		}
-
-
-
 
 
 
@@ -2293,6 +2336,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * bucket_is_base
 		 * 
 		*/
+
 		bool bucket_is_base(hh_element *hash_ref) {
 			atomic<uint32_t>  *a_c_bits = (atomic<uint32_t>  *)(&(hash_ref->c.bits));
 			auto cbits = a_c_bits->load(std::memory_order_acquire);
@@ -2304,6 +2348,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * bucket_is_base
 		 * 
 		*/
+
 		bool bucket_is_base(hh_element *hash_ref,uint32_t &cbits) {
 			atomic<uint32_t>  *a_c_bits = (atomic<uint32_t>  *)(&(hash_ref->c.bits));
 			cbits = a_c_bits->load(std::memory_order_acquire);
@@ -2320,6 +2365,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		/**
 		 * clear_bucket_root_edit -- 64 bit
 		 */
+
 		void clear_bucket_root_edit(uint64_t &ky_n_cbits) {
 			ky_n_cbits &= ~((uint64_t)ROOT_EDIT_CBIT_SET);
 		}
@@ -2327,6 +2373,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		/**
 		 * clear_bucket_root_edit -- 32 bit
 		 */
+
 		void clear_bucket_root_edit(uint32_t cbits_op) {
 			cbits_op &= ~((uint32_t)ROOT_EDIT_CBIT_SET);
 		}
@@ -2411,7 +2458,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			}
 
 			auto stash_index = cbits_stash_index_of(cbits_op);   // stash_index == 0 -> program broken upstream
-			CBIT_stash_holder *csh = this->_cbit_stash.stash_el_reference(stash_index);
+			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
 			stash_real_cbits_immediate(hbit, csh);
 		}
 
@@ -2463,8 +2510,12 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 						auto cbits_op_expected = cbits_op;
 						auto cbits_op_update = cbits_op | ROOT_EDIT_CBIT_SET;
 						//
-						while ( !(set_it = control_bits->compare_exchange_weak(cbits_op_expected,cbits_op_update,std::memory_order_acq_rel)) && !(cbits_op_expected & ROOT_EDIT_CBIT_SET) ) {
-							cbits_op_update = cbits_op_expected | ROOT_EDIT_CBIT_SET;
+						while ( !(set_it = control_bits->compare_exchange_weak(cbits_op_expected,cbits_op_update,std::memory_order_acq_rel)) && !(cbits_op_expected & ROOT_EDIT_CBIT_SET) && (cbits_op_expected & 0x1 == 0) ) {
+							cbits_op_update = cbits_op_expected | ROOT_EDIT_CBIT_SET;  // some operational change, 
+						}
+						//
+						if ( cbits_op_expected & 0x1 ) {
+							return false;	// really should just start over. This would mean that it is no longer stashed
 						}
 					}
 
@@ -2475,7 +2526,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 					//
 					bool set_it = false;
 
-					while ( this->get_stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
+					while ( get_stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
 						// try to get ahead of editors, which might delete as well 
 						while ( !(cbits_op & ROOT_EDIT_CBIT_SET) ) {
 							auto cbits_op_expected = cbits_op;
@@ -2512,7 +2563,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				case HH_USURP: {
 					bool set_it = false;
 					//
-					while ( this->get_stash_member_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
+					while ( get_stash_member_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
 
 						while ( !(cbits_op & IMMOBILE_CBIT_SET) ) {
 							auto cbits_op_expected = cbits_op;
@@ -2520,7 +2571,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 							// after the new value is inserted, the next phase will be a late arrival insertion of the old value..
 							//
 							while ( !(set_it = control_bits->compare_exchange_weak(cbits_op_expected,cbits_op_update,std::memory_order_acq_rel)) && !(cbits_op_expected & IMMOBILE_CBIT_SET) && !(cbits_op_expected & USURPED_CBIT_SET) ) {
-								auto ref_count = this->get_stash_member_updating_count(cbits_op);
+								auto ref_count = get_stash_member_updating_count(cbits_op);
 								if ( (ref_count == 0) && (cbits_op_expected & 0x1) ) {  // an error condition, in which this is unstashed 
 									CBIT_stash_holder *cbit_stashes[4];
 									stash_cbits(control_bits,bucket,cbits,cbits_op,cbits_base_op,cbit_stashes);
@@ -2553,7 +2604,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			auto cbits_op = control_bits->load(std::memory_order_acquire);
 			if ( cbits_op & 0x1 ) return;
 			uint16_t stash_index = cbits_stash_index_of(cbits_op);
-			CBIT_stash_holder *csh = this->_cbit_stash.stash_el_reference(stash_index);
+			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
 			_unstash_base_cbits(control_bits,csh);
 			cbits_op = control_bits->load(std::memory_order_acquire);
 			if ( cbits_op & 0x1 ) return;
@@ -2570,7 +2621,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 		bool wait_become_bucket_delete_master(hh_adder_states master_context,hh_element *base,uint32_t &cbits, uint32_t &cbits_op) {  // mark the whole bucket swappy mark for delete
 			atomic<uint32_t> *a_c_bits = (atomic<uint32_t> *)(&(base->c.bits));
-			while ( this->get_stash_updating_count(cbits_op) > 1 ) {
+			while ( get_stash_updating_count(cbits_op) > 1 ) {
 				tick();
 				load_cbits(a_c_bits,cbits,cbits_op);
 			}
@@ -2584,7 +2635,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 						// after the new value is inserted, the next phase will be a late arrival insertion of the old value..
 						//
 						while ( !(set_it = a_c_bits->compare_exchange_weak(cbits_op_expected,cbits_op_update,std::memory_order_acq_rel)) && !(cbits_op_expected & SWAPPY_CBIT_SET) && !(cbits_op_expected & DELETE_CBIT_SET) ) {
-							auto ref_count = this->get_stash_updating_count(cbits_op);
+							auto ref_count = get_stash_updating_count(cbits_op);
 							if ( (ref_count == 0) && (cbits_op_expected & 0x1) ) {  // an error condition, in which this is unstashed 
 								CBIT_stash_holder *cbit_stashes[4];
 								uint32_t cbits_base_ops = 0;
@@ -2599,7 +2650,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				}
 				case HH_DELETE_BASE: {
 					bool set_it = false;
-					while ( this->get_stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
+					while ( get_stash_updating_count(cbits_op) == 1 ) {  // first one in allowing zero, but unlikely case
 						// try to get ahead of editors, which might delete as well 
 						while ( !(cbits_op & ROOT_EDIT_CBIT_SET) ) {
 							auto cbits_op_expected = cbits_op;
@@ -2653,7 +2704,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				auto cbits_op = a_c_bits->load(std::memory_order_acquire);
 				if ( cbits_op & 0x1 ) return;
 				uint16_t stash_index = cbits_stash_index_of(cbits_op);
-				CBIT_stash_holder *csh = this->_cbit_stash.stash_el_reference(stash_index);
+				CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
 				_unstash_base_cbits(a_c_bits,csh);
 				cbits_op = a_c_bits->load(std::memory_order_acquire);
 				if ( cbits_op & 0x1 ) return;
@@ -2702,9 +2753,18 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			}
 		}
 
+		/**
+		 * load_marked_as_immobile
+		 */
+
 		uint64_t load_marked_as_immobile(atomic<uint64_t> *a_bits_n_ky) {   // a little more cautious
 			return a_bits_n_ky->fetch_or((uint64_t)IMMOBILE_CBIT_SET,std::memory_order_acquire);
 		}
+
+
+		/**
+		 * remobilize
+		 */
 
 		void remobilize(atomic<uint64_t> *a_bits_n_ky,uint32_t modifier = 0) {
 			a_bits_n_ky->fetch_and(IMMOBILE_CBIT_RESET64,std::memory_order_acq_rel);
@@ -2753,7 +2813,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			}
 			//
 			csh->stored._cse._remove_update.fetch_or(((uint32_t)0x1) << backref);
-			this->_unstash_base_cbits(base_control_bits,csh);
+			_unstash_base_cbits(base_control_bits,csh);
 			//
 			tbits_remove_reader(a_tbits, tse);
 			return true;	// if a failed and the element targeted is now filled with a valid value, a preempt will take place.
@@ -2982,9 +3042,9 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 																						// since it is new, leave the map 0.
 						a_ky_n_cbits->store(ky_n_cbits,std::memory_order_release);
 
-						this->stash_real_cbits_immediate(0x1, cbit_stashes[0]);
+						stash_real_cbits_immediate(0x1, cbit_stashes[0]);
 						// -- in this case, `wakeup_value_restore` fixes the taken bits map (value corresponds to the bucket master)
-						this->wakeup_value_restore(HH_FROM_EMPTY, control_bits, 0x1, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
+						wakeup_value_restore(HH_FROM_EMPTY, control_bits, 0x1, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 						return;
 					}
 					//
@@ -3014,14 +3074,14 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 						a_val_n_tbits->store(val_n_tbits,std::memory_order_release);		// put the tbits back as they were
 						a_ky_n_cbits->store(ky_n_cbits,std::memory_order_release);			// cbits back
 						//
-						this->wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, tmp_key, tmp_value, which_table, buffer, end_buffer, cbit_stashes[0]);
+						wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, tmp_key, tmp_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 						return;
 					} else {  // THIS BUCKET IS ALREADY BEING EDITED -- let the restore thread shift the new value in
 						// not being able to control the bucket this insertion is defered (new and old alike)
 						// the control bits belong to the operation thread, but the queue increases
 						set_control_bit_state(control_bits,cbits_op,EDITOR_CBIT_SET);
 						if ( wait_on_max_queue_incr(control_bits,cbits_op) ) {
-							this->wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
+							wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 							return;
 						}  // else, before being able to up the queue count, the bucket finished the base insertion (so, go again)
 					}
@@ -3035,7 +3095,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 						// results in first time insertion and search for a hole (could alter time by a small amount to keep a sort)
 						set_control_bit_state(control_bits,cbits_op,EDITOR_CBIT_SET);
 						if ( wait_on_max_queue_incr(control_bits,cbits_op) ) {
-							this->wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
+							wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 							return;
 						}
 					}
@@ -3064,7 +3124,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 																							// since it is new, leave the map 0.
 							a_ky_n_cbits->store(ky_n_cbits,std::memory_order_release);
 
-							this->wakeup_value_restore(HH_FROM_EMPTY, control_bits, cbits, cbits_op, base_cbits_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
+							wakeup_value_restore(HH_FROM_EMPTY, control_bits, cbits, cbits_op, base_cbits_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 							return;
 						}
 						//
@@ -3119,7 +3179,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 						a_ky_n_cbits->store(ky_n_cbits,std::memory_order_release);
 						a_val_n_tbits->store(val_n_tbits,std::memory_order_release);    // next fix up the taken bits
 						// don't unstash_base_cbits(control_bits,cse); yet. The base should complete its operations first.
-						this->wakeup_value_restore(HH_FROM_EMPTY, control_bits, cbits, cbits_op, base_cbits_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cse);
+						wakeup_value_restore(HH_FROM_EMPTY, control_bits, cbits, cbits_op, base_cbits_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cse);
 						//
 						// the usurped value can occupy another spot in its base
 						// don't unstash_base_cbits(base_control_bits,base_cse), it will be done after the reinsertion is resolved
@@ -3455,7 +3515,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		// ---- ---- ---- STATUS
 
 		bool ok(void) {
-			return(this->_status);
+			return(_status);
 		}
 
 	public:
@@ -3486,8 +3546,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			}
 
 			stash_real_tbits(t,tse_base);
-			atomic<uint32_t> *b_t_bits = (atomic<uint32_t> *)(&base_ref->tv.taken);
-			_unstash_base_tbits(b_t_bits,tse_base);    // unstash if last out
+			_unstash_base_tbits(base_ref,tse_base);    // unstash if last out
 		}
 
 
@@ -3521,7 +3580,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 					//										// tbits by reference, tbits and b should be the same after op
 																	  // hole by reference -- should settle ownership
 					uint32_t hbit = 0;
-					b = this->a_tbit_store_reservation(tse, tbits, hole, hbit);  // store the taken spot 
+					b = a_tbit_store_reservation(tse, tbits, hole, hbit);  // store the taken spot 
 					// in storing the spot, if another thread took it, then the value of the 
 					// cbits filed in the reserved bucket will not be zero.
 					//
@@ -3571,18 +3630,22 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			c = c & zero_above(hole);  // moving from the base towards the hole and take the position at eash base in between
 			while ( c ) {
+				//
 				nxt_base = hash_ref;
 				uint8_t offset = get_b_offset_update(c);			
 				nxt_base += offset;
 				nxt_base = el_check_end_wrap(nxt_base,buffer,end);
 				//
-				uint32_t taken_bit = (1 << (hole - offset));  // this spot has been taken
-				//
-				atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(nxt_base->tv.taken));
-				//
-				TBIT_stash_el *tse = stash_taken_spots(nxt_base);
-				stash_real_tbits(taken_bit,tse);
-				_unstash_base_tbits(a_tbits,tse);    // unstash if last out
+				if ( bucket_is_base(nxt_base) ) {
+					//
+					uint32_t taken_bit = (1 << (hole - offset - 1));  // this spot has been taken
+					//
+					atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(nxt_base->tv.taken));
+					//
+					TBIT_stash_el *tse = stash_taken_spots(nxt_base);
+					stash_real_tbits(taken_bit,tse);
+					_unstash_base_tbits(base_ref,tse);    // unstash if last out
+				}
 			}
 			// now look below the base for bases that are within a window of the hole
 			a_place_back_taken_spots(hash_ref, hole, buffer, end);
@@ -3620,11 +3683,12 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				// go until vb_probe hits on a base
 				uint32_t taken = 0;
 				while ( vb_probe != hash_base ) {
-					if ( bucket_is_base(vb_probe,c) ) {
+					if ( bucket_is_base(vb_probe,c) ) {  // c is cbits of vb_probe 
 						TBIT_stash_el *tse = stash_taken_spots(vb_probe);
 						all_taken_spots[count_bases] = vb_probe;
 						all_taken_spot_refs[count_bases++] = tse;
 						stash_real_tbits(((uint32_t)0x1 << k),tse);
+						taken = tse->_real_bits;
 						break;
 					}
 					vb_probe++; k--;
@@ -3633,7 +3697,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				//
 				// get a map of all the base elements above the lowest bucket found
 				c = ~c & zero_above(last_view - (g - k)); // these are not the members of the first found bucket, necessarily in range of hole.
-				c = c & taken;  // bases 
+				c = c & taken;  // bases (and members)
 				//
 				while ( c ) {
 					auto base_probe = vb_probe;
@@ -3641,14 +3705,14 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 					base_probe += offset_nxt;
 					base_probe = el_check_end_wrap(base_probe,buffer,end);
 					uint32_t c2 = 0;
-					if ( bucket_is_base(base_probe,c2) ) {  // double check
+					if ( bucket_is_base(base_probe,c2) ) {  // double check; c2 is cbits of vb_probe 
 						auto j = k;
 						j -= offset_nxt;
 						//
 						all_taken_spots[count_bases] = base_probe;
 						TBIT_stash_el *tse = stash_taken_spots(base_probe);
 						all_taken_spot_refs[count_bases++] = tse;
-						stash_real_tbits(((uint32_t)0x1 << k),tse);
+						stash_real_tbits(((uint32_t)0x1 << j),tse);
 						//
 						c = c & ~(c2);  // no need to look at base probe members anymore ... remaining bits are other buckets
 					}
@@ -3657,8 +3721,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				for ( uint8_t i = 0; i < count_bases; i++ ) {
 					TBIT_stash_el *tse = all_taken_spot_refs[i];
 					hh_element *base = all_taken_spots[count_bases];
-					atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
-					_unstash_base_tbits(a_tbits,tse);
+					_unstash_base_tbits(base,tse);
 				}
 
 			}
@@ -3723,8 +3786,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				for ( uint8_t i = 0; i < count_bases; i++ ) {
 					TBIT_stash_el *tse = all_taken_spot_refs[i];
 					hh_element *base = all_taken_spots[count_bases];
-					atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
-					_unstash_base_tbits(a_tbits,tse);
+					_unstash_base_tbits(base,tse);
 				}
 
 			}
@@ -3743,15 +3805,18 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			auto c = bases;
 			c = c & zero_above(nxt_loc);	// buckets after the removed location do not see the location; so, don't process them
 			while ( c ) {					// c is a pattern indicating bases
+				//
 				hh_element *nxt_base = hash_base;
 				auto offset = get_b_offset_update(c);
 				nxt_base += offset;
 				nxt_base = el_check_end_wrap(nxt_base,buffer,end);
 				//
-				auto removal_mask = (c_pattern << (nxt_loc - offset));
-
-				TBIT_stash_el *tse = stash_taken_spots(nxt_base);
-				stash_tbits_clear(removal_mask,tse);
+				if ( bucket_is_base(nxt_base) ) {
+					auto removal_mask = (c_pattern << (nxt_loc - offset));
+					TBIT_stash_el *tse = stash_taken_spots(nxt_base);
+					stash_tbits_clear(removal_mask,tse);
+					_unstash_base_tbits(base_ref,tse);    // unstash if last out
+				}
 			}
 		}
 
@@ -3889,7 +3954,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 					// cbits
 					stash_bits_clear(cbits_update,csh);
-					this->unstash_base_cbits(base,csh,buffer,end);
+					unstash_base_cbits(base,csh,buffer,end);
 					//
 					// tbits
 					a_removal_taken_spots(base, tse, cbits, cbits_update, buffer, end);  
@@ -4024,7 +4089,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 						csh = cbit_stashes[0];
 					}
 
-					this->wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_op_base, yielding_base, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, csh);
+					wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_op_base, yielding_base, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, csh);
 				}
 			}
 
@@ -4321,7 +4386,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			if ( _initializer ) {
 				uint8_t sz = sizeof(HHash);
 				uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
-				this->setup_region(_initializer,header_size,_max_count,_num_threads);
+				setup_region(_initializer,header_size,_max_count,_num_threads);
 			}
 		}
 
