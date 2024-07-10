@@ -150,3 +150,126 @@ will have exclusively until `_marker` indicates freedom.)
 
 
 
+
+
+# Internals 
+
+
+## Operational Goals
+
+### `shm_HH` -> Shared Memory Hopscotch Variant
+
+1. Add Element to Empty
+2. Add Collision with Space
+3. Add Collision to Full
+4. Add Collision and Empty in the Same Cycle
+5. Add to Empty and Get in the Same Cycle
+6. Add to Collision and Get in the Same Cycle
+7. Add to Collision and Update in the Same Cycle
+8. Add to Empty and Delete in the Same Cycle (special case)
+9. Add to Collision and Delete Member in the Same Cycle (crop in the same cycle)
+10. Add to Collision and Delete Base in the Same Cycle
+11. Add by Usurp and Get in the Same Cycle
+12. Add by Usurp and Update in the Same Cycle
+13. Add by Usurp and Delete in the Same Cycle (special case)
+14. Add by Usurp and Delete Base in the Same Cycle (delete immediately destroys add)
+15. Get Multiple without other Operations
+16. Get One or More with Delete Member in the Same Cycle (crop in the same cycle)
+17. Get One or More with Delete Base in the Same Cycle
+18. Get One or More with Update in the Same Cycle
+19. Collision Update Multiple
+20. Delete Multiple Members
+21. Delete Base Only
+22. Delete Base and Members in the Same Cycle
+23. Delete Collision (special case check)
+24. Usurp Delete in Progress
+
+
+#### Add Element to Empty
+> Operation: 
+
+#### Add Collision with Space
+> Operation: 
+
+#### Add Collision to Full
+> Operation: 
+
+#### Add Collision and Empty in the Same Cycle
+> Operation: 
+
+#### Add to Empty and Get in the Same Cycle
+> Operation: 
+
+#### Add to Collision and Get in the Same Cycle
+> Operation: 
+
+#### Add to Collision and Update in the Same Cycle
+> Operation: 
+
+#### Add to Empty and Delete in the Same Cycle (special case)
+> Operation: 
+
+#### Add to Collision and Delete Member in the Same Cycle (crop in the same cycle)
+> Operation: 
+
+#### Add to Collision and Delete Base in the Same Cycle
+> Operation: 
+
+#### Add by Usurp and Get in the Same Cycle
+> Operation: 
+
+#### Add by Usurp and Update in the Same Cycle
+> Operation: 
+
+#### Add by Usurp and Delete in the Same Cycle (special case)
+> Operation: 
+
+#### Add by Usurp and Delete Base in the Same Cycle (delete immediately destroys add)
+> Operation: 
+
+#### Get Multiple without other Operations
+> Operation: 
+
+#### Get One or More with Delete Member in the Same Cycle (crop in the same cycle)
+> Operation: 
+
+#### Get One or More with Delete Base in the Same Cycle
+> Operation: 
+
+#### Get One or More with Update in the Same Cycle
+> Operation: 
+
+#### Collision Update Multiple
+> Operation: 
+
+#### Delete Multiple Members
+> Operation: 
+
+#### Delete Base Only
+> Operation: 
+
+#### Delete Base and Members in the Same Cycle
+> Operation: 
+
+#### Delete Collision (special case check)
+> Operation: 
+
+#### Usurp Delete in Progress
+> Operation: 
+
+
+
+
+### `shm_LRU` -> Shared Memory LRU KV Store
+
+Shared Memory LRU object management table applying `shm_HH` and timing buffers.
+
+Each instance of this object is a single tier for the application facing class, `shm_tiers_and_procs`.
+
+
+
+
+### `shm_tiers_and_procs` -> API facing mutli-threaded application of the shared LRU tiers
+
+API facing mutli-threaded application of the shared LRU tiers.
+

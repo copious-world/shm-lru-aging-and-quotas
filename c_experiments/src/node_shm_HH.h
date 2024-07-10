@@ -1276,7 +1276,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			return load_tbits(a_tbits_base,tbits,tbits_op);
 		}
 
-		
+
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- 
 
@@ -4053,7 +4053,35 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 																// ??? auto prev_bits = control_bits->load(std::memory_order_acquire);
 					// store ....  pop until oldest
 					if ( !(complete_add_bucket_member(control_bits, real_cbits, cbits_op_base, el_key, offset_value, store_time, hash_ref, buffer, end_buffer)) ) {
+						//
 						yielding_base = handle_full_bucket_by_usurp(hash_ref, real_cbits, el_key, offset_value, store_time, buffer, end_buffer);
+						//
+						if ( yielding_base != nullptr ) {
+							// if the entry can be entered onto the short list (not too old) then allow it to be added back onto the restoration queue...
+							if ( short_list_old_entry(el_key, offset_value, store_time) ) {
+								auto control_bits_y = (atomic<uint32_t> *)(&(yielding_base->c.bits));
+								uint32_t cbits = 0;
+								uint32_t cbits_op_y = 0;
+								load_cbits(control_bits_y,cbits,cbits_op_y);
+								set_control_bit_state(control_bits_y,cbits_op_y,EDITOR_CBIT_SET);
+								while ( !wait_on_max_queue_incr(control_bits_y,cbits_op_y) ) { tick(); }
+
+								h_bucket = (yielding_base - buffer);
+								// el_key, offset_value have been updated to contain the yield member value 
+								//
+								CBIT_stash_holder *csh = nullptr;
+								if ( cbits_op_y != 0 ) {
+									auto stash_index = cbits_stash_index_of(cbits_op_y);
+									csh = _cbit_stash.stash_el_reference(stash_index);
+								} else {
+									CBIT_stash_holder *cbit_stashes[4];
+									stash_cbits(control_bits_y, yielding_base, cbits, cbits_op_y, cbits_op_base, cbit_stashes);
+									csh = cbit_stashes[0];
+								}
+
+								wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits_y, cbits, cbits_op_y, cbits_op_base, yielding_base, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, csh);
+							}
+						}
 					}
 					//
 					if ( q_count_decr(control_bits,cbits_op) ) {
@@ -4064,32 +4092,6 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				default: {
 					// an impossible state of affairs unless someone has altered the insertion methods. 
 					break;
-				}
-			}
-
-			if ( yielding_base != nullptr ) {
-				// if the entry can be entered onto the short list (not too old) then allow it to be added back onto the restoration queue...
-				if ( short_list_old_entry(el_key, offset_value, store_time) ) {
-					control_bits = (atomic<uint32_t> *)(&(yielding_base->c.bits));
-					uint32_t cbits = 0;
-					load_cbits(control_bits,cbits,cbits_op);
-					set_control_bit_state(control_bits,cbits_op,EDITOR_CBIT_SET);
-					while ( !wait_on_max_queue_incr(control_bits,cbits_op) ) { tick(); }
-
-					h_bucket = (yielding_base - buffer);
-					// el_key, offset_value have been updated to contain the yield member value 
-					//
-					CBIT_stash_holder *csh = nullptr;
-					if ( cbits_op != 0 ) {
-						auto stash_index = cbits_stash_index_of(cbits_op);
-						csh = _cbit_stash.stash_el_reference(stash_index);
-					} else {
-						CBIT_stash_holder *cbit_stashes[4];
-						stash_cbits(control_bits, yielding_base, cbits, cbits_op, cbits_op_base, cbit_stashes);
-						csh = cbit_stashes[0];
-					}
-
-					wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_op_base, yielding_base, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, csh);
 				}
 			}
 
@@ -4159,7 +4161,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			if ( a_c_bits == nullptr ) return false;
 			*control_bits_ref = a_c_bits;
-
+			//
 			return true;
 		}
 
