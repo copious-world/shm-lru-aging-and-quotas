@@ -1634,33 +1634,6 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 
 		/**
-		 * wait_on_max_queue_incr
-		*/
-
-		bool wait_on_max_queue_incr(atomic<uint32_t> *control_bits,uint32_t &cbits_op) {
-
-			auto stash_index = cbits_stash_index_of(cbits_op);   // stash_index == 0 -> program broken upstream
-			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
-
-			if ( csh != nullptr ) {
-				while ( cbits_q_count_at_max(cbits_op) ) { 
-					tick();
-					cbits_op = control_bits->load(std::memory_order_acquire);
-				}
-				control_bits->fetch_add(CBIT_Q_COUNT_INCR,std::memory_order_acq_rel);
-				csh->_updating++;
-				return true;
-			}
-
-			return false;;
-		}
-
-
-		// END OF SEMAPHORES
-
-
-
-		/**
 		 * a_swap_next
 		 * 
 		 * For deleting the base element
@@ -1701,6 +1674,30 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+
+		/**
+		 * wait_on_max_queue_incr
+		*/
+
+		bool wait_on_max_queue_incr(atomic<uint32_t> *control_bits,uint32_t &cbits_op) {
+
+			auto stash_index = cbits_stash_index_of(cbits_op);   // stash_index == 0 -> program broken upstream
+			CBIT_stash_holder *csh = _cbit_stash.stash_el_reference(stash_index);
+
+			if ( csh != nullptr ) {
+				while ( cbits_q_count_at_max(cbits_op) ) { 
+					tick();
+					cbits_op = control_bits->load(std::memory_order_acquire);
+				}
+				control_bits->fetch_add(CBIT_Q_COUNT_INCR,std::memory_order_acq_rel);
+				csh->_updating++;
+				return true;
+			}
+
+			return false;;
+		}
 
 		// q_count -- counts the work that will be done for a particular cell in sequence.
 		//
@@ -2517,6 +2514,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 						if ( cbits_op_expected & 0x1 ) {
 							return false;	// really should just start over. This would mean that it is no longer stashed
 						}
+						cbits_op = cbits_op_update;
 					}
 
 					return set_it;
@@ -2538,11 +2536,13 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 								if ( (ref_count == 0) && (cbits_op_expected & 0x1) ) {  // an error condition, in which this is unstashed 
 									CBIT_stash_holder *cbit_stashes[4];
 									stash_cbits(control_bits,bucket,cbits,cbits_op,cbits_base_op,cbit_stashes);
-									break;
+									return false;
 								} else {
 									cbits_op_update = cbits_op_expected | ROOT_EDIT_CBIT_SET | EDITOR_CBIT_SET;
 								}
 							}
+							//
+							cbits_op = cbits_op_update;
 						}
 						//
 					}
@@ -2598,6 +2598,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * release_bucket_state_master
 		 * 
 		 * 		should be called by the restore queue handler
+		 * 
+		 * 		calls `_unstash_base_cbits` 
 		*/
 		void release_bucket_state_master(atomic<uint32_t> *control_bits) {
 			//
@@ -3019,6 +3021,19 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * 
 		 * cbits -- remain last known state of the bucket.
 		 * 
+		 * parameters:
+		 * 
+		 * control_bits 		- (atomic<uint32_t> *) - atomic reference to the cell's control bits. 
+		 * el_key 			- (uint32_t) - the new element key
+		 * h_bucket 		- (uint32_t) - the array index derived from the hash value of the object data
+		 * offset_value 	- (uint32_t) - the byte offset to the stored object of that hash which will be the value of the new key-value element
+		 * cbits			- the real cbits of the cell or of the base if the bucket is a member
+		 * cbits_op			- the operation cbits of the bucket in their current state, either just made when stashing or with a reference count update
+		 * cbits_base_op	- if the bucket is a member, then the operational bits of the base (also stashed) otherwise zero.
+		 * bucket			- the memory reference of the bucket, an hh_element
+		 * buffer			- start of memory slice
+		 * end_buffer		- end of memory slice
+		 * cbit_stashes		- stash object references, one if the bucket is a base, two if the bucket is a member with the second being the stash of the base
 		*/
 
 		void _first_level_bucket_ops(atomic<uint32_t> *control_bits, uint32_t el_key, uint32_t h_bucket, uint32_t offset_value, uint8_t which_table, uint32_t cbits, uint32_t cbits_op,uint32_t cbits_base_op, hh_element *bucket, hh_element *buffer, hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) {
