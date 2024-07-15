@@ -1493,6 +1493,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		/**
 		 * tbits_add_reader
 		 * 
+		 * calls `stash_taken_spots`
+		 * 
 		*/
 
 		TBIT_stash_el *tbits_add_reader(atomic<uint32_t> *a_tbits, uint32_t &tbits) {
@@ -2985,13 +2987,13 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			atomic<uint32_t> *a_tbits = (atomic<uint32_t> *)(&(base->tv.taken));
 			atomic<uint64_t> *a_base_c_n_k = (atomic<uint64_t> *)(&(base->c));
 			//
-			TBIT_stash_el *tse = tbits_add_reader(a_tbits,tbits);  // lockout ops that swap elements
+			TBIT_stash_el *tse = tbits_add_reader(a_tbits,tbits);  // lockout ops that swap elements (next one if one is in progress)
 			if ( tse == nullptr ) return nullptr;
 			// get the original bits even in a dynamic situation, and get the current representation
 			// stash cbits allowing readers to pass through. Only swappy operations need to be locked out for non swappy reads
 			uint32_t base_ky = wait_if_base_update(a_base_c_n_k,cbits,cbits_op); // a_base_c_n_k->load(std::memory_order_acquire);
 			//
-			if ( base_ky == el_key ) {
+			if ( base_ky == el_key ) {		// not marking as immobile because this is a base
 				value = base->tv.value;
 				tbits_remove_reader(a_tbits,tse);					// last reader out restores tbits 
 				return base;
@@ -4258,7 +4260,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				} else {
 					// `_get_bucket_reference` makes the element unswappable, fixing the position for ops
 					// the position remains locked until the caller is done with it. 
-					remobilize(storage_ref);		// clear mobility lock
+					remobilize(storage_ref);		// clear mobility lock (not checking for this being a base since the clear will be idempotent)
 					return value;
 				}
 			}

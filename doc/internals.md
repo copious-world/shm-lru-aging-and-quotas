@@ -31,7 +31,11 @@ Each instance of this object is a single tier for the application facing class, 
 
 The storage area for key-value pairs is arranged as four 32 bit words per cell, where cell contains key-value and control word bits per key-value pair. Two words are used for key and value, while two more words are used for bucket membership and memory allocation management. 
 
-A bucket is a cell which may be a base or a member bucket. The base bucket holds a single key-value and uses it control bits to control up to 31 more members as member buckets belong to the base bucket. 
+A bucket is a cell which may be a base or a member bucket. The base bucket holds a single key-value and uses it control bits to control up to 31 more members as member buckets belong to the base bucket.
+
+**input hash**: When a new key-value is added to the table, the hash key being input is provided as a 64-bit word containing two 32-bit words, high and low, with the high word being the full 32-bit hash returned by the has function taking the text representation of an object being stored. The low word is the modulus of the 32-bit hash taken against the length of the table. The lower word is expected to leave its two MSB bits clear for augentation.
+
+**augmented hash**: An augmented hash is an input hash that has its MSB set and its second MSB will be the index of a slice, 0 or 1.
 
 The control bits **cbits** indicate the state of membership of a cell. The base bucket **cbits** provide a membership location map to bucket members, where a bit set high in the ith position indicates a member at offset *i* from the base.
 
@@ -121,17 +125,17 @@ Operations effecting a change in the membership of a cell stash the control bits
 
 `_get_member_bits_slice_info` stashes the real **cbits+** of the bucket determined by the hash and returns an atomic reference to the bucket control bits **cbits**. `_get_member_bits_slice_info` uses or constructs operation **cbits** contain an index to the *cbits* stash object containing the real **cbits** of the bucket.
 
-The bucket is empty. So, this will be the first time the **cbits** will be stashed. The operational **cbits** will force a collision to be a follower of the thread that creates the stash. The real **cbits** will be zero. `_first_level_bucket_ops` attempts to give bucket mastery to the calling thread by setting `ROOT_EDIT_CBIT_SET` in the operational **cbits**.
+The bucket is empty. So, this will be the first time the **cbits** will be stashed. The operational **cbits** will force a collision to be a follower of the thread that creates the stash. The real **cbits** will be zero. `_first_level_bucket_ops` attempts to give bucket mastership to the calling thread by setting `ROOT_EDIT_CBIT_SET` in the operational **cbits**. This case has no contention, so the bits will be set and the thread will continue.
 
-A thread that tries and fails to set `ROOT_EDIT_CBIT_SET` will cycle and try again, but will find that empty bucket has become a base into which it must insert the nex key-value.
-
-The thread that becomes bucket master will store the key with operative **cbits**, then it will store the value with **tbits** set to one. It sets the real **cbits** = 0x1 in the stash. Afte that it queues the bucket to the completion service, passing a real **cbits** = 0x1.
-
-Threads losing the race to be the bucket master will use the operative **cbits** in order to idenitfy the stash record for the cell. Among other things, the stash record retains an index for the completion queue already passing the work from the bucket master to completion. The following threads colliding at the bucket will sequence their work on the same queue.
+As bucket master the thread stores the key with operative **cbits** in the cell (one atomic store operation). It then stores the value with **tbits** set to one. It sets the real **cbits** = 0x1 in the stash. Afte that it queues the bucket to the completion service, passing a real **cbits** = 0x1.
 
 A completion thread will dequeue the operational data for the bucket in `value_restore_runner` and use it to call `complete_bucket_creation` under the `HH_FROM_EMPTY` case. The completion involves constructing **tbits** based on the **tbits** of other base elements within the window view of the new base. 
 
-If no races to place an element in the bucket occurred, the queue count for the stash will be zero and the bucket may be released from the master's hold. Note that the last thread inserting a value using the same stashed element used for the base creation may release the master hold and does not have to be the master. Only, the reference count of queued work has to go to zero. The method `release_bucket_state_master` calls `_unstash_base_cbits`.
+Without races to place an element in the bucket, the queue count for the stash will be zero and the thread will release the bucket from the master's hold. Note that the last thread inserting a value using the same stashed element used for the base creation may release the master's hold and does not have to be the master. Only, the reference count of queued work has to go to zero. The method `release_bucket_state_master` calls `_unstash_base_cbits`. The stash object is returned to the free list and the operation is complete.
+
+**notes**
+
+* The calling interface will have returned from its operation after inserting the new key-value and object data into the LRU component. The LRU component will have returned to finding work after calling `wakeup_value_restore` which enqueues the key-value for completion.
 
 
 #### (2) Add Collision with Space
@@ -150,20 +154,63 @@ If no races to place an element in the bucket occurred, the queue count for the 
 
 The bucket is not empty, and if the **cbits** are not stashed, the **cbits** loaded from the base bucket cell will be the real **cbits**. The first thread to the base bucket cell will stash the **cbits**, followers will increment the reference count of the stash object.
 
-`_first_level_bucket_ops` attempts to give bucket mastery to the calling thread by setting `ROOT_EDIT_CBIT_SET` in the operational **cbits**. When the adding a collision, the bucket master also or's in the bit `EDITOR_CBIT_SET`, which serves to alert search operations to look in the stash for an element which may bave been the base element. Both fast and swappy searches may check on base replacements if their searches are unfruitful.
+`_first_level_bucket_ops` attempts to give bucket mastership to the calling thread by setting `ROOT_EDIT_CBIT_SET` in the operational **cbits**. When the adding a collision, the bucket master also or's in the bit `EDITOR_CBIT_SET`, which serves to alert search operations to look in the stash for an element which may bave been the base element. Both fast and swappy searches may check on base replacements if their searches are unfruitful.
 
+Threads that do not attain the bucket mastership will queue their insertion behind the base reinsertion and skip the usurpation of the base.
 
-
+The thread that attains bucket mastership replaces the base key and value with the new key-value. But, it stashes the old key-value and queues the work of reinserting the key-value to a completion thread. A thread running `value_restore_runner` will dequeue this work and run it under the case `HH_FROM_BASE_AND_WAIT`.  In this case, the thread attempts to reserve a new positino in the array for the dequeued key-value by calling `handle_full_bucket_by_usurp`. A successful attempt results in the addition of bit to the base real **cbits** with the key-value occupying the cell whose offset from the base is the same as the offset of the new bit in **cbits** from zero. The **tbits** are also changed by updating all base **tbits** in the window range around the new element.
 
 
 #### (3) Add Collision to Full
 
-> Operation: During a process of reinsertion, the resrevation method may discover that all bits within its window have been taken. When all the positions are taken by all the memberships of all the bases within a window taken from the collision base of insertion, the base **tbits** will all be set to one. The reinsertion abandons reseving a postion and then moves into a mode for searching for an oldest element within the window of the base. The oldest member found among the bases within the view of the window will be usurped. If the element is from the collision base of the new key-value pair, then the stashed key-value pair will be written to the discovered position and the old value will be shunted to another tier or seconary storage. If the usurped oldest element is from a base different from the collision base, the usurped element will be queued for reinsertion back into its base bucket. 
+> Operation: During a process of reinsertion, the resrevation method may discover that all bits within its window have been taken. When all the positions are taken by all the memberships of all the bases within a window taken from the collision base of insertion, the base **tbits** will all be set to one. The reinsertion abandons reseving a postion and then moves into a mode for searching for an oldest element within the window of the base. The oldest member found among the bases within the view of the window will be usurped. If the element is from the collision base of the new key-value pair, then the stashed key-value pair will be written to the discovered position and the old value will be shunted to another tier or seconary storage. If the usurped oldest element is from a base different from the collision base, the usurped element will be queued for reinsertion back into its base bucket.
 
+**details**
+
+* The application calls `prepare_for_add_key_value_known_refs`
+    * `prepare_for_add_key_value_known_refs` calls `_get_member_bits_slice_info`
+* The application calls `add_key_value_known_refs`
+    * `add_key_value_known_refs` calls `_first_level_bucket_ops`
+
+`_get_member_bits_slice_info` stashes the real **cbits+** of the bucket determined by the hash and returns an atomic reference to the bucket control bits **cbits**. `_get_member_bits_slice_info` uses or constructs operation **cbits** contain an index to the *cbits* stash object containing the real **cbits** of the bucket.
+
+The bucket is not empty, and if the **cbits** are not stashed, the **cbits** loaded from the base bucket cell will be the real **cbits**. The first thread to the base bucket cell will stash the **cbits**, followers will increment the reference count of the stash object.
+
+`_first_level_bucket_ops` attempts to give bucket mastership to the calling thread by setting `ROOT_EDIT_CBIT_SET` in the operational **cbits**. When the adding a collision, the bucket master also or's in the bit `EDITOR_CBIT_SET`, which serves to alert search operations to look in the stash for an element which may bave been the base element. Both fast and swappy searches may check on base replacements if their searches are unfruitful.
+
+Threads that do not attain the bucket mastership will queue their insertion behind the base reinsertion and skip the usurpation of the base.
+
+The thread that attains bucket mastership replaces the base key and value with the new key-value. But, it stashes the old key-value and queues the work of reinserting the key-value to a completion thread. A thread running `value_restore_runner` will dequeue this work and run it under the case `HH_FROM_BASE_AND_WAIT`.  In this case, the thread attempts to reserve a new positino in the array for the dequeued key-value by calling `handle_full_bucket_by_usurp`.
+
+A failed attempt routs the thread into a search for an element that may be aged out, an oldest element, that may be moved to another tier or that may be reinserted back into its base that it came from. If the oldest element in the window belongs to another base than the collision base, then the other base, the yielding base, will be returned from a call to `handle_full_bucket_by_usurp` for handling in `value_restore_runner`. The usurped element will be removed from the yielding base and the new key-value will be put in its place. Consequently, the **cbits** of both the collision base and the yielding base will be updated, yet **tbits** will not have to change. That is, the collision **cbits** will gain a bit and the yielding **cbits** will lose a bit. The usurped element will be queued by a call to `wakeup_value_restore` for reinsertion into the yielding base, which may (or not) have a free position in its window above the collision base window.
+
+This reinsertion of the usurped key-value into the yielding base sets in motion an operation similar to the hopscotch free space movement, but differs in that the reinsertion cascades from bucket to bucket until either a yielding bucket has a space beyond the window of the usurper, or until a usurped key-value is sent on to storage handling older key-value entries.
 
 #### (4) Add Collision and Empty in the Same Cycle
 
 > Operation: In this case, two threads obtain the same empty cell in the same slice as their point of insertion at the same time. One of the threads, the earlier one, will operate in the mode of *Add Element to Empty*. The later thread will operate in the mode of *Add Collision with Space*. The later thread may take on the role of bucket master and usurp the previously added element placed at the base by the ealier thread. But, the other more likely path will be that the later element will be queued for insertion as the stashed element in the same thread queue as the earlier element.
+
+**details**
+
+* The application calls `prepare_for_add_key_value_known_refs`
+    * `prepare_for_add_key_value_known_refs` calls `_get_member_bits_slice_info`
+* The application calls `add_key_value_known_refs`
+    * `add_key_value_known_refs` calls `_first_level_bucket_ops`
+
+`_get_member_bits_slice_info` stashes the real **cbits+** of the bucket determined by the hash and returns an atomic reference to the bucket control bits **cbits**. `_get_member_bits_slice_info` uses or constructs operation **cbits** contain an index to the *cbits* stash object containing the real **cbits** of the bucket.
+
+The bucket is empty. So, this will be the first time the **cbits** will be stashed. The operational **cbits** will force a collision to be a follower of the thread that creates the stash. The real **cbits** will be zero. `_first_level_bucket_ops` attempts to give bucket mastership to the calling thread by setting `ROOT_EDIT_CBIT_SET` in the operational **cbits**.
+
+A thread that tries and fails to set `ROOT_EDIT_CBIT_SET` will cycle and try again, but will find that empty bucket has become a base into which it must insert the nex key-value.
+
+The thread that becomes bucket master will store the key with operative **cbits**, then it will store the value with **tbits** set to one. It sets the real **cbits** = 0x1 in the stash. Afte that it queues the bucket to the completion service, passing a real **cbits** = 0x1.
+
+Threads losing the race to be the bucket master will use the operative **cbits** in order to idenitfy the stash record for the cell. Among other things, the stash record retains an index for the completion queue already passing the work from the bucket master to completion. The following threads colliding at the bucket will sequence their work on the same queue.
+
+A completion thread will dequeue the operational data for the bucket in `value_restore_runner` and use it to call `complete_bucket_creation` under the `HH_FROM_EMPTY` case. The completion involves constructing **tbits** based on the **tbits** of other base elements within the window view of the new base. 
+
+If no races to place an element in the bucket occurred, the queue count for the stash will be zero and the bucket may be released from the master's hold. Note that the last thread inserting a value using the same stashed element used for the base creation may release the master hold and does not have to be the master. Only, the reference count of queued work has to go to zero. The method `release_bucket_state_master` calls `_unstash_base_cbits`.
+
 
 **notes:** 
 
@@ -175,6 +222,25 @@ The bucket is not empty, and if the **cbits** are not stashed, the **cbits** loa
 #### (5) Add to Empty and Get in the Same Cycle
 
 > Operation: If a `get` operation is earlier than the insertion, then it will fail. Otherwise, once the earlier `add` operation has stashed the bucket and marked the bucket for insertion, the later `get` thread may check the key-value as soon as it can be seen. Several conditions can indicate the presence of the key-value: 1) the key is other than zero; 2) The real **cbits** will be equal to **1**; 3) operational **cbits** indicate that newely created base bucket is undergoing the process of completion.
+
+**details** 
+
+The `add` operation runs the process in ***(1) Add Element to Empty***. 
+
+`get` identifies the slice and the bucket it is searching by unloading the slice indicator from the key that is passed to it. This key should be an ***augmented hash*** (see definitions). `get` cannot proceed if the hash key is not augmented.
+
+With low probability, `get` can be invoked with an ***augmented hash*** returned to the application prior to the completion of the `add` operation still in the process of performing `_first_level_bucket_ops`.
+
+For regular `get` operations see *Get Multiple without other Operations*. 
+
+In this case, `get` can only proceed if it can stash **tbits** and create a reader semaphore. But, in the case of `FROM_EMPTY` for the bucket mastship of the adding thread, the `get` will wait until the mastership is released. When the mastership is released, the **tbits** map will have been completed. 
+
+**notes**
+
+* there is opportunity to provide reading without waiting the release of mastership.
+
+
+
 
 #### (6) Add to Collision and Get in the Same Cycle
 
@@ -226,6 +292,20 @@ The bucket is not empty, and if the **cbits** are not stashed, the **cbits** loa
 #### (15) Get Multiple without other Operations
 
 > Operation: Operations that change the structure of the **cbits** will mark the base as being operated upon by a *swappy oepration*. Searches will search checking for swaps. Otherwise, operation that change the structure of the **cbits** will have to wait for readers running in a less safe mode, where these readers have incremented a semaphore (reference count) in the operational **tbits** of the base. The real **tbits** of the base will be stashed while the semaphore is above zero. Once the real **tbits** are *unstashed* (restored), the mutating operations may mark the base *swappy* and procede.
+
+
+**details**
+
+`get(uint32_t el_key, uint32_t h_bucket)` calls `selector_bit_is_set(h_bucket,selector)` where, `selector` is the index to the slice. Note that the `selector` is determined by `_get_member_bits_slice_info`.
+
+Next, this operation checks to see if the cell is empty, and if not, it loads **cbits**, real and operational. The operational **cbits** will be zero if no operations is in progress.
+
+Next, the thread continues with the call to `_get_bucket_reference`. The first thing `_get_bucket_reference` is to stash **tbits** with a call to `tbits_add_reader`. If a *swappy* operation is in progress, it will not be blocked from futher operation; however, future ones will while the **tbits** are swapped. `get` operations that follow the first thread that stashes the **tbits** will necessarily increment the operation **tbits** semaphore and will proceed without interference.
+
+There is a chance that the reader will wait provided that there is an operation that set `ROOT_EDIT_CBIT_SET`. The operation will be either a `del` or `add`, specifically an `add` that is `FROM_BASE` or `FROM_EMPTY`.
+
+Successful searches return a mobility locked reference to the element. Each searcher makes a call to `remobilize`. `remobilize` unlocks the mobility of the element if the element is a member. But, this unlocking is possible only if the a ***mobilization semaphore*** has become zero. The ***mobilization semaphore*** occupies the same operational **cbits** position as the thread queue reference count set up in the base **cbits**.
+
 
 #### (16) Get One or More with Delete Member in the Same Cycle (crop in the same cycle)
 
