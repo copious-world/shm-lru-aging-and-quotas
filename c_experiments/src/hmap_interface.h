@@ -152,7 +152,7 @@ const uint32_t TBIT_READER_SEM_SHIFT = 16;
 const uint32_t CBIT_STASH_ID_SHIFT = 1;  // bottom bit is always zero in op
 const uint32_t TBIT_STASH_ID_SHIFT = 1;
 
-
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 const uint32_t CBIT_Q_COUNT_SHIFT = 24;
 const uint32_t CBIT_Q_COUNT_MAX = (0x7E);
@@ -161,6 +161,16 @@ const uint32_t CLEAR_Q_COUNT = ~((uint32_t)CBIT_SHIFTED_Q_COUNT_MAX);
 
 const uint32_t CBIT_Q_COUNT_INCR = (0x1 << CBIT_Q_COUNT_SHIFT);
 
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+const uint32_t CBIT_MEM_R_COUNT_SHIFT = 23;
+const uint32_t CBIT_MEM_R_COUNT_MAX = (0x3F);
+const uint32_t CBIT_SHIFTED_MEM_R_COUNT_MAX = ((0x3F) << CBIT_MEM_R_COUNT_SHIFT);
+const uint32_t CLEAR_MEM_R_COUNT = ~((uint32_t)CBIT_SHIFTED_Q_COUNT_MAX);
+
+const uint32_t CBIT_MEM_R_COUNT_INCR = (0x1 << CBIT_MEM_R_COUNT_SHIFT);
+
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 const uint32_t TBIT_SWPY_COUNT_SHIFT = 24;
 const uint32_t TBIT_SWPY_COUNT_MAX = (0x7E);
@@ -401,6 +411,22 @@ static inline bool cbits_q_count_at_zero(uint32_t cbits) {
 	return (semcnt == 0); // going by multiples of two to keep the low bit zero.
 }
 
+
+
+
+
+
+static inline bool cbits_reader_count_at_max(uint32_t cbits_op) {
+	auto semcnt = ((uint8_t)cbits_op & CBIT_SHIFTED_MEM_R_COUNT_MAX);
+	return (semcnt == CBIT_SHIFTED_MEM_R_COUNT_MAX); // going by multiples of two to keep the low bit zero.
+}
+
+
+
+static inline bool cbits_reader_count_at_zero(uint32_t cbits) {
+	auto semcnt = ((uint8_t)cbits & CBIT_SHIFTED_MEM_R_COUNT_MAX);
+	return (semcnt == 0); // going by multiples of two to keep the low bit zero.
+}
 
 
 /**

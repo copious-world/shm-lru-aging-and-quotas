@@ -29,7 +29,9 @@ Each instance of this object is a single tier for the application facing class, 
 
 #### Definitions
 
-The storage area for key-value pairs is arranged as four 32 bit words per cell, where cell contains key-value and control word bits per key-value pair. Two words are used for key and value, while two more words are used for bucket membership and memory allocation management. 
+**key-value**: The table stores key-value pairs along with control words. The term **key-value** will be used to refer to the stored item, being its key and value, and this will be used in a subjective sense. So, the writing below will say for instance that a key-value is being stored, or that a key-value is being searched, etc.
+
+The storage area for key-value pairs is arranged as four 32 bit words per cell, where a cell contains a key-value along with control word bits per key-value pair. Two words are used for key and value, while two more words are used for bucket membership and memory allocation management. The key and value are not likely stored in adjacent memory locations, the key and the membership bits will be stored in one 64 bit word, while the value and a memory allocation map will be stored in another 64 bit word. The 64 bit words will be part of one 128 bit cell, the whole being 16 bytes.
 
 A bucket is a cell which may be a base or a member bucket. The base bucket holds a single key-value and uses it control bits to control up to 31 more members as member buckets belong to the base bucket.
 

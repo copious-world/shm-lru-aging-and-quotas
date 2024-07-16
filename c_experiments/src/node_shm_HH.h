@@ -1677,6 +1677,46 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+		/**
+		 * wait_on_reader_count_incr
+		*/
+
+		void wait_on_reader_count_incr(atomic<uint32_t> *control_bits) {
+			//
+			uint32_t cbits_op = control_bits->load(std::memory_order_acquire);
+			while ( cbits_reader_count_at_max(cbits_op) ) { 
+				tick();
+				cbits_op = control_bits->load(std::memory_order_acquire);
+			}
+			control_bits->fetch_add(CBIT_MEM_R_COUNT_INCR,std::memory_order_acq_rel);
+			//
+			return true;
+		}
+
+		// q_count -- counts the work that will be done for a particular cell in sequence.
+		//
+
+		/**
+		 * reader_count_decr
+		 * 
+		 * 
+		 */
+
+
+		inline bool reader_count_decr(atomic<uint32_t> *control_bits) {
+			//
+			uint32_t cbits_op = control_bits->load(std::memory_order_acquire);
+			//
+			if ( !(cbits_reader_count_at_zero(cbits_op)) ) {  // it should have been that the last condition returned (maybe in transition)
+				auto prior_cbits = control_bits->fetch_sub(CBIT_MEM_R_COUNT_INCR,std::memory_order_acq_rel);
+				if ( cbits_reader_count_at_zero(prior_cbits - CBIT_MEM_R_COUNT_INCR) ) {  // check against precondition
+					// note that the member is not being unstashed as part of the operation
+					return true;
+				}
+			}
+			//
+			return false;
+		}
 
 
 		/**
@@ -2761,7 +2801,9 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * load_marked_as_immobile
 		 */
 
-		uint64_t load_marked_as_immobile(atomic<uint64_t> *a_bits_n_ky) {   // a little more cautious
+		uint64_t load_marked_as_immobile(atomic<uint64_t> *a_bits_n_ky,hh_element *bucket) {   // a little more cautious
+			atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(bucket->c.bits);
+			wait_on_reader_count_incr(control_bits);	// 
 			return a_bits_n_ky->fetch_or((uint64_t)IMMOBILE_CBIT_SET,std::memory_order_acquire);
 		}
 
@@ -2770,17 +2812,20 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * remobilize
 		 */
 
-		void remobilize(atomic<uint64_t> *a_bits_n_ky,uint32_t modifier = 0) {
-			a_bits_n_ky->fetch_and(IMMOBILE_CBIT_RESET64,std::memory_order_acq_rel);
-			if ( modifier ) {
-				a_bits_n_ky->fetch_or(modifier,std::memory_order_acq_rel);
+		void remobilize(atomic<uint64_t> *a_bits_n_ky,atomic<uint32_t> *control_bits,uint32_t modifier = 0) {
+			if ( reader_count_decr(control_bits) ) {  // the reader count is zero
+				a_bits_n_ky->fetch_and(IMMOBILE_CBIT_RESET64,std::memory_order_acq_rel);
+				if ( modifier ) {
+					a_bits_n_ky->fetch_or(modifier,std::memory_order_acq_rel);
+				}
 			}
 		}
 
 					
 		void remobilize(hh_element *storage_ref,uint32_t modifier = 0) {
 			atomic<uint64_t> *a_bits_n_ky = (atomic<uint64_t> *)(&(storage_ref->c));
-			remobilize(a_bits_n_ky,modifier);
+			atomic<uint32_t> *control_bits = (atomic<uint32_t> *)(&(storage_ref->c.bits));
+			remobilize(a_bits_n_ky,control_bits,modifier);
 		}
 
 
@@ -2865,7 +2910,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				// so the immobility mark can still be used. But, the few editors operating in the bucket will not
 				// be able to restore the original cbits until the immobility mark is erased. 
 
-				auto c_n_ky = load_marked_as_immobile(a_bits_n_ky);
+				auto c_n_ky = load_marked_as_immobile(a_bits_n_ky,next);
 				uint32_t nxt_bits = (uint32_t)(c_n_ky & UINT32_MAX);
 				auto chk_key = (c_n_ky >> sizeof(uint32_t)) & UINT32_MAX;
 				if ( is_member_bucket(nxt_bits) ) {  // if it is not, then the bucket has been cleared and the membership map still wants an update
@@ -2880,12 +2925,12 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 					}
 					//
 					if ( is_cbits_in_mobile_predelete(nxt_bits) && (chk_key == UINT32_MAX) ) {
-						remobilize(a_bits_n_ky);
+						remobilize(next);
 						// proceed if another operation is not at the moment doing a swap.
 						// pass by reference -- values may be the bucket after swap by another thread
 						//
 						wait_until_immobile(a_bits_n_ky);
-						c_n_ky = load_marked_as_immobile(a_bits_n_ky);
+						c_n_ky = load_marked_as_immobile(a_bits_n_ky,next);
 						//
 						nxt_bits = (uint32_t)(c_n_ky & UINT32_MAX);
 						chk_key = (c_n_ky >> sizeof(uint32_t)) & UINT32_MAX;
@@ -2901,7 +2946,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 					}
 				}
 
-				remobilize(a_bits_n_ky);
+				remobilize(next);
 			}
 			return nullptr;	
 		}
