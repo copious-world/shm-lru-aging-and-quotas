@@ -2982,6 +2982,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 					auto chk_bits_n_key = a_n_b_n_key->load(std::memory_order_acquire);
 					uint32_t n_cbits = (uint32_t)(chk_bits_n_key >> sizeof(uint32_t));
 					uint32_t chk_key = ((uint32_t)chk_bits_n_key) & UINT32_MAX;
+					// do extra caution checks
 					if ( is_member_bucket(n_cbits) && !(is_cbits_deleted(n_cbits) || is_cbits_in_mobile_predelete(n_cbits)) ) {
 						if ( el_key == chk_key ) {
 							load_marked_as_immobile(a_n_b_n_key);
@@ -3043,6 +3044,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				tbits_remove_reader(a_tbits,tse);					// last reader out restores tbits 
 				return base;
 			}
+			//
+			if ( popcount(cbits) == 1 ) return nullptr; // this cell only had the base
 			//
 			if ( !(is_swappy(cbits,tbits)) ) {  // last known cbits and tbits
 											// swappy operation occurs in this bucket for now, make it exclusive to readers 

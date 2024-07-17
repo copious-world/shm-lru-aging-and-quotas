@@ -53,7 +53,11 @@ Note: **cbits** and **tbits** are not stashed by the same stashing operation, th
 
 **real tbits**: Similarly to **real cbits**, the real **tbits** are non operational **tbits** or they are the stashed **tbits** during times when the **tbits** must be stashed.
 
-**Immobility**: All base cells are immobile, i.e. the key-value of the cell may not be swapped with another member position. Members may be mobile, but at times are marked as immobile during operations. For instance, a searches result in a found cell being marked **immobile** until the key-value of th cell are fully utilized by the calling methods. Some calling method will require a memory reference to the cell in order to close out operations, e.g. unstash the cell, reduce reference counts, etc. 
+**swappy operation**: These are operations that have the potential of swapping two member cells mapped out by real **cbits**.
+
+**Immobility**: All base cells are immobile, i.e. the key-value of the cell may not be swapped with another member position. Members may be mobile, but at times are marked as immobile during operations. For instance, a searches result in a found cell being marked **immobile** until the key-value of the cell are fully utilized by the calling methods; and, these must remobilze cells before returning. Some calling methods will require a memory reference to the cell in order to close out operations, e.g. unstash the cell, reduce reference counts, etc.
+
+**base swapping**: The base may be swapped with a member when the base is being deleted. New elements are written into the base, while the element that was in the base is stashed and then finally reinserted via the process of reservation; this operation may be sensitive to flags that limit the start of a swappy operation. (note: cropping frees members, creating cell storage holes, and also compresses the members of a base cells by swapping cells marked for deletion to the end of the members.)
 
 #### Adding an Element
 
@@ -110,7 +114,7 @@ Operations effecting a change in the membership of a cell stash the control bits
 24. Usurp Delete in Progress
 
 
-#### (1) Add Element to Empty
+##### (1) Add Element to Empty
 
 > Operation: The slice selection phase discovers an empty cell and stashes it. The operation of stashing marks the cell's **cbits** as operational. In the writing phase, one thread assumes control of the bucket as master, forcing other threads to use the position as a collision with member. In the completion phase, the **tbits** map of the new base cell is created for the first time. After that, other base cells within the view of the bucket have their **tbits** updated. 
 
@@ -140,7 +144,7 @@ Without races to place an element in the bucket, the queue count for the stash w
 * The calling interface will have returned from its operation after inserting the new key-value and object data into the LRU component. The LRU component will have returned to finding work after calling `wakeup_value_restore` which enqueues the key-value for completion.
 
 
-#### (2) Add Collision with Space
+##### (2) Add Collision with Space
 
 > Operation: The slice selection phase routes the hash to a cell that already has members. The cell **cbits** are stashed or the stash reference count is incremented at which point the cell becomes operational. Threads attempt to gain control of the bucket as master, forcing other threads to delay insertion via queue serialization. During the writing phase performed by the bucket master, the existing base key-value pair is usurped and stashed with the new key-value pair written to the base. In the completion phase, the stashed key-value pair is reinserted by reserving a position from among the zero **tbits**. A zero bit in the **tbits** indicates an unclaimed bucket. The reservation puts the key-value into the empty bucket and marks the **cbits** and **tbits** precluding other threads from reserving the same spot. After the reservation, the **tbits** of all bases within the window of the base receive the bit update marking the position. The base **cbits** are also updated with the new bit postion.
 
@@ -163,7 +167,7 @@ Threads that do not attain the bucket mastership will queue their insertion behi
 The thread that attains bucket mastership replaces the base key and value with the new key-value. But, it stashes the old key-value and queues the work of reinserting the key-value to a completion thread. A thread running `value_restore_runner` will dequeue this work and run it under the case `HH_FROM_BASE_AND_WAIT`.  In this case, the thread attempts to reserve a new positino in the array for the dequeued key-value by calling `handle_full_bucket_by_usurp`. A successful attempt results in the addition of bit to the base real **cbits** with the key-value occupying the cell whose offset from the base is the same as the offset of the new bit in **cbits** from zero. The **tbits** are also changed by updating all base **tbits** in the window range around the new element.
 
 
-#### (3) Add Collision to Full
+##### (3) Add Collision to Full
 
 > Operation: During a process of reinsertion, the resrevation method may discover that all bits within its window have been taken. When all the positions are taken by all the memberships of all the bases within a window taken from the collision base of insertion, the base **tbits** will all be set to one. The reinsertion abandons reseving a postion and then moves into a mode for searching for an oldest element within the window of the base. The oldest member found among the bases within the view of the window will be usurped. If the element is from the collision base of the new key-value pair, then the stashed key-value pair will be written to the discovered position and the old value will be shunted to another tier or seconary storage. If the usurped oldest element is from a base different from the collision base, the usurped element will be queued for reinsertion back into its base bucket.
 
@@ -188,7 +192,7 @@ A failed attempt routs the thread into a search for an element that may be aged 
 
 This reinsertion of the usurped key-value into the yielding base sets in motion an operation similar to the hopscotch free space movement, but differs in that the reinsertion cascades from bucket to bucket until either a yielding bucket has a space beyond the window of the usurper, or until a usurped key-value is sent on to storage handling older key-value entries.
 
-#### (4) Add Collision and Empty in the Same Cycle
+##### (4) Add Collision and Empty in the Same Cycle
 
 > Operation: In this case, two threads obtain the same empty cell in the same slice as their point of insertion at the same time. One of the threads, the earlier one, will operate in the mode of *Add Element to Empty*. The later thread will operate in the mode of *Add Collision with Space*. The later thread may take on the role of bucket master and usurp the previously added element placed at the base by the ealier thread. But, the other more likely path will be that the later element will be queued for insertion as the stashed element in the same thread queue as the earlier element.
 
@@ -221,7 +225,7 @@ If no races to place an element in the bucket occurred, the queue count for the 
 * This is strictly a case of race conditions, meaning that these threads will interact within once cycle of clearing a communication buffer by multiple threads.
 
 
-#### (5) Add to Empty and Get in the Same Cycle
+##### (5) Add to Empty and Get in the Same Cycle
 
 > Operation: If a `get` operation is earlier than the insertion, then it will fail. Otherwise, once the earlier `add` operation has stashed the bucket and marked the bucket for insertion, the later `get` thread may check the key-value as soon as it can be seen. Several conditions can indicate the presence of the key-value: 1) the key is other than zero; 2) The real **cbits** will be equal to **1**; 3) operational **cbits** indicate that newely created base bucket is undergoing the process of completion.
 
@@ -244,23 +248,23 @@ In this case, `get` can only proceed if it can stash **tbits** and create a read
 
 
 
-#### (6) Add to Collision and Get in the Same Cycle
+##### (6) Add to Collision and Get in the Same Cycle
 
 > Operation: There will be members in the base bucket. The `get` operation search may use the real **cbits** to select cells for key examination. In the case that searching with the real **cbits** don't yield up a matching key, the `get` operation may use the operational **cbits** to check on a stashed key-value. Give a key-value is stashed, the data object it references will still be stored. 
 
-#### (7) Add to Collision and Update in the Same Cycle
+##### (7) Add to Collision and Update in the Same Cycle
 
 > Operation: Updates use the same search as `get`. Update does not stash an element, it mearly overwrites a cell's value and in some cases it may overwrite a cell's key. The update make overwrite key-value in stash. The `add` completion will result reserve a place for whatever value is in stash, unless the key is set to `UINT32_MAX`, indicating deletion.
 
-#### (8) Add to Empty and Delete in the Same Cycle (special case)
+##### (8) Add to Empty and Delete in the Same Cycle (special case)
 
 > Operation: The delete operation is an update operation in which an key-value element has its key set to `UINT32_MAX`. If the element is found in searching, it will be left marked as mobile and submitted to the cropper. The mobility marking signals to other users of the cell that it is likely to be swapped during its inspection.
 
-#### (9) Add to Collision and Delete Member in the Same Cycle (crop in the same cycle)
+##### (9) Add to Collision and Delete Member in the Same Cycle (crop in the same cycle)
 
 > Operation: Cells are not available for writing until they are removed from all the base memory maps, **tbits**, within a window around the cell, which is twice the width of a base's window (32 bits, hencce 64 bits). The cropper swaps discarded elements with elements farthest from the elements' base, thereby compressing a base bucket. Swapping occurs, the **cbits** don't change until the **cbits** at the end are removed. If new key-values are being added while cropping occurs, reservation for new elements will may attempt to interfere with the swap and take over the position or it may attempt to interfere with clearing an already swapped position from the base **cbits**. The cropper must check to see if the key of an element being erased remains `UINT32_MAX`.
 
-#### (10) Add to Collision and Delete Base in the Same Cycle
+##### (10) Add to Collision and Delete Base in the Same Cycle
 
 > Operation: When a base is being deleted, a swap is made with a member, if one exists, and the base and the key-value within the moved to the member position from the base is changed to having a key of `UINT32_MAX`. And, the bucket is submitted to cropping. The `add` operation may attempt to remove the position from its cropping queue and take the cell before the real **cbits** are changed. If that is not possible, the `add` will fail to become the bucket master and queue its new element for position reservation. If the `add` operation can access the base prior to the swap, then it can become the bucket master and prevent the swap and operate in the mode of `Add Collision with Space`, but it will not queue the old key-value for reinsertion.
 
@@ -270,19 +274,19 @@ In this case, `get` can only proceed if it can stash **tbits** and create a read
 * the delete operation must flag the base as being made ready for delete.
 * delete clears the base entirely if there is only one element in the bucket.
 
-#### (11) Add by Usurp and Get in the Same Cycle
+##### (11) Add by Usurp and Get in the Same Cycle
 
 > Operation: The search method does not have to operate as if a swappy operation is taking place. The search operation will load key and **cbits** of each member in a 64 bit load. If member bucket is stashed, it is necessarilly being usurped, which means that it will become a base. The search operation may check the key-value in any case until the real **cbits** of the cell indicate the single member to the new bucket.
 
-#### (12) Add by Usurp and Update in the Same Cycle
+##### (12) Add by Usurp and Update in the Same Cycle
 
 > Operation: `update` uses the same search as `get`, only, the member **cbits** indicate that the bucket has become immobile and in operation, i.e. stashed. `update` must change the stashed key-value prior to its reinsertion or must wait until after reinsertion. If `update` is ahead of the `add` operation usurpation, then it must increment the reader semaphore in the base bucket operational **cbits** and the `add` operation usurpation must wait until readers are done with the original base bucket of the member. 
 
-#### (13) Add by Usurp and Delete in the Same Cycle (special case)
+##### (13) Add by Usurp and Delete in the Same Cycle (special case)
 
 > Operation: This mode operates in the same manner as *Add by Usurp and Update* except that, if possible, that the key matches the delete key then usurpation may skip the reinsertion of the stashed key value. `del` must find the stashed key and change the key in stash, and `add` by usurpation must check that the key is `UINT32_MAX`.
 
-#### (14) Add by Usurp and Delete Base in the Same Cycle (delete immediately destroys add)
+##### (14) Add by Usurp and Delete Base in the Same Cycle (delete immediately destroys add)
 
 > Operation: if `del` is first, then the key will be set to `UINT32_MAX`. `add` by usurpation may succeed in blocking the submission to cropping. But, even if the element is submitted to cropping, the cropper will not find the element to crop, albeit that it might do unnecessary work. The `add` using the usurpation mode must check to see if the key has changed or if the member **cbtits** indicate special mobility as in the case of `Add by Usurp and Delete`. If `add` is first, then the member should be stashed and the `del` operation must take the stashed key-value and place it in the base.
 
@@ -291,7 +295,7 @@ In this case, `get` can only proceed if it can stash **tbits** and create a read
 * effectively this means swap the base with the stash.
 
 
-#### (15) Get Multiple without other Operations
+##### (15) Get Multiple without other Operations
 
 > Operation: Operations that change the structure of the **cbits** will mark the base as being operated upon by a *swappy oepration*. Searches will search checking for swaps. Otherwise, operation that change the structure of the **cbits** will have to wait for readers running in a less safe mode, where these readers have incremented a semaphore (reference count) in the operational **tbits** of the base. The real **tbits** of the base will be stashed while the semaphore is above zero. Once the real **tbits** are *unstashed* (restored), the mutating operations may mark the base *swappy* and procede.
 
@@ -302,46 +306,81 @@ In this case, `get` can only proceed if it can stash **tbits** and create a read
 
 Next, this operation checks to see if the cell is empty, and if not, it loads **cbits**, real and operational. The operational **cbits** will be zero if no operations is in progress.
 
-Next, the thread continues with the call to `_get_bucket_reference`. The first thing `_get_bucket_reference` is to stash **tbits** with a call to `tbits_add_reader`. If a *swappy* operation is in progress, it will not be blocked from futher operation; however, future ones will while the **tbits** are swapped. `get` operations that follow the first thread that stashes the **tbits** will necessarily increment the operation **tbits** semaphore and will proceed without interference.
+Next, the thread continues with the call to `_get_bucket_reference`. The first thing `_get_bucket_reference` does is to stash **tbits** with a call to `tbits_add_reader`. If a *swappy* operation is in progress, it will not be blocked from futher operation; however, future swappy operations will block while the **tbits** are swapped. `get` operations that follow the first thread that stashes the **tbits** will necessarily increment the operation **tbits** semaphore and will proceed without interference.
 
 There is a chance that the reader will wait provided that there is an operation that set `ROOT_EDIT_CBIT_SET`. The operation will be either a `del` or `add`, specifically an `add` that is `FROM_BASE` or `FROM_EMPTY`.
 
-Successful searches return a mobility locked reference to the element. Each searcher makes a call to `remobilize`. `remobilize` unlocks the mobility of the element if the element is a member. But, this unlocking is possible only if the a ***mobilization semaphore*** has become zero. The ***mobilization semaphore*** occupies the same operational **cbits** position as the thread queue reference count set up in the base **cbits**.
+Successful searches return a mobility locked reference to the element. Each searcher makes a call to `remobilize`. `remobilize` unlocks the mobility of the element if the element is a member. But, this unlocking is possible only if the a ***mobilization semaphore*** has become zero. The ***mobilization semaphore*** occupies the same operational **cbits** position as the thread queue reference count set up in the base **cbits**. The mobility flag affects operations in the cropper and base swapping. 
 
 
-#### (16) Get One or More with Delete Member in the Same Cycle (crop in the same cycle)
+##### (16) Get One or More with Delete Member in the Same Cycle (crop in the same cycle)
 
 > Operation: The delete operation begins with marking the operational **cbits** with a flag indicating that a ***swappy operation*** is about to take place. Similar to *Get Multiple without other Operations*, the ***swappy operation*** flag tells searches to proceed carefully through the bucket using the real **cbits**. The searchers must mark cells that they examine as immobile prior to checking keys and release them prior to examining the remaining keys. The cropper must wait until cells are remobilized before continuing with compressing the bucket. 
 
-#### (17) Get One or More with Delete Base in the Same Cycle
+##### (17) Get One or More with Delete Base in the Same Cycle
 
 > Operation: The `get` operations may proceed using a *swappy* search path. If the base key, which may be stashed, is the match of their search, they must abandon their search. Otherwise, they must check the mobility of the bucket, and if it is the subject of a swap, it must check the key in the base when it encounters a mobilized bucket whose key is `UINT32_MAX`.
 
-#### (18) Get One or More with Update in the Same Cycle
+##### (18) Get One or More with Update in the Same Cycle
 
 > Operation: This operation is just another search contender and if no *swappy* operations are in progress on the base bucket, then the update may increment the reader semaphore along with other readers. All readers will decrement their semaphore when they are done using the bucket reference. 
 
-#### (19) Collision Update Multiple
+##### (19) Collision Update Multiple
 
 > Operation: If the same key is being updated in value, then the last update operation will determine the value with other threads having no impact. If the key changes, then late threads will fail to find the key. Some application may want to change keys, but for the case of the module only `del` changes the key.
 
-#### (20) Delete Multiple Members
+##### (20) Delete Multiple Members
 
 > Operation: Members are not considered to be the base. These are just updates that change the key to `UINT32_MAX`. If more than one member is deleted at a time, then they are all updated as long as their keys remain visible to the ongoing searches.
 
-#### (21) Delete Base Only
+##### (21) Delete Base Only
 
 > Operation: For a single element bucket, the whole bucket cell must be set to zero and the stashes must be cleared of the element. The **tbits** within the view of the bucket will have the bucket position cleared.
 
-#### (22) Delete Base and Members in the Same Cycle
+
+##### (22) Delete Base and Members in the Same Cycle
 
 > Operation: It is left up to the search methods to find the buckets to update with a `UINT32_MAX` key. But, the one special case is that the base cannot swap with buckets whose keys have been set to a `UINT32_MAX`. Finally, searches operating in a *swappy* mode must check the base when they encounter `UINT32_MAX` key. If the base deletion encounters a membership with all positions set to `UINT32_MAX` keys, then the whole base and all of its buckets may be cleared immediately and the base must be removed from a future cropping operation. If the cropping operation is taking place, the base delete must wait.
 
-#### (23) Delete Collision (special case check)
+##### (23) Delete Collision (special case check)
 
 > Operation: If the same key is being deleted, then both keys will attempt to update the same cell with a `UINT32_MAX` key. If they are operating on the base, the threads beyond the first must abondon their effort once they check the state of swappiness and planned mobility.
 
-#### (24) Usurp Delete in Progress
+##### (24) Usurp Delete in Progress
 
 > Operation: See `Add by Usurp and Delete`. The `add` by usurpation process must avoid submitting the stashed key-value to reinsertion.
+
+#### `_get_bucket_reference`
+
+Details for `_get_bucket_reference` are given here to clarify peculiarities of calls to subroutines. 
+
+The top level of this method deals with the following:
+
+* setting up or using a reader semaphore with swapped **tbits**. 
+* waiting on a base update, which might be a delete or and add `FROM_BASE`
+* Checking the base for the key and returing its value before calling any other methods.
+* Calling one of two search methods:
+    * the first being a search ensured that no membership operations will take place in its search
+    * the second one being a search that is careful to examine buckets that have potential to swap
+* Returning a reference to a successful search
+
+When `_get_bucket_reference` calls either of the two search methods, it has already looked at the base. Hence, the searches will not be expected to look at the base and will ony look at members. The two methods that it calls are the following:
+
+* `_editor_locked_search_ref` - a search method that expects all conditions to be clear
+* `_swappy_aware_search_ref` - a search method that takes caution on each bucket read in case a value swaps.
+
+##### `_editor_locked_search_ref`
+
+This method searches the members, ignoring the LSB of base in the real **cbits**. For each set bit in **cbits**, it reads the offset to the cell from the base. It the loads (atomic) the member **cbits** and *key* of the key-value to check against the search key. For each member, if the cell is not marked for deletion the *key* is checked. Upon finding a successful match, the value is returned by reference and the memory reference to the cell is returned from the function after the cell is marked as immobile.
+
+If the search should fail, the method can attempt the search again given that the **cbits** have changed during the search. The method may try a few times. Otherwise, if the membership of the base is constant, the element cannot be found. 
+
+**note**: the `_get_bucket_reference` method does not search any stashes on behalf of `get` or other methods. `get` will look in stash if the `_get_bucket_reference` fails. Other methods might search stash to remove the element from it or to change it.
+
+##### `_swappy_aware_search_ref`
+
+This method makes its pass over each element in the same manner as `_editor_locked_search_ref`, except that once it has the **cbits** and *key*, this method checks to see if the cell has been marked for delete. If so, it remobilizes the cell for the cropper or other swappy operations. It then waits on the swappy operation to update member values (post compression) and examines the cell again. If the key is not matching, the method looks at the next cell. If it does match, the cell is once again marked as immobile and the cell reference and value are returned.
+
+The same note applies to this methods as `_editor_locked_search_ref`.
+
 
