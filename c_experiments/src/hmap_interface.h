@@ -1001,6 +1001,81 @@ class FreeOperatorStashStack : public AtomicStack<StackEl>  {
 
 
 
+// SPARSE SLAB OPTION
+// a wait based operation option without interleaving (hence, excess memory)
+// fairly usual hash table... 
+
+typedef enum {
+	SP_slab_t_4,
+	SP_slab_t_8,
+	SP_slab_t_16,
+	SP_slab_t_32
+} SP_slab_types;
+
+
+// The first level of table storage is bucket headers.
+
+typedef struct SP_element {
+	SP_slab_types		_slab_type;			// + 8
+	uint8_t				_bucket_count;		// + 8		// counts all included space takers including deletes -- reduced by cropping
+	uint16_t			_slab_index;		// + 16 = 32
+	uint32_t			_slab_offset;		// + 16 = 64
+	uint32_t			_stash_ops;			// same as cbits ... except that membership role is not in use
+	uint32_t			_reader_ops;		// same as tbits ... except that memory allocation is not kept
+} sp_element;  // 128 bits
+
+
+class SlabProvider {
+	public: 
+		SlabProvider() {
+		}
+		virtual ~SlabProvider(void) {}
+
+		uint16_t bytes_needed(SP_slab_types st) {
+			uint8_t sz = 4;
+			switch ( st ) {
+				case SP_slab_t_4: return (16*sz*4);
+				case SP_slab_t_8: return (16*sz*8);
+				case SP_slab_t_16: return (16*sz*16);
+				case SP_slab_t_32: return (16*sz*32);
+				default:
+					break;
+			}
+			return 0;
+		}
+
+		uint8_t max_els(SP_slab_types st) {
+			switch ( st ) {
+				case SP_slab_t_4: return (4);
+				case SP_slab_t_8: return (8);
+				case SP_slab_t_16: return (16);
+				case SP_slab_t_32: return (32);
+				default:
+					break;
+			}
+			return 0;
+		}
+
+		void load_bytes(SP_slab_types st,uint16_t slab_index,uint32_t slab_offset, uint8_t *buffer, uint16_t sz) {
+			uint8_t *slab = _slab_lookup[st][slab_index];
+			uint8_t *el = slab + slab_offset;
+			memcpy(buffer,el,sz);
+		}
+
+
+		void unload_bytes(SP_slab_types st,uint16_t slab_index,uint32_t slab_offset, uint8_t *buffer, uint16_t sz) {
+			uint8_t *slab = _slab_lookup[st][slab_index];
+			uint8_t *el = slab + slab_offset;
+			memcpy(el,buffer,sz);
+		}
+
+
+
+		map<SP_slab_types,map<uint16_t,uint8_t *>> 		_slab_lookup;    // must preload all proces
+
+};
+
+
 
 
 class HMap_interface {

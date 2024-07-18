@@ -129,4 +129,5 @@ build/*
 c_tests/build/*
 c_experiments/build/*
 util/prep_remote*
+proc_mem_option/build/*
 
