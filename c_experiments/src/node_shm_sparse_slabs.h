@@ -28,7 +28,7 @@
 #include "hmap_interface.h"
 #include "random_selector.h"
 #include "entry_holder.h"
-
+#include "slab_provider.h"
 
 /**
  * API exposition
@@ -2250,7 +2250,10 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		}
 
 		void expand_base(sp_element *base) {
-
+			auto st = base->_slab_type;
+			auto si = base->_slab_index;
+			auto so = base->_slab_offset;
+			_SP.expand(st,si,so)
 		}
 
 		void contract_base(sp_element *base) {
