@@ -18,6 +18,77 @@ using namespace std;
 // fairly usual hash table... 
 
 
+typedef struct STACK_el_header {
+	uint16_t				_next;
+} stack_el_header;
+
+
+typedef struct STACK_el_stack__header {
+	uint16_t				_next;
+	uint16_t				_count;
+} stack_el_stack_header;
+
+class Stack_simple {
+	public:
+		Stack_simple() {}
+		virtual ~Stack_simple(void) {}
+
+		void set_region(uint8_t *beg, uint8_t *end,uint16_t el_size = 0,bool initialize = false) {
+			_region = beg;
+			_end_region = end;
+			if ( initialize ) {
+				stack_el_header *seh = (stack_el_header *)beg;
+				stack_el_stack_header *stack_header = (stack_el_stack_header *)beg;
+				//
+				stack_header->_next = sizeof(stack_el_stack_header);
+				stack_header->_count = 0;
+				uint8_t *nxt = beg + seh->_next;
+				while ( nxt < end ) {
+					stack_el_header *n_seh = (stack_el_header *)nxt;
+					n_seh->_next = seh->_next + sizeof(stack_el_header) + el_size;
+					nxt = beg + n_seh->_next;
+					seh = n_seh;
+					stack_header->_count++;
+				}
+				seh->_next = UINT32_MAX;
+			}
+		}
+
+		uint8_t *pop(void) {
+			stack_el_header *seh = (stack_el_header *)_region;
+			auto top_off = seh->_next;
+			//
+			stack_el_stack_header *stack_header = (stack_el_stack_header *)_region;
+			if ( (top_off == UINT32_MAX) || (stack_header->_count == 0)) {
+				return nullptr;
+			}
+			stack_el_stack_header *stack_header = (stack_el_stack_header *)seh;
+			stack_header->_count--;
+			stack_el_header *top = (stack_el_header *)(_region + top_off);
+			seh->_next = top_off;
+			uint8_t *el = (uint8_t *)(top + 1);
+			return el;
+		}
+
+		void push(uint8_t *el) {
+			stack_el_header *ret = (stack_el_header *)(el - sizeof(stack_el_header));
+			stack_el_header *seh = (stack_el_header *)_region;
+			ret->_next = seh->_next;
+			seh->_next = (el - _region);
+			stack_el_stack_header *stack_header = (stack_el_stack_header *)_region;
+			stack_header->_count++;
+		}
+
+		bool empty(void) {
+			stack_el_stack_header *stack_header = (stack_el_stack_header *)_region;
+			return (stack_header->_count == 0);
+		}
+
+		uint8_t 				*_region;
+		uint8_t					*_end_region;
+	
+};
+
 
 // HH_element 128 bits or 16 bytes ;; for this implementation is given
 
@@ -195,20 +266,30 @@ class SlabProvider {
 			}
 		}
 
-		void *create_slab(SP_slab_types st, uint16_t el_count, int &res_id, uint32_t &offset) {
+		pair<void *,void *> create_slab(SP_slab_types st, uint16_t el_count, int &res_id, uint32_t &offset) {
 			uint8_t *bytes = bytes_available(st,el_count,offset);
+			uint8_t *end_bytes = nullptr;
+			//
+			size_t mem_size = (bytes_needed(st)*el_count*sizeof(stack_el_header)) + sizeof(stack_el_stack_header);
 			//
 			if ( bytes == nullptr ) {
-				res_id = create_resource(bytes_needed(st)*el_count);
+				res_id = create_resource(mem_size);
 				if ( res_id > 0 ) {
 					offset = 0;
-					return slab_shm_attacher(res_id);
+					void *vbytes = slab_shm_attacher(res_id);
+					end_bytes = ((uint8_t *)vbytes) + mem_size;
+					void *vend_bytes = end_bytes;
+					//
+					pair<void *,void *> p(vbytes,vend_bytes);
+					return p;
 				}
 			} else {
 				res_id = -res_id;
+				end_bytes = bytes + mem_size;
 			}
 			//
-			return (void *)bytes;
+			pair<void *,void *> p((void *)bytes,(void *)end_bytes);
+			return p;
 		}
 
 
@@ -329,7 +410,11 @@ class SlabProvider {
 		uint16_t create_slab_and_broadcast(SP_slab_types st,uint16_t el_count) {
 			int res_id = 0;
 			uint32_t offset = 0;
-			void *new_slab = create_slab(st,el_count,res_id,offset);
+			pair<void *,void *> beg_end = create_slab(st,el_count,res_id,offset);
+			void *new_slab = beg_end.first;
+			void *end_slab = beg_end.second;
+			_stack_ops.set_region((uint8_t *)new_slab,(uint8_t *)end_slab,true);
+
 			auto slab_index = gen_slab_index();
 			add_slab_entry(slab_index, new_slab, st, el_count);
 			_slab_events->_readers.store(0);
@@ -348,7 +433,7 @@ class SlabProvider {
 
 
 		/**
-		 * add_slab_and_broadcast
+		 * request_slab_and_broadcast
 		 */
 		void request_slab_and_broadcast(SP_slab_types st,uint16_t el_count) {
 			//
@@ -426,17 +511,19 @@ class SlabProvider {
 		//
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		void _to_free(uint8_t *slab) {
+		void _to_free(uint8_t *el,uint8_t *slab,uint8_t *end_slab) {
+			_stack_ops.set_region(slab,end_slab);
+			_stack_ops.push(el);
 		}
 
-		uint8_t *_from_free(uint8_t *data) {
-
+		uint8_t *_from_free(uint8_t *data,uint8_t *end_data) {
+			_stack_ops.set_region(data,end_data);
+			return _stack_ops.pop();
 		}
 
-		bool check_free(uint8_t *data) {
-			if ( data == nullptr ) return false;
-			//
-			return false;
+		bool check_free(uint8_t *data,uint8_t *end_data) {
+			_stack_ops.set_region(data,end_data);
+			return !_stack_ops.empty();
 		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -466,8 +553,9 @@ class SlabProvider {
 			//
 			load_bytes(st, slab_index, slab_offset, buffer, bytes_needed);
 			uint8_t *slab = _slab_lookup[st][slab_index];
+			uint8_t *slab_end =_slab_ender_lookup[st][slab_index];
 			uint8_t *el = slab + slab_offset;
-			_to_free(el);
+			_to_free(el,slab,slab_end);
 			st = next_slab_type(st);
 			for ( auto p : _slab_lookup[st] ) {
 				if ( check_free(p.second) ) {
@@ -483,7 +571,7 @@ class SlabProvider {
 			if ( _allocator ) {
 				slab_index = create_slab_and_broadcast(st,el_count);
 				uint8_t *slab = _slab_lookup[st][slab_index];
-				uint8_t *section = _from_free(slab);
+				uint8_t *section = _from_free(slab,slab_end);
 				if ( section != nullptr ) {
 					slab_offset = (section - slab);
 					return;
@@ -502,6 +590,7 @@ class SlabProvider {
 		uint16_t										_particpating_thread_count;
 		bool											_allocator{false};
 
+		Stack_simple									_stack_ops;
 		map<SP_slab_types,map<uint16_t,uint8_t *>> 		_slab_lookup;    // must preload all process
 		map<SP_slab_types,map<uint16_t,uint8_t *>> 		_slab_ender_lookup;    // must preload all process
 };
