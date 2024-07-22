@@ -120,6 +120,7 @@ const uint32_t ROOT_EDIT_CBIT_SET =		((uint32_t)(0x0001) << 23);
 
 // 
 const uint32_t READER_CBIT_RESET = ~(READER_CBIT_SET);
+const uint32_t EDITOR_CBIT_RESET = ~(EDITOR_CBIT_SET);
 const uint32_t IMMOBILE_CBIT_RESET = ~(IMMOBILE_CBIT_SET);
 const uint64_t IMMOBILE_CBIT_RESET64 = ~((uint64_t)IMMOBILE_CBIT_SET);
 
@@ -584,7 +585,16 @@ static inline bool base_in_operation(uint32_t cbits) {
 static inline bool editors_are_active(uint32_t cbits) {
 	if ( is_base_in_ops(cbits) ) {
 		auto chck = (cbits & EDITOR_CBIT_SET);
-		return chck;
+		return (chck != 0);
+	}
+	return false;
+}
+
+
+static inline bool readers_are_active(uint32_t cbits) {
+	if ( is_base_in_ops(cbits) ) {
+		auto chck = (cbits & READER_CBIT_SET);
+		return (chck != 0);
 	}
 	return false;
 }
