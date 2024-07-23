@@ -30,6 +30,10 @@ typedef struct STACK_el_stack__header {
 	uint16_t				_count;
 } stack_el_stack_header;
 
+/**
+ * Stack_simple -- this is just a simple stack using offset values.
+ * 
+ */
 class Stack_simple {
 	public:
 		Stack_simple() {}
@@ -150,7 +154,7 @@ typedef enum {
 
 
 typedef struct SP_communication_cell {
-	bool					_active{false};
+	atomic_flag				_active;
 	SP_slab_types 			_st;
 	int						_res_id{-1};		// if < 0 by a lot (< -1 or < -10), then _offset is the start (non-mutable ref) of a region within the segment
 	uint16_t				_slab_index;
@@ -194,6 +198,16 @@ class TokGenerator {
 
 
 
+// handle_receive_slab_event exists within a thread
+
+typedef struct SLAB_parameters {
+	void				*slab;
+	SP_slab_types		st;
+	uint16_t			el_count;
+	uint32_t			slab_index;
+} slab_parameters;
+
+
 /**
  * SlabProvider
  */
@@ -233,13 +247,99 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		}
 
 
+		uint32_t slab_size_bytes(SP_slab_types st,uint16_t el_count) {
+			uint32_t sz =((bytes_needed(st) + sizeof(stack_el_header))*el_count) + sizeof(stack_el_stack_header);
+		}
+
+
+		/**
+		 * bytes_available
+		 * 
+		 * 		The idea of bytes available would be that a large storage region is set up once again as free stack.
+		 * 		But, the elements are large regions which will contain free stacks for specific element sizes. 
+		 *		The reason to do this, would be to reduce the number of shared memory regions taking up file descriptors, etc.
+		 *		For now, this method is not implemented.
+		 */
+
+		uint8_t *bytes_available([[maybe_unused]] SP_slab_types st,[[maybe_unused]] uint16_t el_count,uint32_t &offset) {
+			offset = 0;
+			return nullptr;
+		}
+
+
 		//
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		void await_table_change(sp_comm_events *slab_ev) {
+		// The cell even is for one process/(main thread) and it segment sharing message handler thread
+		void clear_cell_event(void) {
+			while ( _own_cell->_active.test(std::memory_order_acquire) ) {		// clear it if not already clear
+				_own_cell->_active.clear(std::memory_order_release);
+			}
+		}
+
+		void await_cell_event_set(void) {
+			while ( !(_own_cell->_active.test(std::memory_order_acquire)) ) { tick(); }	// wait for it to set
+			_own_cell->_active.clear(std::memory_order_release);						// no clear it and move on
+		}
+
+		void signal_cell_event_set(void) {
+			_own_cell->_active.test_and_set(std::memory_order_acq_rel);
+			_own_cell->_active.notify_one();
+		}
+
+		// ---
+		void await_event_set(void) {
+			while ( !(_slab_events->_table_change.test()) ) {
+				tick();
+			};
+		}
+
+		// ---
+		void await_event_clear(void) {
+			while ( _slab_events->_table_change.test() ) {   // make sure it clears
+				tick();
+			};
+		}
+
+
+		void set_event() {
+			while ( _slab_events->_table_change.test_and_set(std::memory_order_acq_rel) ) { tick(); }
+			_slab_events->_table_change.notify_all();
+		}
+
+
+		void  clear_event(void) {
+			_slab_events->_table_change.clear();
+			_slab_events->_table_change.notify_all();
 		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+		// SET shared regions
+
+		/**
+		 * set_slabs_for_startup
+		 * 
+		 * The calling method passes a set of slabs that are already allocated or attached to.
+		 * 
+		 * parameters: 
+		 * 		initial_slabs -- a list of slab parameters carried in slab_parameters structures
+		 * 		slab_count	-- not moret than 255 slabs
+		 */
+		void set_slabs_for_startup(slab_parameters *initial_slabs, uint8_t slab_count) {
+			slab_parameters *sp = initial_slabs;
+			slab_parameters *end_slabs = sp + slab_count;
+			while ( sp <  end_slabs) {
+				//
+				void *slab = sp->slab;
+				SP_slab_types st = sp->st;
+				uint16_t el_count = sp->el_count;
+				uint16_t slab_index = sp->slab_index;
+				//
+				add_slab_entry(slab_index, slab, st, el_count);
+			}
+		}
 
 
 		void set_allocator_role(bool may_allocate) {
@@ -251,6 +351,13 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 			_slab_com = (sp_communication_cell *)(_slab_events);
 			_end_slab_com = _slab_com + threads_procs_count;
 			_slab_cell = assigned_cell;
+			sp_communication_cell *own_cell = _slab_com + _slab_cell;
+			if ( own_cell >= _end_slab_com ) {
+				string  msg = "out of bounds slab com in slab handler";
+				throw std::runtime_error(msg);
+			}
+			_own_cell = own_cell;
+			own_cell->_active.clear();
 			_particpating_thread_count = threads_procs_count;
 		}
 
@@ -258,7 +365,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		
 		void add_slab_entry(uint16_t slab_index,void *slab,SP_slab_types st,uint16_t el_count) {
 			uint8_t *start = (uint8_t *)slab;
-			uint8_t *end = start + el_count*hh_el_size;
+			uint8_t *end = start + slab_size_bytes(st,el_count);   // has to include the stack implementation as well.
 			_slab_lookup[st][slab_index] = start;
 			_slab_ender_lookup[st][slab_index] = end;
 		}
@@ -287,25 +394,11 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 
 
-		/**
-		 * bytes_available
-		 * 
-		 * 		The idea of bytes available would be that a large storage region is set up once again as free stack.
-		 * 		But, the elements are large regions which will contain free stacks for specific element sizes. 
-		 *		The reason to do this, would be to reduce the number of shared memory regions taking up file descriptors, etc.
-		 *		For now, this method is not implemented.
-		 */
-
-		uint8_t *bytes_available([[maybe_unused]] SP_slab_types st,[[maybe_unused]] uint16_t el_count,uint32_t &offset) {
-			offset = 0;
-			return nullptr;
-		}
-
 		pair<void *,void *> create_slab(SP_slab_types st, uint16_t el_count, uint16_t slab_id, uint32_t &offset) {
 
-			size_t mem_size = ((bytes_needed(st) + sizeof(stack_el_header))*el_count) + sizeof(stack_el_stack_header);
+			size_t mem_size = slab_size_bytes(st,el_count);
 
-			uint8_t *bytes = bytes_available(st,el_count,offset);  // this won't be used right now
+			uint8_t *bytes = bytes_available(st,mem_size,offset);  // this won't be used right now
 			uint8_t *end_bytes = nullptr;
 			//
 			//
@@ -363,30 +456,58 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 			}
 			//
 
-			await_table_change(_slab_events);
-
-			sp_communication_cell *own_cell = _slab_com + _slab_cell;
-			if ( own_cell >= _end_slab_com ) {
-				string  msg = "out of bounds slab com in slab handler";
-				throw std::runtime_error(msg);
-			}
+			await_event_clear();
+			set_event();
+			_slab_events->_readers.store(0);
 			//
-			own_cell->_st = st;
-			own_cell->_el_count = el_count;
-			own_cell->_slab_index = slab_index;
-			own_cell->_res_id = 0;
-			own_cell->_active = true;
-
+			_own_cell->_st = st;
+			_own_cell->_el_count = el_count;
+			_own_cell->_slab_index = slab_index;
+			_own_cell->_res_id = 0;
+			//
 			_slab_events->_op = SP_CELL_ADD;
-			_slab_events->_readers = _particpating_thread_count - 1;
 			_slab_events->_which_cell = _slab_cell;
-
+			_slab_events->_readers.store(_particpating_thread_count - 1);
+			//
+			_slab_events->_readers.store(_particpating_thread_count - 1);
 			while ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
 				tick();
 			}
 			//
-			own_cell->_active = false;
 		}
+
+
+
+		/**
+		 * request_slab_and_broadcast
+		 */
+		void request_slab_and_broadcast(SP_slab_types st,uint16_t el_count) {
+			//
+			if ( _slab_events == nullptr ) {
+				string  msg = "Uninitialized com buffer in slab handler";
+				throw std::runtime_error(msg);
+			}
+			//
+			await_event_clear();
+			set_event();
+			_slab_events->_readers.store(0);
+			//
+			_own_cell->_st = st;
+			_own_cell->_el_count = el_count;
+			_own_cell->_slab_index = 0;
+			_own_cell->_res_id = 0;
+			//
+			_slab_events->_op = SP_CELL_REQUEST;
+			_slab_events->_which_cell = _slab_cell;
+			_slab_events->_readers.store(_particpating_thread_count - 1);
+			//
+			//
+			while ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
+				tick();
+			}
+			//
+		}
+
 
 
 		/**
@@ -442,39 +563,14 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 
 		/**
-		 * request_slab_and_broadcast
+		 * slab_thread_runner
 		 */
-		void request_slab_and_broadcast(SP_slab_types st,uint16_t el_count) {
-			//
-			if ( _slab_events == nullptr ) {
-				string  msg = "Uninitialized com buffer in slab handler";
-				throw std::runtime_error(msg);
-			}
-			//
-			await_table_change(_slab_events);
-
-			sp_communication_cell *own_cell = _slab_com + _slab_cell;
-			if ( own_cell >= _end_slab_com ) {
-				string  msg = "out of bounds slab com in slab handler";
-				throw std::runtime_error(msg);
-			}
-			//
-			own_cell->_st = st;
-			own_cell->_el_count = el_count;
-			own_cell->_slab_index = 0;
-			own_cell->_res_id = 0;
-			own_cell->_active = true;
-
-			_slab_events->_op = SP_CELL_REQUEST;
-			_slab_events->_readers = _particpating_thread_count - 1;
-			_slab_events->_which_cell = _slab_cell;
-
-			while ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
-				tick();
-			}
-			//
-			own_cell->_active = false;
+		void slab_thread_runner([[maybe_unused]] int i) {
+			await_event_set();
+			while ( _slab_events->_readers.load(std::memory_order_acquire) == 0 );
+			handle_receive_slab_event();
 		}
+
 
 
 		void handle_receive_slab_event(void) {
@@ -491,14 +587,16 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 			switch ( _slab_events->_op ) {
 				case SP_CELL_ADD: {
 					unload_msg_and_add_slab(cell);
+					signal_cell_event_set();
 					break;
 				}
 				case SP_CELL_REMOVE: {
 					unload_msg_and_remove_slab(cell);
+					signal_cell_event_set();
 					break;
 				}
 				case SP_CELL_REQUEST: {
-					if ( _allocator ) {
+					if ( _allocator ) {			// must have the allocator role
 						unload_msg_and_create_slab(cell);
 					}
 					break;
@@ -507,11 +605,11 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 					break;
 				}
 			}
-
+			//
 			if ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
 				auto remaining =_slab_events->_readers.fetch_sub(1,std::memory_order_acq_rel);
 				if ( remaining == 0 ) {
-					_slab_events->_table_change.clear();
+					clear_event();
 				}
 			}
 
@@ -598,8 +696,9 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 				}
 				//
 			} else {
+				clear_cell_event();
 				request_slab_and_broadcast(st,el_count);
-				await_table_change(_slab_events);
+				await_cell_event_set();
 				expand(st,slab_index,slab_offset,el_count);
 			}
 		}
@@ -647,8 +746,9 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 				}
 				//
 			} else {
+				clear_cell_event();
 				request_slab_and_broadcast(st,el_count);
-				await_table_change(_slab_events);
+				await_cell_event_set();
 				contract(st,slab_index,slab_offset,el_count);
 			}
 		}
@@ -659,6 +759,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		sp_communication_cell							*_slab_com;
 		sp_communication_cell							*_end_slab_com;
 		uint8_t											_slab_cell;
+		sp_communication_cell							*_own_cell;
 		uint16_t										_particpating_thread_count;
 		bool											_allocator{false};
 

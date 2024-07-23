@@ -1574,11 +1574,11 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			uint8_t elements_buffer[bytes_needed];
 			hh_element *el = (hh_element *)(&elements_buffer[0]);
 			hh_element *end_els = (hh_element *)(&elements_buffer[0] + bytes_needed);
-
+			//
 			add_reader(base);
-
+			//
 			_SP.load_bytes(btype,base->_slab_index,base->_slab_offset, elements_buffer, bytes_needed);
-
+			//
 			auto count = base->_bucket_count;
 			while ( (el < end_els) && (count > 0)) {
 				if ( el->c.key != UINT32_MAX ) {
@@ -1589,9 +1589,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				}
 				el++; count--;
 			}
-
+			//
 			remove_reader(base);
-
 			//
 			return UINT32_MAX;
 		}
@@ -1620,7 +1619,6 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			if ( el_key == UINT32_MAX ) return UINT64_MAX;
 			//
 			uint64_t loaded_key = (((uint64_t)el_key) << HALF) | h_bucket; // LOADED
-
 			// 
 			uint8_t selector = 0;
 			if ( selector_bit_is_set(h_bucket,selector) ) { // get the selector
@@ -1643,9 +1641,9 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			uint8_t elements_buffer[bytes_needed];
 			hh_element *el = (hh_element *)(&elements_buffer[0]);
 			hh_element *end_els = (hh_element *)(&elements_buffer[0] + bytes_needed);
-
+			//
 			_SP.load_bytes(btype,base->_slab_index,base->_slab_offset, elements_buffer, bytes_needed);
-
+			//
 			auto count = base->_bucket_count;
 			while ( (el < end_els) && (count > 0)) {
 				if ( el->c.key != UINT32_MAX ) {
@@ -1718,16 +1716,16 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			uint8_t elements_buffer[bytes_needed];
 			hh_element *el = (hh_element *)(&elements_buffer[0]);
 			hh_element *end_els = (hh_element *)(&elements_buffer[0] + bytes_needed);
-
+			//
 			_SP.load_bytes(btype,base->_slab_index,base->_slab_offset, elements_buffer, bytes_needed);
-
+			//
 			auto count = base->_bucket_count;
 			while ( (el < end_els) && (count > 0)) {
 				if ( el->c.key != UINT32_MAX ) {
 					if ( el->c.key == el_key ) {
 						el->tv.value = 0;
-						remove_reader(base);
-						wait_for_readers(base,true);
+						remove_reader(base);			// no reading anymore
+						wait_for_readers(base,true);	// wait for other readers and ops
 						el->c.key = UINT32_MAX;
 						el->tv.taken = 0;
 						_SP.unload_bytes(btype,base->_slab_index,base->_slab_offset, elements_buffer, bytes_needed);
