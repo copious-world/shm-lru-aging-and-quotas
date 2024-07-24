@@ -69,7 +69,7 @@ class TierAndProcManager : public LRU_Consts {
 								map<key_t,void *> &lru_segs, 
 									map<key_t,void *> &hh_table_segs, 
 											map<key_t,size_t> &seg_sizes,
-												bool am_initializer, uint32_t proc_number,
+												bool am_initializer, stp_table_choice tchoice, uint32_t proc_number,
 													uint32_t num_procs, uint32_t num_tiers,
 														uint32_t els_per_tier, uint32_t max_obj_size,void **random_segs = nullptr) {
 			//
@@ -109,7 +109,7 @@ class TierAndProcManager : public LRU_Consts {
 				//
 				LRU_c_impl *lru = _tiers[tier];
 				if ( lru != nullptr ) {
-					lru->set_hash_impl(hh_region,hh_seg_sz,els_per_tier);
+					lru->set_hash_impl(hh_region,hh_seg_sz,els_per_tier,tchoice);
 					if ( random_seg_ref != nullptr ) {
 						lru->set_random_bits(*random_seg_ref++);
 					}

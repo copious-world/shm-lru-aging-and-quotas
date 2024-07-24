@@ -26,6 +26,7 @@ using namespace std;
 
 #include "hmap_interface.h"
 #include "node_shm_HH.h"
+#include "node_shm_sparse_slabs.h"
 
 #include "holey_buffer.h"
 #include "atomic_proc_rw_state.h"
@@ -103,6 +104,15 @@ const uint32_t TOTAL_ATOMIC_OFFSET = (OFFSET_TO_HASH + sizeof(uint64_t));
 //
 const uint32_t DEFAULT_MICRO_TIMEOUT = 2; // 2 seconds
 
+
+
+// ----
+
+typedef enum STP_table_choice {
+	STP_TABLE_HH,
+	STP_TABLE_SLABS,
+	STP_TABLE_INTERNAL_ONLY
+} stp_table_choice;
 
 // uint64_t hash is the augmented hash...
 
@@ -348,9 +358,25 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 		 * set_hash_impl - allow the user class to determine the implementation of the hash table. 
 		 * -- called by initHopScotch -- set two paritions servicing a random selection.
 		*/
-		void set_hash_impl(void *hh_region,size_t hh_seg_sz,uint32_t els_per_tier) {
+		void set_hash_impl(void *hh_region,size_t hh_seg_sz,uint32_t els_per_tier,stp_table_choice tchoice) {
 			uint8_t *reg1 = (uint8_t *)hh_region;
-			_hmap = new HH_map<>(reg1,hh_seg_sz,els_per_tier,_am_initializer);
+			switch (tchoice) {
+				case STP_TABLE_HH: {
+					_hmap = new HH_map<>(reg1,hh_seg_sz,els_per_tier,_am_initializer);
+					break;
+				}
+				case STP_TABLE_SLABS: {
+					_hmap = new SSlab_map<>(reg1,hh_seg_sz,els_per_tier,_am_initializer);
+					break;
+				}
+				case STP_TABLE_INTERNAL_ONLY:
+				default: {
+					_hmap = nullptr;
+					cout << "STP_TABLE_INTERNAL_ONLY is not implemented" << endl;
+					break;
+				}
+			}
+
 		}
 
 

@@ -30,6 +30,7 @@
 #include "entry_holder.h"
 #include "slab_provider.h"
 
+
 /**
  * API exposition
  * 
@@ -68,223 +69,7 @@ using namespace std;
 // 
 
 
-typedef enum {
-	HH_FROM_EMPTY,			// from zero 
-	HH_FROM_BASE,			// overwritten and old value queued  (wait during overwrite)
-	HH_FROM_BASE_AND_WAIT,	// queued no overwrite (no wait)
-	HH_USURP,			// specifically a member is being overwritten
-	HH_USURP_BASE,		// secondary op during usurp (may not need to wait)
-	HH_DELETE, 			// more generally members
-	HH_DELETE_BASE,		// specifically rewiting the base or completely erasing it
-	HH_ADDER_STATES
-} hh_adder_states;
-
-
-/*
-	QueueEntryHolder ...
-*/
-
-/** 
- * q_entry is struct Q_ENTRY
-*/
-typedef struct Q_ENTRY {
-	public:
-		//
-		atomic<uint32_t>	*control_bits;
-		sp_element 			*hash_ref;
-		//
-		uint32_t 			cbits;
-		uint32_t 			cbits_op;
-		uint32_t 			cbits_op_base;
-		uint32_t 			h_bucket;
-		uint32_t			el_key;
-		uint32_t			value;
-		hh_element			*buffer;
-		hh_element			*end;
-		uint8_t				hole;
-		uint8_t				which_table;
-		hh_adder_states		update_type;
-		//
-} q_entry;
-
-
-
-/** 
- * q_entry is struct Q_ENTRY
-*/
-typedef struct C_ENTRY {
-	public:
-		//
-		sp_element 		*hash_ref;
-		hh_element		*buffer;
-		hh_element		*end;
-		uint32_t 		cbits;
-		uint8_t			which_table;
-		//
-} crop_entry;
-
-
-/**
- * QueueEntryHolder uses q_entry in SharedQueue_SRSW<q_entry,ExpectedMax>
-*/
-
-template<uint16_t const ExpectedMax = 100>
-class QueueEntryHolder : public  SharedQueue_SRSW<q_entry,ExpectedMax> {
-
-	bool		compare_key(uint32_t key, q_entry *el,uint32_t &value) {
-		uint32_t ky = el->el_key;
-		value = el->value;
-		return (ky == key);
-	}
-
-};
-
-
-
-/**
- * QueueEntryHolder uses q_entry in SharedQueue_SRSW<q_entry,ExpectedMax>
- * 
- * 
-*/
-
-template<uint16_t const ExpectedMax = 64>
-class CropEntryHolder : public  SharedQueue_SRSW<crop_entry,ExpectedMax> {
-};
-
-
-
-
-typedef struct PRODUCT_DESCR {
-	//
-	uint32_t						partner_thread;
-	uint32_t						stats;
-	QueueEntryHolder<>				_process_queue[2];
-	CropEntryHolder<>				_to_cropping[2];
-
-} proc_descr;
-
-
-
-
-
-inline uint8_t get_b_offset_update(uint32_t &c) {
-	uint8_t offset = countr_zero(c);
-	c = c & (~((uint32_t)0x1 << offset));
-	return offset;
-}
-
-
-
-
-
-inline uint8_t get_b_reverse_offset_update(uint32_t &c) {
-	uint8_t offset = countl_zero(c);
-	c = c & (~((uint32_t)0x1 << offset));
-	return offset;
-}
-
-
-inline uint8_t search_range(uint32_t c) {
-	uint8_t max = countl_zero(c);
-	return max;
-}
-
-
-// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-static constexpr uint32_t zero_levels[32] {
-	~(0xFFFFFFFF << 1), ~(0xFFFFFFFF << 2), ~(0xFFFFFFFF << 3), ~(0xFFFFFFFF << 4), ~(0xFFFFFFFF << 5),
-	~(0xFFFFFFFF << 6), ~(0xFFFFFFFF << 7), ~(0xFFFFFFFF << 8), ~(0xFFFFFFFF << 9), ~(0xFFFFFFFF << 10),
-	~(0xFFFFFFFF << 11),~(0xFFFFFFFF << 12),~(0xFFFFFFFF << 13),~(0xFFFFFFFF << 14),~(0xFFFFFFFF << 15),
-	~(0xFFFFFFFF << 16),~(0xFFFFFFFF << 17),~(0xFFFFFFFF << 18),~(0xFFFFFFFF << 19),~(0xFFFFFFFF << 20),
-	~(0xFFFFFFFF << 21),~(0xFFFFFFFF << 22),~(0xFFFFFFFF << 23),~(0xFFFFFFFF << 24),~(0xFFFFFFFF << 25),
-	~(0xFFFFFFFF << 26),~(0xFFFFFFFF << 27),~(0xFFFFFFFF << 28),~(0xFFFFFFFF << 29),~(0xFFFFFFFF << 30),
-	~(0xFFFFFFFF << 31), 0xFFFFFFFF
-};
-
-
-static constexpr uint32_t one_levels[32] {
-	(0xFFFFFFFF << 1), (0xFFFFFFFF << 2), (0xFFFFFFFF << 3), (0xFFFFFFFF << 4), (0xFFFFFFFF << 5),
-	(0xFFFFFFFF << 6), (0xFFFFFFFF << 7), (0xFFFFFFFF << 8), (0xFFFFFFFF << 9), (0xFFFFFFFF << 10),
-	(0xFFFFFFFF << 11),(0xFFFFFFFF << 12),(0xFFFFFFFF << 13),(0xFFFFFFFF << 14),(0xFFFFFFFF << 15),
-	(0xFFFFFFFF << 16),(0xFFFFFFFF << 17),(0xFFFFFFFF << 18),(0xFFFFFFFF << 19),(0xFFFFFFFF << 20),
-	(0xFFFFFFFF << 21),(0xFFFFFFFF << 22),(0xFFFFFFFF << 23),(0xFFFFFFFF << 24),(0xFFFFFFFF << 25),
-	(0xFFFFFFFF << 26),(0xFFFFFFFF << 27),(0xFFFFFFFF << 28),(0xFFFFFFFF << 29),(0xFFFFFFFF << 30),
-	(0xFFFFFFFF << 31), 0
-};
-
-//
-/**
- * zero_above
- */
-static uint32_t zero_above(uint8_t hole) {
-	if ( hole >= 31 ) {
-		return  0xFFFFFFFF;
-	}
-	return zero_levels[hole];
-}
-
-
-/**
- * ones_above
- */
-
-		//
-static uint32_t ones_above(uint8_t hole) {
-	if ( hole >= 31 ) {
-		return  0;
-	}
-	return one_levels[hole];
-}
-
-
-
-/**
- * el_check_end
-*/
-
-static inline sp_element *el_check_end(sp_element *ptr, sp_element *buffer, sp_element *end) {
-	if ( ptr >= end ) return buffer;
-	return ptr;
-}
-
-
-/**
- * el_check_beg_wrap
-*/
-
-static inline sp_element *el_check_beg_wrap(sp_element *ptr, sp_element *buffer, sp_element *end) {
-	if ( ptr < buffer ) return (end - buffer + ptr);
-	return ptr;
-}
-
-
-/**
- * el_check_end_wrap
-*/
-
-static inline sp_element *el_check_end_wrap(sp_element *ptr, sp_element *buffer, sp_element *end) {
-	if ( ptr >= end ) {
-		uint32_t diff = (ptr - end);
-		return buffer + diff;
-	}
-	return ptr;
-}
-
-
-
-
-
-typedef enum {
-	HH_OP_NOOP,
-	HH_OP_CREATION,
-	HH_OP_USURP,
-	HH_OP_MEMBER_IN,
-	HH_OP_MEMBER_OUT,
-	HH_ALL_OPS
-} hh_creation_ops;
-
-
+#include "hh_queues_and_states.h"
 
 
 
@@ -292,25 +77,24 @@ typedef enum {
 // HHash <- HHASH
 
 /**
- * CLASS: HH_map
+ * CLASS: SS_map
  * 
- * Initialization of shared memory sections... 
+ * Sparse Slabs
  * 
 */
 
 
 template<const uint32_t NEIGHBORHOOD = 32>
-class HH_map : public Random_bits_generator<>, public HMap_interface {
-
+class SSlab_map : public Random_bits_generator<>, public HMap_interface {
 
 	public:
 
-		// LRU_cache -- constructor
-		HH_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
+		// SSlab_map LRU_cache -- constructor
+		SSlab_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
 			initialize_all(region, seg_sz, max_element_count, num_threads, am_initializer);
 		}
 
-		virtual ~HH_map() {
+		virtual ~SSlab_map() {
 		}
 
 	public: 
@@ -437,8 +221,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			//
 
 		// threads ...
-			auto proc_regions_size = num_threads*sizeof(proc_descr);
-			_process_table = (proc_descr *)(_region_HV_1_end);
+			auto proc_regions_size = num_threads*sizeof(sp_proc_descr);
+			_process_table = (sp_proc_descr *)(_region_HV_1_end);
 			_end_procs = _process_table + num_threads;
 			//
 			if ( am_initializer ) {
@@ -483,7 +267,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			uint32_t hv_offset_1 = header_size;
 			uint32_t next_hh_offset = (hv_offset_1 + vh_region_size);  // now, the next array of buckets and values (controls are the very end for both)
-			uint32_t proc_region_size = num_threads*sizeof(proc_descr);
+			uint32_t proc_region_size = num_threads*sizeof(sp_proc_descr);
 			//
 			uint32_t predict = atomics_size + next_hh_offset*2 + c_regions_size + proc_region_size;
 			return predict;
@@ -754,7 +538,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * 
 		 * 	<-- called by prepare_for_add_key_value_known_refs -- which is application facing.
 		*/
-		atomic<uint32_t> *_get_member_bits_slice_info(uint32_t h_bucket,uint8_t &which_table,uint32_t &c_bits,uint32_t &c_bits_op,uint32_t &c_bits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) {
+		atomic<uint32_t> *_get_member_bits_slice_info(uint32_t h_bucket,uint8_t &which_table,uint32_t &c_bits,uint32_t &c_bits_op,uint32_t &c_bits_base_ops,sp_element **bucket_ref,sp_element **buffer_ref,sp_element **end_buffer_ref,[[maybe_unused]] CBIT_stash_holder *cbit_stashes[4]) {
 			//
 			if ( h_bucket >= _max_n ) {   // likely the caller should sort this out
 				h_bucket -= _max_n;  // let it be circular...
@@ -773,21 +557,17 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			sp_element *el_0 = buffer0 + h_bucket;
 			atomic<uint32_t> *a_cbits0 = (atomic<uint32_t> *)(&(el_0->_bucket_count));
-			auto count0 = a_cbits0->load(std::memory_order_acquire);
-			uint32_t c0_ops = 0;
-			uint8_t backref0 = 0;
-			uint32_t c0_op_base = 0;
-			sp_element *base0 = nullptr;		// base0 stays null unless a member refers to a base
+			count0 = a_cbits0->load(std::memory_order_acquire);
 			//
 
 			//
 			// look in the buffer 1
-			hh_element *buffer1		= _region_HV_1;
-			hh_element *end_buffer1	= _region_HV_1_end;
+			sp_element *buffer1		= _region_HV_1;
+			sp_element *end_buffer1	= _region_HV_1_end;
 			//
-			hh_element *el_1 = buffer1 + h_bucket;
+			sp_element *el_1 = buffer1 + h_bucket;
 			atomic<uint32_t> *a_cbits1 = (atomic<uint32_t> *)(&(el_0->_bucket_count));
-			auto count1 = a_cbits1->load(std::memory_order_acquire);
+			count1 = a_cbits1->load(std::memory_order_acquire);
 
 			//	make selection of slice
 			auto selector = _hlpr_select_insert_buffer(count0,count1);
@@ -795,7 +575,6 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			// confirmed... set output parameters
 			atomic<uint32_t> *a_cbits = nullptr;
-			hh_element *base = nullptr;
 			//
 			which_table = selector;
 			//
@@ -803,21 +582,13 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				*bucket_ref = el_0;
 				*buffer_ref = buffer0;
 				*end_buffer_ref = end_buffer0;
-				c_bits = c0;		// real cbits
-				c_bits_op = c0_ops;
-				c_bits_base_ops = c0_op_base;
 				//
-				base = base0;		// may be null if el_0 is a base
 				a_cbits = a_cbits0;
 			} else {
 				*bucket_ref = el_1;
 				*buffer_ref = buffer1;
 				*end_buffer_ref = end_buffer1;
-				c_bits = c1;		// real cbits
-				c_bits_op = c1_ops;
-				c_bits_base_ops = c1_op_base;
 				//
-				base = base1;		// may be null if el_1 is a base
 				a_cbits = a_cbits1;
 			}
 			//
@@ -887,7 +658,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * 
 		*/
 		bool is_restore_queue_empty(uint8_t thread_id, uint8_t which_table) {
-			proc_descr *p = _process_table + thread_id;
+			sp_proc_descr *p = _process_table + thread_id;
 			bool is_empty = p->_process_queue[which_table].empty();
 #ifndef __APPLE__
 
@@ -914,8 +685,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * hh_element *end
 		 * uint8_t &require_queue
 		*/
-		void enqueue_restore(hh_adder_states update_type, atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t cbits_op, uint32_t cbits_op_base, sp_element *hash_ref, uint32_t h_bucket, uint32_t el_key, uint32_t value, uint8_t which_table, hh_element *buffer, hh_element *end,uint8_t require_queue) {
-			q_entry get_entry;
+		void enqueue_restore(hh_adder_states update_type, atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t cbits_op, uint32_t cbits_op_base, sp_element *hash_ref, uint32_t h_bucket, uint32_t el_key, uint32_t value, uint8_t which_table, sp_element *buffer, sp_element *end,uint8_t require_queue) {
+			sp_q_entry get_entry;
 			//
 			get_entry.update_type = update_type;
 			get_entry.control_bits = control_bits;
@@ -930,7 +701,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			get_entry.buffer = buffer;
 			get_entry.end = end;
 			//
-			proc_descr *p = _process_table + require_queue;
+			sp_proc_descr *p = _process_table + require_queue;
 			//
 			p->_process_queue[which_table].push(get_entry); // by ref
 		}
@@ -940,11 +711,11 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		/**
 		 * dequeue_restore
 		*/
-		void dequeue_restore(hh_adder_states &update_type, atomic<uint32_t> **control_bits_ref, uint32_t &cbits, uint32_t &cbits_op, uint32_t &cbits_op_base, sp_element **hash_ref_ref, uint32_t &h_bucket, uint32_t &el_key, uint32_t &value, uint8_t &which_table, uint8_t assigned_thread_id, hh_element **buffer_ref, hh_element **end_ref) {
+		void dequeue_restore(hh_adder_states &update_type, atomic<uint32_t> **control_bits_ref, uint32_t &cbits, uint32_t &cbits_op, uint32_t &cbits_op_base, sp_element **hash_ref_ref, uint32_t &h_bucket, uint32_t &el_key, uint32_t &value, uint8_t &which_table, uint8_t assigned_thread_id, sp_element **buffer_ref, sp_element **end_ref) {
 			//
-			q_entry get_entry;
+			sp_q_entry get_entry;
 			//
-			proc_descr *p = _process_table + assigned_thread_id;
+			sp_proc_descr *p = _process_table + assigned_thread_id;
 			//
 			p->_process_queue[which_table].pop(get_entry); // by ref
 			//
@@ -959,8 +730,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			el_key = get_entry.el_key;
 			value = get_entry.value;
 			which_table = get_entry.which_table;
-			hh_element *buffer = get_entry.buffer;
-			hh_element *end = get_entry.end;
+			sp_element *buffer = get_entry.buffer;
+			sp_element *end = get_entry.end;
 			//
 			*hash_ref_ref = hash_ref;
 			*buffer_ref = buffer;
@@ -972,8 +743,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		/**
 		 * enqueue_cropping
 		*/
-		void enqueue_cropping(sp_element *hash_ref,uint32_t cbits,hh_element *buffer,hh_element *end,uint8_t which_table) {
-			crop_entry get_entry;
+		void enqueue_cropping(sp_element *hash_ref,uint32_t cbits,sp_element *buffer,sp_element *end,uint8_t which_table) {
+			sp_crop_entry get_entry;
 			//
 			get_entry.hash_ref = hash_ref;
 			get_entry.cbits = cbits;
@@ -981,7 +752,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			get_entry.end = end;
 			get_entry.which_table = which_table;
 			//
-			proc_descr *p = _process_table + _round_robbin_proc_table_threads;
+			sp_proc_descr *p = _process_table + _round_robbin_proc_table_threads;
 			//
 			_round_robbin_proc_table_threads++;
 			if ( _round_robbin_proc_table_threads >= _num_threads ) _round_robbin_proc_table_threads = 1;
@@ -994,11 +765,11 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		/**
 		 * dequeue_cropping
 		*/
-		void dequeue_cropping(sp_element **hash_ref_ref, uint32_t &cbits, uint8_t &which_table, uint8_t assigned_thread_id , hh_element **buffer_ref, hh_element **end_ref) {
+		void dequeue_cropping(sp_element **hash_ref_ref, uint32_t &cbits, uint8_t &which_table, uint8_t assigned_thread_id , sp_element **buffer_ref, sp_element **end_ref) {
 			//
-			crop_entry get_entry;
+			sp_crop_entry get_entry;
 			//
-			proc_descr *p = _process_table + assigned_thread_id;
+			sp_proc_descr *p = _process_table + assigned_thread_id;
 			//
 			p->_to_cropping[which_table].pop(get_entry); // by ref
 			//
@@ -1006,8 +777,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			cbits = get_entry.cbits;
 			which_table = get_entry.which_table;
 			//
-			hh_element *buffer = get_entry.buffer;
-			hh_element *end = get_entry.end;
+			sp_element *buffer = get_entry.buffer;
+			sp_element *end = get_entry.end;
 			//
 			*hash_ref_ref = hash_ref;
 			*buffer_ref = buffer;
@@ -1048,7 +819,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * is_restore_queue_empty - check on the state of the restoration queue.
 		*/
 		bool is_cropping_queue_empty(uint8_t thread_id,uint8_t which_table) {
-			proc_descr *p = _process_table + thread_id;
+			sp_proc_descr *p = _process_table + thread_id;
 			bool is_empty = p->_to_cropping[which_table].empty();
 #ifndef __APPLE__
 
@@ -1064,7 +835,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * wakeup_value_restore
 		*/
 
-		void wakeup_value_restore(hh_adder_states update_type, atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t cbits_op, uint32_t cbits_op_base, hh_element *bucket, uint32_t h_start, uint32_t el_key, uint32_t value, uint8_t which_table, hh_element *buffer, hh_element *end, CBIT_stash_holder *csh) {
+		void wakeup_value_restore(hh_adder_states update_type, atomic<uint32_t> *control_bits, uint32_t cbits, uint32_t cbits_op, uint32_t cbits_op_base, sp_element *bucket, uint32_t h_start, uint32_t el_key, uint32_t value, uint8_t which_table, sp_element *buffer, sp_element *end, CBIT_stash_holder *csh) {
 			// this queue is jus between the calling thread and the service thread belonging to just this process..
 			// When the thread works it may content with other processes for the hash buckets on occassion.
 			auto service_thread = csh->_service_thread;
@@ -1087,7 +858,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * cbits - the membership map (not the operational version)
 		*/
 
-		void submit_for_cropping(hh_element *base,uint32_t cbits,hh_element *buffer,hh_element *end,uint8_t which_table) {
+		void submit_for_cropping(sp_element *base,uint32_t cbits,sp_element *buffer,sp_element *end,uint8_t which_table) {
 			enqueue_cropping(base,cbits,buffer,end,which_table);
 			wake_up_one_cropping();
 		}
@@ -1096,8 +867,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 	public: 
 
 		// threads ...
-		proc_descr						*_process_table;						
-		proc_descr						*_end_procs;
+		sp_proc_descr						*_process_table;						
+		sp_proc_descr						*_end_procs;
 
 		uint8_t							_round_robbin_proc_table_threads{1};
 		//
@@ -1165,9 +936,9 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * cbit_stashes		- stash object references, one if the bucket is a base, two if the bucket is a member with the second being the stash of the base
 		*/
 
-		void _adder_bucket_queue_release(atomic<uint32_t> *control_bits, uint32_t el_key, uint32_t h_bucket, uint32_t offset_value, uint8_t which_table, uint32_t cbits, uint32_t cbits_op,uint32_t cbits_base_op, hh_element *bucket, hh_element *buffer, hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) {
+		void _adder_bucket_queue_release(atomic<uint32_t> *control_bits, uint32_t el_key, uint32_t h_bucket, uint32_t offset_value, uint8_t which_table, uint32_t cbits, uint32_t cbits_op,uint32_t cbits_base_op, sp_element *bucket, sp_element *buffer, sp_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) {
 			//
-			wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, tmp_key, tmp_value, which_table, buffer, end_buffer, cbit_stashes[0]);
+			wakeup_value_restore(HH_FROM_BASE_AND_WAIT, control_bits, cbits, cbits_op, cbits_base_op, bucket, h_bucket, el_key, offset_value, which_table, buffer, end_buffer, cbit_stashes[0]);
 			//
 		}
 
@@ -1196,7 +967,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * 
 		*/
 
-		void _cropper(sp_element *base, hh_element *buffer, hh_element *end) {
+		void _cropper(sp_element *base) {
 			//
 			wait_for_readers(base,true);
 
@@ -1220,7 +991,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			}
 			//
 			_SP.unload_bytes(btype,base->_slab_index,base->_slab_offset, elements_buffer, bytes_needed);
-			if ( (_SP.bytes_needed(byte)/2) > base->_bucket_count ) {
+			if ( (_SP.bytes_needed(btype)/2) > base->_bucket_count ) {
 				contract_base(base);
 			}
 			//
@@ -1257,16 +1028,17 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 */
 		void wait_for_readers(sp_element *base,[[maybe_unused]] bool lock) {
 			//
+			uint32_t stash = 0;
+			atomic<uint32_t> *a_readers = (atomic<uint32_t> *)(&(base->_reader_ops));
+			atomic<uint32_t> *a_stash = (atomic<uint32_t> *)(&(base->_stash_ops));
 			do {
-				atomic<uint32_t> *a_readers = (atomic<uint32_t> *)(&(base->_reader_ops));
 				auto readers = a_readers->load(std::memory_order_acquire);
-				if ( !tbits_sem_at_zero(reader) ) {
+				if ( !tbits_sem_at_zero(readers) ) {
 					tick();
-					reader = a_readers->load(std::memory_order_acquire);
+					readers = a_readers->load(std::memory_order_acquire);
 				}
 				//
-				atomic<uint32_t> *a_stash = (atomic<uint32_t> *)(&(base->_stash_ops));
-				auto stash = a_stash->load(std::memory_order_acquire);
+				stash = a_stash->load(std::memory_order_acquire);
 				//
 				while ( base_in_operation(stash) ) {  // also wait for other edit operations
 					tick();
@@ -1330,8 +1102,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 				//
 				atomic<uint32_t> *a_readers = (atomic<uint32_t> *)(&(base->_reader_ops));
 				auto readers = a_readers->load(std::memory_order_acquire);
-				if ( !tbits_sem_at_zero(reader) ) {
-					reader = a_readers->fetch_sub(TBITS_READER_SEM_INCR,std::memory_order_acq_rel);
+				if ( !tbits_sem_at_zero(readers) ) {
+					readers = a_readers->fetch_sub(TBITS_READER_SEM_INCR,std::memory_order_acq_rel);
 				}
 				if ( (readers-1) == 0 ) {
 					while ( (stash & READER_CBIT_SET) != 0 ) {
@@ -1351,7 +1123,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			auto st = base->_slab_type;
 			auto si = base->_slab_index;
 			auto so = base->_slab_offset;
-			_SP.expand(st,si,so,( _max_n/pow((uint8_t)2,(st+1)) ));
+			_SP.expand(st,si,so,( _max_n/(1 << (st+1)) ));
 		}
 
 
@@ -1362,7 +1134,24 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			auto st = base->_slab_type;
 			auto si = base->_slab_index;
 			auto so = base->_slab_offset;
-			_SP.contract(st,si,so,( _max_n/pow((uint8_t)2,st) ));
+			_SP.contract(st,si,so,( _max_n/(1 << (st+1)) ));
+		}
+
+
+		hh_element *ref_oldest(hh_element *elements_buffer,hh_element *end_els) {
+			hh_element *el = elements_buffer;
+			hh_element *oldest = el;
+			auto timed = el->tv.taken;
+			el++;
+			while ( el < end_els ) {
+				auto cmp_timed = el->tv.taken;
+				if ( cmp_timed < timed ) {
+					timed = cmp_timed;
+					oldest = el;
+				}
+				el++;
+			}
+			return el;
 		}
 
 
@@ -1383,8 +1172,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			uint32_t el_key = 0;
 			uint32_t offset_value = 0;
 			uint8_t which_table = slice_for_thread;
-			hh_element *buffer = nullptr;
-			hh_element *end_buffer = nullptr;
+			sp_element *buffer = nullptr;
+			sp_element *end_buffer = nullptr;
 			hh_adder_states update_type;
 			//
 			while ( is_restore_queue_empty(assigned_thread_id,slice_for_thread) ) wait_notification_restore();
@@ -1409,7 +1198,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 			if ( base->_bucket_count == max_els ) {
 				if ( max_els == 32 ) {
-					hh_element *oldest = pop_oldest(elements_buffer);
+					hh_element *oldest = ref_oldest((hh_element *)elements_buffer,end_els);
 					short_list_old_entry(oldest->c.key, oldest->tv.value, store_time);
 					memset((void *)oldest,0,_SP.bytes_needed(btype));
 					oldest->c.key = el_key;
@@ -1457,15 +1246,15 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			sp_element *base = nullptr;
 			uint32_t cbits = 0;
 			uint8_t which_table = slice_for_thread;
-			hh_element *buffer = nullptr;
-			hh_element *end = nullptr;
+			sp_element *buffer = nullptr;
+			sp_element *end = nullptr;
 			//
 			while ( is_cropping_queue_empty(assigned_thread_id,slice_for_thread) ) wait_notification_cropping();
 			//
 			dequeue_cropping(&base, cbits, which_table, assigned_thread_id, &buffer, &end);
 			// store... if here, it should be locked
 			// cbits, 
-			_cropper(base, buffer, end);
+			_cropper(base);
 		}
 
 
@@ -1501,8 +1290,9 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		*/
 		bool prepare_for_add_key_value_known_refs(atomic<uint32_t> **control_bits_ref,uint32_t h_bucket,uint8_t &which_table,uint32_t &cbits,uint32_t &cbits_op,uint32_t &cbits_base_ops,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) override {
 			//
+			// keeping this call compatible with the interface used by LRU without inspection in to references, just passing them on			
 			//
-			atomic<uint32_t> *a_c_bits = _get_member_bits_slice_info(h_bucket,which_table,cbits,cbits_op,cbits_base_ops,bucket_ref,buffer_ref,end_buffer_ref,cbit_stashes);
+			atomic<uint32_t> *a_c_bits = _get_member_bits_slice_info(h_bucket,which_table,cbits,cbits_op,cbits_base_ops,(sp_element **)bucket_ref,(sp_element **)buffer_ref,(sp_element **)end_buffer_ref,cbit_stashes);
 			//
 			if ( a_c_bits == nullptr ) return false;
 			*control_bits_ref = a_c_bits;
@@ -1523,7 +1313,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			if ( (offset_value != 0) &&  selector_bit_is_set(h_bucket,selector) ) {
 				//
-				_adder_bucket_queue_release(control_bits,el_key,h_bucket,offset_value,which_table,cbits,cbits_op,cbits_base_op,bucket,buffer,end_buffer,cbit_stashes);
+				_adder_bucket_queue_release(control_bits,el_key,h_bucket,offset_value,which_table,cbits,cbits_op,cbits_base_op,(sp_element *)bucket,(sp_element *)buffer,(sp_element *)end_buffer,cbit_stashes);
 				//
 			}
 		}
@@ -1730,7 +1520,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 						el->tv.taken = 0;
 						_SP.unload_bytes(btype,base->_slab_index,base->_slab_offset, elements_buffer, bytes_needed);
 						release_to_readers(base);
-						submit_for_cropping(base,cbits,buffer,end,selector);  // after a total swappy read, all BLACK keys will be at the end of members
+						submit_for_cropping(base,0,buffer,end,selector);  // after a total swappy read, all BLACK keys will be at the end of members
 						return el_key;
 					}
 				}
@@ -1770,4 +1560,4 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 };
 
 
-#endif // _H_HOPSCOTCH_HASH_SHM_
+#endif // _H_SPARSE_SLABS_HASH_SHM_

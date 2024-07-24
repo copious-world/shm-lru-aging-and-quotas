@@ -56,32 +56,29 @@ class Stack_simple {
 					seh = n_seh;
 					stack_header->_count++;
 				}
-				seh->_next = UINT32_MAX;
+				seh->_next = UINT16_MAX;
 			}
 		}
 
 		uint8_t *pop(void) {
-			stack_el_header *seh = (stack_el_header *)_region;
-			auto top_off = seh->_next;
 			//
 			stack_el_stack_header *stack_header = (stack_el_stack_header *)_region;
-			if ( (top_off == UINT32_MAX) || (stack_header->_count == 0)) {
+			auto top_off = stack_header->_next;
+			if ( (top_off == UINT16_MAX) || (stack_header->_count == 0)) {
 				return nullptr;
 			}
-			stack_el_stack_header *stack_header = (stack_el_stack_header *)seh;
 			stack_header->_count--;
 			stack_el_header *top = (stack_el_header *)(_region + top_off);
-			seh->_next = top_off;
+			stack_header->_next = top->_next;
 			uint8_t *el = (uint8_t *)(top + 1);
 			return el;
 		}
 
 		void push(uint8_t *el) {
 			stack_el_header *ret = (stack_el_header *)(el - sizeof(stack_el_header));
-			stack_el_header *seh = (stack_el_header *)_region;
-			ret->_next = seh->_next;
-			seh->_next = (el - _region);
 			stack_el_stack_header *stack_header = (stack_el_stack_header *)_region;
+			ret->_next = stack_header->_next;
+			stack_header->_next = (el - _region);
 			stack_header->_count++;
 		}
 
@@ -139,8 +136,8 @@ static inline SP_slab_types prev_slab_type(SP_slab_types st) {
 typedef struct SP_element {
 	SP_slab_types		_slab_type;			// + 8
 	uint8_t				_bucket_count;		// + 8		// counts all included space takers including deletes -- reduced by cropping
-	uint16_t			_slab_index;		// + 16 = 32
-	uint32_t			_slab_offset;		// + 16 = 64
+	key_t				_slab_index;		// + 32 = 48
+	uint16_t			_slab_offset;		// + 16 = 64
 	uint32_t			_stash_ops;			// same as cbits ... except that membership role is not in use
 	uint32_t			_reader_ops;		// same as tbits ... except that memory allocation is not kept
 } sp_element;  // 128 bits
@@ -157,7 +154,7 @@ typedef struct SP_communication_cell {
 	atomic_flag				_active;
 	SP_slab_types 			_st;
 	int						_res_id{-1};		// if < 0 by a lot (< -1 or < -10), then _offset is the start (non-mutable ref) of a region within the segment
-	uint16_t				_slab_index;
+	key_t					_slab_index;
 	size_t					_el_count;
 	uint32_t 				_offset{0};
 } sp_communication_cell;
@@ -181,12 +178,12 @@ class TokGenerator {
 
 		void set_token_grist_list(const char **file_names,uint16_t max_files) {
 			_max_files = max_files;
-			_grist_list = _grist_list;
+			_grist_list = file_names;
 			_counter = 0;
 		}
 
-		uint16_t gen_slab_index() {
-			if ( _counter >= _max_files ) return UINT32_MAX;
+		key_t gen_slab_index() {
+			if ( _counter >= _max_files ) return -1;
 			return ftok(_grist_list[_counter++],0);
 		}
 
@@ -249,6 +246,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 		uint32_t slab_size_bytes(SP_slab_types st,uint16_t el_count) {
 			uint32_t sz =((bytes_needed(st) + sizeof(stack_el_header))*el_count) + sizeof(stack_el_stack_header);
+			return sz;
 		}
 
 
@@ -284,7 +282,9 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 		void signal_cell_event_set(void) {
 			_own_cell->_active.test_and_set(std::memory_order_acq_rel);
+#ifndef __APPLE__
 			_own_cell->_active.notify_one();
+#endif
 		}
 
 		// ---
@@ -304,13 +304,17 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 		void set_event() {
 			while ( _slab_events->_table_change.test_and_set(std::memory_order_acq_rel) ) { tick(); }
+#ifndef __APPLE__
 			_slab_events->_table_change.notify_all();
+#endif
 		}
 
 
 		void  clear_event(void) {
 			_slab_events->_table_change.clear();
+#ifndef __APPLE__
 			_slab_events->_table_change.notify_all();
+#endif
 		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -335,7 +339,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 				void *slab = sp->slab;
 				SP_slab_types st = sp->st;
 				uint16_t el_count = sp->el_count;
-				uint16_t slab_index = sp->slab_index;
+				key_t slab_index = sp->slab_index;
 				//
 				add_slab_entry(slab_index, slab, st, el_count);
 			}
@@ -363,14 +367,14 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		
-		void add_slab_entry(uint16_t slab_index,void *slab,SP_slab_types st,uint16_t el_count) {
+		void add_slab_entry(key_t slab_index,void *slab,SP_slab_types st,uint16_t el_count) {
 			uint8_t *start = (uint8_t *)slab;
 			uint8_t *end = start + slab_size_bytes(st,el_count);   // has to include the stack implementation as well.
 			_slab_lookup[st][slab_index] = start;
 			_slab_ender_lookup[st][slab_index] = end;
 		}
 
-		void remove_slab_entry(uint16_t slab_index,SP_slab_types st) {
+		void remove_slab_entry(key_t slab_index,SP_slab_types st) {
 			delete _slab_lookup[st][slab_index];
 			delete _slab_ender_lookup[st][slab_index];
 		}
@@ -423,7 +427,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		 * slab_adder
 		 */
 
-		void *slab_adder(uint16_t slab_index,uint32_t offset,SP_slab_types st,uint16_t el_count) {
+		void *slab_adder(key_t slab_index,SP_slab_types st,uint16_t el_count) {
 			//
 			if ( _shm_attacher(slab_index,0) == 0 ) {
 				void *slab = get_addr(slab_index);
@@ -438,7 +442,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		 * slab_remover
 		 */
 
-		void slab_remover(uint16_t slab_index,SP_slab_types st) {
+		void slab_remover(key_t slab_index,SP_slab_types st) {
 			key_t key = slab_index;
 			detach(key,this->_allocator);
 			remove_slab_entry(slab_index, st); 
@@ -448,7 +452,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		/**
 		 * broadcast_slab
 		 */
-		void broadcast_slab(uint16_t slab_index,uint32_t offset,SP_slab_types st,uint16_t el_count) {
+		void broadcast_slab(key_t slab_index,[[maybe_unused]] uint32_t offset,SP_slab_types st,uint16_t el_count) {
 			//
 			if ( _slab_events == nullptr ) {
 				string  msg = "Uninitialized com buffer in slab handler";
@@ -514,11 +518,11 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		 * unload_msg_and_add_slab
 		 */
 		void unload_msg_and_add_slab(sp_communication_cell *cell) {
-			uint16_t slab_index = cell->_slab_index;
-			uint32_t offset = cell->_offset;
+			key_t slab_index = cell->_slab_index;
+			//uint32_t offset = cell->_offset;
 			SP_slab_types st = cell->_st;
 			uint16_t el_count = cell->_el_count;
-			slab_adder(slab_index,offset,st,el_count);
+			slab_adder(slab_index,st,el_count);
 		}
 
 
@@ -528,14 +532,13 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		 * note: only the caller detaches
 		 */
 		void unload_msg_and_remove_slab(sp_communication_cell *cell) {
-			uint16_t slab_index = cell->_slab_index;
+			key_t slab_index = cell->_slab_index;
 			SP_slab_types st = cell->_st;
 			slab_remover(slab_index, st);
 		}
 
 
 		uint16_t create_slab_and_broadcast(SP_slab_types st,uint16_t el_count) {
-			int res_id = 0;
 			uint32_t offset = 0;
 			auto slab_index = gen_slab_index();
 			pair<void *,void *> beg_end = create_slab(st,el_count,slab_index,offset);
@@ -575,14 +578,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 		void handle_receive_slab_event(void) {
 			//
-			auto op_cell = _slab_events->_which_cell;
-			//
-			sp_communication_cell *cell = _slab_com;
-			if ( cell >= _end_slab_com ) {
-				string  msg = "slab hanlder received message with out of bounds com cell";
-				throw std::runtime_error(msg);
-			}
-			if ( !(cell->_active) ) return;
+			sp_communication_cell *cell = _own_cell;
 			//
 			switch ( _slab_events->_op ) {
 				case SP_CELL_ADD: {
@@ -635,7 +631,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		void load_bytes(SP_slab_types st, uint16_t slab_index, uint32_t slab_offset, uint8_t *buffer, uint16_t sz) {
+		void load_bytes(SP_slab_types st, key_t slab_index, uint32_t slab_offset, uint8_t *buffer, uint16_t sz) {
 			uint8_t *slab = _slab_lookup[st][slab_index];
 			if ( slab == nullptr ) return;
 			uint8_t *el = slab + slab_offset;
@@ -644,7 +640,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		}
 
 
-		void unload_bytes(SP_slab_types st, uint16_t slab_index, uint32_t slab_offset, uint8_t *buffer, uint16_t sz) {
+		void unload_bytes(SP_slab_types st, key_t slab_index, uint32_t slab_offset, uint8_t *buffer, uint16_t sz) {
 			uint8_t *slab = _slab_lookup[st][slab_index];
 			if ( slab == nullptr ) return;
 			uint8_t *el = slab + slab_offset;
@@ -654,7 +650,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		void expand(SP_slab_types st,uint16_t &slab_index,uint32_t &slab_offset,uint16_t el_count) {
+		void expand(SP_slab_types st,key_t &slab_index,uint16_t &slab_offset,uint16_t el_count) {
 			//
 			uint16_t bytes_needed = this->bytes_needed(st);
 			uint8_t buffer[bytes_needed];
@@ -705,7 +701,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 
 
-		void contract(SP_slab_types st,uint16_t &slab_index,uint32_t &slab_offset,uint16_t el_count) {
+		void contract(SP_slab_types st,key_t &slab_index,uint16_t &slab_offset,uint16_t el_count) {
 			uint16_t bytes_needed = this->bytes_needed(st);
 			uint8_t buffer[bytes_needed];
 			//
@@ -764,8 +760,8 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		bool											_allocator{false};
 
 		Stack_simple									_stack_ops;
-		map<SP_slab_types,map<uint16_t,uint8_t *>> 		_slab_lookup;    // must preload all process
-		map<SP_slab_types,map<uint16_t,uint8_t *>> 		_slab_ender_lookup;    // must preload all process
+		map<SP_slab_types,map<key_t,uint8_t *>> 		_slab_lookup;    // must preload all process
+		map<SP_slab_types,map<key_t,uint8_t *>> 		_slab_ender_lookup;    // must preload all process
 };
 
 
