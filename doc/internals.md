@@ -384,3 +384,30 @@ This method makes its pass over each element in the same manner as `_editor_lock
 The same note applies to this methods as `_editor_locked_search_ref`.
 
 
+
+
+### `shm_sparse_slabs` -> Sparse Slabs
+
+
+The sparse slab component provides an alternative storage to the inerleaved Hopscotch variant of the hash table.
+
+This variant uses more memory by design and does not make as much use of atomics to handle thread/process contention for single cells. It leans on the atomics more for semaphore locking around cells. It requires more operations to wait. If a cell has more stored collisions than it has room for, it moves the cell to a roomier shared array, and it will create a whole new shared segment if it needs more cells of a certain size, rangning from 4 (four) to 32 (thirty-two) positions in a cell. In the unlikely event that a cell becomes full at the the maximum number of positions, then the oldest elements will be ported to older tiers in a similar fashion to the hopscotch variant discussed in the `shm_HH` module.
+
+This module is much smaller as a result. It depends upon a slab prover, in `slab_provider.h` for managing the storage required by cells. The cells themselves are specialized data structurs existing within a large first level segment that manage the state of the cell storage. Methods that find a cell (or collide into it) via the key modulus, will wait to access data, reading in the cell's elements in one operation and searching or updating the data on the stack. Update operations write the cell data back to the secondary segments while locking the cell from use by readers and other operations. 
+
+Readers will be able to read simultaneously. But, operations, including  add, delete, and update will lock.
+
+
+
+
+
+## Lower Level
+
+Included here are the description of basic classes supporting the submodules. A number of these classes are included only because they will operated within shared memory and available implementations to handle them come in large libraries often with complicated interfaces. So, in some sense, these classes are customized for this implementation.
+
+
+### `Simple_stack`
+
+
+
+

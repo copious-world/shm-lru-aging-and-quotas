@@ -1,6 +1,11 @@
 #pragma once
 
 
+// SPARSE SLAB OPTION
+//
+// a wait based operation option without interleaving (hence, excess memory)
+// fairly usual hash table... 
+
 
 #include <iostream>
 #include <atomic>
@@ -15,82 +20,8 @@ using namespace std;
 #include <sys/ipc.h>
 
 
-// SPARSE SLAB OPTION
-// a wait based operation option without interleaving (hence, excess memory)
-// fairly usual hash table... 
-
-
-typedef struct STACK_el_header {
-	uint16_t				_next;
-} stack_el_header;
-
-
-typedef struct STACK_el_stack__header {
-	uint16_t				_next;
-	uint16_t				_count;
-} stack_el_stack_header;
-
-/**
- * Stack_simple -- this is just a simple stack using offset values.
- * 
- */
-class Stack_simple {
-	public:
-		Stack_simple() {}
-		virtual ~Stack_simple(void) {}
-
-		void set_region(uint8_t *beg, uint8_t *end,uint16_t el_size = 0,bool initialize = false) {
-			_region = beg;
-			_end_region = end;
-			if ( initialize ) {
-				stack_el_header *seh = (stack_el_header *)beg;
-				stack_el_stack_header *stack_header = (stack_el_stack_header *)beg;
-				//
-				stack_header->_next = sizeof(stack_el_stack_header);
-				stack_header->_count = 0;
-				uint8_t *nxt = beg + seh->_next;
-				while ( nxt < end ) {
-					stack_el_header *n_seh = (stack_el_header *)nxt;
-					n_seh->_next = seh->_next + sizeof(stack_el_header) + el_size;
-					nxt = beg + n_seh->_next;
-					seh = n_seh;
-					stack_header->_count++;
-				}
-				seh->_next = UINT16_MAX;
-			}
-		}
-
-		uint8_t *pop(void) {
-			//
-			stack_el_stack_header *stack_header = (stack_el_stack_header *)_region;
-			auto top_off = stack_header->_next;
-			if ( (top_off == UINT16_MAX) || (stack_header->_count == 0)) {
-				return nullptr;
-			}
-			stack_header->_count--;
-			stack_el_header *top = (stack_el_header *)(_region + top_off);
-			stack_header->_next = top->_next;
-			uint8_t *el = (uint8_t *)(top + 1);
-			return el;
-		}
-
-		void push(uint8_t *el) {
-			stack_el_header *ret = (stack_el_header *)(el - sizeof(stack_el_header));
-			stack_el_stack_header *stack_header = (stack_el_stack_header *)_region;
-			ret->_next = stack_header->_next;
-			stack_header->_next = (el - _region);
-			stack_header->_count++;
-		}
-
-		bool empty(void) {
-			stack_el_stack_header *stack_header = (stack_el_stack_header *)_region;
-			return (stack_header->_count == 0);
-		}
-
-		uint8_t 				*_region;
-		uint8_t					*_end_region;
-	
-};
+#include "simple_stack.h"
+#include "tok_gen.h"
 
 
 // HH_element 128 bits or 16 bytes ;; for this implementation is given
@@ -111,7 +42,7 @@ static inline SP_slab_types next_slab_type(SP_slab_types st) {
 	if ( SP_slab_t_4 == st ) return SP_slab_t_8;
 	if ( SP_slab_t_8 == st ) return SP_slab_t_16;
 	if ( SP_slab_t_16 == st ) return SP_slab_t_32;
-	return SP_slab_t_4;
+	return SP_slab_t_32;
 }
 
 static inline SP_slab_types prev_slab_type(SP_slab_types st) {
@@ -168,33 +99,6 @@ typedef struct SP_comm_events {
 } sp_comm_events;
 
 
-// note: control threads will get an index to put into _which_cell;
-
-class TokGenerator {
-	public: 
-
-		TokGenerator(void) {}
-		virtual ~TokGenerator(void) {}
-
-		void set_token_grist_list(const char **file_names,uint16_t max_files) {
-			_max_files = max_files;
-			_grist_list = file_names;
-			_counter = 0;
-		}
-
-		key_t gen_slab_index() {
-			if ( _counter >= _max_files ) return -1;
-			return ftok(_grist_list[_counter++],0);
-		}
-
-		const char 		**_grist_list;
-		uint16_t		_max_files{0};
-		uint16_t		_counter{0};
-
-};
-
-
-
 // handle_receive_slab_event exists within a thread
 
 typedef struct SLAB_parameters {
@@ -207,6 +111,23 @@ typedef struct SLAB_parameters {
 
 /**
  * SlabProvider
+ * 
+ * 
+ * public:
+ * 
+ * 		bytes_needed(btype);
+ * 		max_els(base->_slab_type)
+ * 		uint32_t slab_size_bytes(SP_slab_types st,uint16_t el_count)
+ * 
+ * 		load_bytes(btype,base->_slab_index,base->_slab_offset, elements_buffer, bytes_needed)
+ * 		unload_bytes(btype,base->_slab_index,base->_slab_offset, elements_buffer, bytes_needed)
+ * 		expand(st,si,so,( _max_n/(1 << (st+1)) ));
+ * 		contract(st,si,so,( _max_n/(1 << (st+1)) ))
+ * 	
+ * 		void set_slabs_for_startup(slab_parameters *initial_slabs, uint8_t slab_count)
+ * 		void set_slab_communicator(void *com_area,uint16_t threads_procs_count,uint8_t assigned_cell)
+ * 		void slab_thread_runner([[maybe_unused]] int i)
+ * 
  */
 class SlabProvider : public SharedSegments, public TokGenerator {
 	//
@@ -245,7 +166,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 
 		uint32_t slab_size_bytes(SP_slab_types st,uint16_t el_count) {
-			uint32_t sz =((bytes_needed(st) + sizeof(stack_el_header))*el_count) + sizeof(stack_el_stack_header);
+			uint32_t sz =((bytes_needed(st) + sizeof(stack_el_header))*el_count) + sizeof(stack_stack_header);
 			return sz;
 		}
 
@@ -342,6 +263,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 				key_t slab_index = sp->slab_index;
 				//
 				add_slab_entry(slab_index, slab, st, el_count);
+				sp++;
 			}
 		}
 
@@ -352,7 +274,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 		void set_slab_communicator(void *com_area,uint16_t threads_procs_count,uint8_t assigned_cell) {
 			_slab_events = (sp_comm_events *)com_area;
-			_slab_com = (sp_communication_cell *)(_slab_events);
+			_slab_com = (sp_communication_cell *)(_slab_events + 1);
 			_end_slab_com = _slab_com + threads_procs_count;
 			_slab_cell = assigned_cell;
 			sp_communication_cell *own_cell = _slab_com + _slab_cell;
