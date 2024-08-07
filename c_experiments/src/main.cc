@@ -284,7 +284,6 @@ void test_slab_primitives(void) {
 void test_initialization(void) {
 //  * 		void slab_thread_runner([[maybe_unused]] int i)
 /*
-
 */
 
   const uint16_t tc = 12;
@@ -340,7 +339,30 @@ void test_initialization(void) {
     sp.unload_bytes(st, slab_index, slab_offset, buffer, bytes_needed);
     st = next_slab_type(st);
   }
+  //
 
+  sp_element spe;
+
+  cout << "expanded: st: " << sparms[0].st <<  " index: "  << sparms[0].slab_index << endl;
+
+  spe._bucket_count = 0;
+  spe._slab_index = sparms[0].slab_index;
+  spe._slab_type = sparms[0].st;
+  spe._slab_offset = sp.init_from_free(spe._slab_index);
+
+  st = sparms[0].st;
+  // uint16_t el_count_sub = 100/(1 << (st+1));
+  // cout << "expanding: " << el_count_sub << endl;      // init_from_free
+  cout << "expanded: st: " << spe._slab_type <<  " index: "  << spe._slab_index << " offset: " << spe._slab_offset << endl;
+  //
+  sp.expand(spe._slab_type,spe._slab_index,spe._slab_offset,el_count);
+  //
+  cout << "expanded: st: " << spe._slab_type <<  " index: "  << spe._slab_index << " offset: " << spe._slab_offset << endl;
+  //
+  sp.contract(spe._slab_type,spe._slab_index,spe._slab_offset,el_count);
+  //
+  cout << "contracted: st: " << spe._slab_type <<  " index: "  << spe._slab_index << " offset: " << spe._slab_offset << endl;
+  //
   cout << "finished" << endl;
 
 }

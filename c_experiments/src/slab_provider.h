@@ -263,6 +263,8 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 				key_t slab_index = sp->slab_index;
 				//
 				add_slab_entry(slab_index, slab, st, el_count);
+				auto slab_end = _slab_ender_lookup[st][slab_index];
+				_stack_ops.set_region((uint8_t *)slab,(uint8_t *)slab_end,bytes_needed(st),true);  // new slab, set up free stack
 				sp++;
 			}
 		}
@@ -466,7 +468,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 			pair<void *,void *> beg_end = create_slab(st,el_count,slab_index,offset);
 			void *new_slab = beg_end.first;
 			void *end_slab = beg_end.second;
-			_stack_ops.set_region((uint8_t *)new_slab,(uint8_t *)end_slab,true);  // new slab, set up free stack
+			_stack_ops.set_region((uint8_t *)new_slab,(uint8_t *)end_slab,bytes_needed(st),true);  // new slab, set up free stack
 			//
 			add_slab_entry(slab_index, new_slab, st, el_count);			// specifically, local tables
 			// communicate to consumers
@@ -546,6 +548,15 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 			return _stack_ops.pop();
 		}
 
+		uint16_t init_from_free(key_t slab_index) {
+			auto st = SP_slab_t_4;
+			uint8_t *slab = _slab_lookup[st][slab_index];
+			uint8_t *slab_end =_slab_ender_lookup[st][slab_index];
+			uint8_t *section = _from_free(slab,slab_end);
+			uint16_t slab_offset = (section - slab);
+			return slab_offset;
+		}
+
 		bool check_free(uint8_t *data,uint8_t *end_data) {
 			_stack_ops.set_region(data,end_data);
 			return !_stack_ops.empty();
@@ -572,7 +583,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-		void expand(SP_slab_types st,key_t &slab_index,uint16_t &slab_offset,uint16_t el_count) {
+		void expand(SP_slab_types &st,key_t &slab_index,uint16_t &slab_offset,uint16_t el_count) {
 			//
 			uint16_t bytes_needed = this->bytes_needed(st);
 			uint8_t buffer[bytes_needed];
@@ -623,7 +634,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 
 
-		void contract(SP_slab_types st,key_t &slab_index,uint16_t &slab_offset,uint16_t el_count) {
+		void contract(SP_slab_types &st,key_t &slab_index,uint16_t &slab_offset,uint16_t el_count) {
 			uint16_t bytes_needed = this->bytes_needed(st);
 			uint8_t buffer[bytes_needed];
 			//
