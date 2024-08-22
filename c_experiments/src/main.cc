@@ -368,6 +368,146 @@ void test_initialization(void) {
 }
 
 
+void test_main_thread_flow(void) {
+
+  test_SlabProvider sp;
+
+  uint8_t tc = 8;
+
+
+  uint8_t *slab_com =  new uint8_t[sizeof(sp_comm_events) + sizeof(sp_communication_cell)*tc];
+
+  uint16_t el_count = 100;
+
+  cout << "Setting slab communicator" << endl;
+  sp.set_slab_communicator(slab_com,tc,1);
+
+  const char *my_file_list[4] = {
+                                  "src/node_shm_HH.h", 
+                                  "src/shm_seg_manager.h", 
+                                  "src/hmap_interface.h",
+                                  "src/main.c"
+                                };
+
+  sp.set_token_grist_list(my_file_list,4);
+  //
+  slab_parameters sparms[4];
+  SP_slab_types st = SP_slab_t_4;
+
+  cout << "creating slab parameters" << endl;
+  for ( int i = 0; i < 4; i++ ) {
+    sparms[i].el_count = el_count;
+    sparms[i].st = st;
+    auto tk = sp.gen_slab_index();
+    sparms[i].slab_index = tk;
+
+    auto sz = sp.slab_size_bytes(st,el_count);
+
+    void *a_slab = new uint8_t[sz];
+    sparms[i].slab = a_slab;
+
+    st = next_slab_type(st);
+  }
+
+  cout << "setting slabs_for_startup" << endl;
+
+  auto sz = sp.slab_size_bytes(st,el_count);
+  uint8_t buffer[sz];
+  sp.set_test_region(buffer);
+
+  sp.set_slabs_for_startup(sparms,4);
+
+  sp._slab_events->_op = SP_CELL_ADD;
+  sp.handle_receive_slab_event();
+
+  sp._slab_events->_op = SP_CELL_REMOVE;
+  sp.handle_receive_slab_event();
+
+  //
+  uint8_t buffer2[sz];
+  sp.set_second_test_region(buffer2);
+
+  //
+  sp.set_allocator_role(false);
+  sp._slab_events->_op = SP_CELL_REQUEST;
+  sp.handle_receive_slab_event();
+
+  //
+  sp.set_allocator_role(true);
+  sp._slab_events->_op = SP_CELL_REQUEST;
+  sp.handle_receive_slab_event();
+  
+}
+
+
+void test_slab_threads() {
+  //
+  // slab_thread_runner
+  test_SlabProvider sp;
+
+  uint8_t tc = 2;
+
+  uint8_t *slab_com =  new uint8_t[sizeof(sp_comm_events) + sizeof(sp_communication_cell)*tc];
+
+  uint16_t el_count = 100;
+
+  cout << "Setting slab communicator" << endl;
+  sp.set_slab_communicator(slab_com,tc,1);
+
+  const char *my_file_list[4] = {
+                                  "src/node_shm_HH.h", 
+                                  "src/shm_seg_manager.h", 
+                                  "src/hmap_interface.h",
+                                  "src/main.c"
+                                };
+
+  sp.set_token_grist_list(my_file_list,4);
+  //
+  slab_parameters sparms[4];
+  SP_slab_types st = SP_slab_t_4;
+
+  cout << "creating slab parameters" << endl;
+  for ( int i = 0; i < 4; i++ ) {
+    sparms[i].el_count = el_count;
+    sparms[i].st = st;
+    auto tk = sp.gen_slab_index();
+    sparms[i].slab_index = tk;
+
+    auto sz = sp.slab_size_bytes(st,el_count);
+
+    void *a_slab = new uint8_t[sz];
+    sparms[i].slab = a_slab;
+
+    st = next_slab_type(st);
+  }
+
+  //
+  st = SP_slab_t_4;
+  auto sz = sp.slab_size_bytes(st,el_count);
+
+  uint8_t buffer2[sz];
+  sp.set_second_test_region(buffer2);
+
+
+  thread handler([&](void) {
+      sp.slab_thread_runner(0);
+      cout << " thread finished " << endl;
+  });
+
+  try {
+    sp.create_slab_and_broadcast(st,el_count);
+  } catch ( std::runtime_error e ) {
+    cout << e.what() << endl;
+  }
+
+
+  handler.join();
+
+  // while ( true ) tick();
+
+}
+
+
 
 /**
  * main ...
@@ -402,6 +542,7 @@ int main(int argc, char **argv) {
   test_toks();
   test_slab_primitives();
   test_initialization();
+  test_slab_threads();
 
   // ----
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;

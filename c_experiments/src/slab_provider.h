@@ -309,18 +309,17 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		 * create_resource
 		 */
 
-		// TODO
-
-		void *create_resource(key_t key,size_t bytes) {
+		virtual void *create_resource(key_t key,size_t bytes) {
+	cout << "creating a real resource" << endl;
 			if ( _shm_creator(key,bytes) == 0 ) {
 				return get_addr(key);
 			}
 			return nullptr;
 		}
 
-
-
-
+		/**
+		 * create_slab
+		 */
 
 		pair<void *,void *> create_slab(SP_slab_types st, uint16_t el_count, uint16_t slab_id, uint32_t &offset) {
 
@@ -351,11 +350,12 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		 * slab_adder
 		 */
 
-		void *slab_adder(key_t slab_index,SP_slab_types st,uint16_t el_count) {
+		virtual void *slab_adder(key_t slab_index,SP_slab_types st,uint16_t el_count) {
 			//
 			if ( _shm_attacher(slab_index,0) == 0 ) {
 				void *slab = get_addr(slab_index);
 				add_slab_entry(slab_index, slab, st, el_count);
+				return slab;
 			}
 			return nullptr;
 			//
@@ -383,7 +383,8 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 				throw std::runtime_error(msg);
 			}
 			//
-
+	cout << "broadcast_slab :: await_event_clear" << endl;
+			//
 			await_event_clear();
 			set_event();
 			_slab_events->_readers.store(0);
@@ -395,9 +396,10 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 			//
 			_slab_events->_op = SP_CELL_ADD;
 			_slab_events->_which_cell = _slab_cell;
-			_slab_events->_readers.store(_particpating_thread_count - 1);
 			//
 			_slab_events->_readers.store(_particpating_thread_count - 1);
+
+			cout << " count slab readers " <<  _slab_events->_readers.load(std::memory_order_acquire) << endl;
 			while ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
 				tick();
 			}
@@ -462,6 +464,9 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		}
 
 
+		/**
+		 * create_slab_and_broadcast
+		 */
 		uint16_t create_slab_and_broadcast(SP_slab_types st,uint16_t el_count) {
 			uint32_t offset = 0;
 			auto slab_index = gen_slab_index();
@@ -480,6 +485,9 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 
 		//
+		/**
+		 * unload_msg_and_create_slab
+		 */
 		void unload_msg_and_create_slab(sp_communication_cell *cell) {
 			if ( _allocator ) {
 				SP_slab_types st = cell->_st;
@@ -527,7 +535,9 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 			}
 			//
 			if ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
+cout << " decrement reader ";
 				auto remaining =_slab_events->_readers.fetch_sub(1,std::memory_order_acq_rel);
+cout << remaining << endl;
 				if ( remaining == 0 ) {
 					clear_event();
 				}
@@ -697,4 +707,50 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		map<SP_slab_types,map<key_t,uint8_t *>> 		_slab_ender_lookup;    // must preload all process
 };
 
+
+
+
+
+
+
+
+
+// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+class test_SlabProvider : public SlabProvider {
+	public:
+
+		test_SlabProvider() {}
+		virtual ~test_SlabProvider() {}
+
+
+		void set_test_region(void *tester) {
+			_test_region = tester;
+		}
+
+		void set_second_test_region(void *tester) {
+			_second_test_region = tester;
+		}
+
+		void *get_addr([[maybe_unused]] key_t key) {
+			return _test_region;
+		}
+
+		int detach([[maybe_unused]] key_t key,[[maybe_unused]] bool forceDestroy) {
+			return 0;
+		}
+
+		virtual void *slab_adder([[maybe_unused]] key_t slab_index,[[maybe_unused]] SP_slab_types st,[[maybe_unused]] uint16_t el_count) { 
+			add_slab_entry(slab_index, _second_test_region, st, el_count);
+			return _second_test_region;
+		}
+
+		virtual void *create_resource([[maybe_unused]] key_t key, [[maybe_unused]] size_t bytes) {
+cout << "creating a resource " << endl;
+			return _second_test_region;
+		}
+
+		void		*_test_region{nullptr};
+		void		*_second_test_region{nullptr};
+};
 
