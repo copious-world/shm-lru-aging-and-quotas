@@ -24,6 +24,15 @@ using namespace std;
 #include "tok_gen.h"
 
 
+#define DEBUG 1
+//#undef DEBUG
+
+#ifdef DEBUG
+#define VIRT virtual
+#else
+#define VIRT
+#endif
+
 // HH_element 128 bits or 16 bytes ;; for this implementation is given
 
 const uint8_t hh_el_size = 16;  // in bytes
@@ -274,6 +283,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 			_allocator = may_allocate;
 		}
 
+
 		void set_slab_communicator(void *com_area,uint16_t threads_procs_count,uint8_t assigned_cell) {
 			_slab_events = (sp_comm_events *)com_area;
 			_slab_com = (sp_communication_cell *)(_slab_events + 1);
@@ -309,8 +319,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		 * create_resource
 		 */
 
-		virtual void *create_resource(key_t key,size_t bytes) {
-	cout << "creating a real resource" << endl;
+		VIRT void *create_resource(key_t key,size_t bytes) {
 			if ( _shm_creator(key,bytes) == 0 ) {
 				return get_addr(key);
 			}
@@ -350,7 +359,7 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		 * slab_adder
 		 */
 
-		virtual void *slab_adder(key_t slab_index,SP_slab_types st,uint16_t el_count) {
+		VIRT void *slab_adder(key_t slab_index,SP_slab_types st,uint16_t el_count) {
 			//
 			if ( _shm_attacher(slab_index,0) == 0 ) {
 				void *slab = get_addr(slab_index);
@@ -366,26 +375,28 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		 * slab_remover
 		 */
 
-		void slab_remover(key_t slab_index,SP_slab_types st) {
+		VIRT void slab_remover(key_t slab_index,SP_slab_types st) {
 			key_t key = slab_index;
 			detach(key,this->_allocator);
 			remove_slab_entry(slab_index, st); 
 		}
 
 
+		int _ev_clear_count{0};
+
 		/**
 		 * broadcast_slab
 		 */
-		void broadcast_slab(key_t slab_index,[[maybe_unused]] uint32_t offset,SP_slab_types st,uint16_t el_count) {
+		void broadcast_slab_op(sp_cell_op op,key_t slab_index,[[maybe_unused]] uint32_t offset,SP_slab_types st,uint16_t el_count) {
 			//
 			if ( _slab_events == nullptr ) {
 				string  msg = "Uninitialized com buffer in slab handler";
 				throw std::runtime_error(msg);
 			}
 			//
-	cout << "broadcast_slab :: await_event_clear" << endl;
-			//
 			await_event_clear();
+
+cout << "event cleared " << (++_ev_clear_count) << endl;
 			set_event();
 			_slab_events->_readers.store(0);
 			//
@@ -394,12 +405,11 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 			_own_cell->_slab_index = slab_index;
 			_own_cell->_res_id = 0;
 			//
-			_slab_events->_op = SP_CELL_ADD;
+			_slab_events->_op = op;
 			_slab_events->_which_cell = _slab_cell;
 			//
 			_slab_events->_readers.store(_particpating_thread_count - 1);
-
-			cout << " count slab readers " <<  _slab_events->_readers.load(std::memory_order_acquire) << endl;
+			//
 			while ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
 				tick();
 			}
@@ -409,35 +419,25 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 
 
 		/**
+		 * broadcast_slab
+		 */
+		void broadcast_slab(key_t slab_index,[[maybe_unused]] uint32_t offset,SP_slab_types st,uint16_t el_count) {
+			broadcast_slab_op(SP_CELL_ADD,slab_index,offset,st,el_count);
+		}
+
+		/**
+		 * redactcast_slab_op
+		 */
+		void redactcast_slab_op(key_t slab_index,[[maybe_unused]] uint32_t offset,SP_slab_types st,uint16_t el_count) {
+			broadcast_slab_op(SP_CELL_REMOVE,slab_index,offset,st,el_count);
+		}
+
+		/**
 		 * request_slab_and_broadcast
 		 */
 		void request_slab_and_broadcast(SP_slab_types st,uint16_t el_count) {
-			//
-			if ( _slab_events == nullptr ) {
-				string  msg = "Uninitialized com buffer in slab handler";
-				throw std::runtime_error(msg);
-			}
-			//
-			await_event_clear();
-			set_event();
-			_slab_events->_readers.store(0);
-			//
-			_own_cell->_st = st;
-			_own_cell->_el_count = el_count;
-			_own_cell->_slab_index = 0;
-			_own_cell->_res_id = 0;
-			//
-			_slab_events->_op = SP_CELL_REQUEST;
-			_slab_events->_which_cell = _slab_cell;
-			_slab_events->_readers.store(_particpating_thread_count - 1);
-			//
-			//
-			while ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
-				tick();
-			}
-			//
+			broadcast_slab_op(SP_CELL_REQUEST,0,0,st,el_count);
 		}
-
 
 
 		/**
@@ -484,16 +484,19 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		}
 
 
-		//
+
 		/**
-		 * unload_msg_and_create_slab
+		 * remove_slab_and_broadcast
 		 */
-		void unload_msg_and_create_slab(sp_communication_cell *cell) {
-			if ( _allocator ) {
-				SP_slab_types st = cell->_st;
-				uint16_t el_count = cell->_el_count;
-				create_slab_and_broadcast(st,el_count);
-			}
+		uint16_t remove_slab_and_broadcast(uint16_t slab_index, SP_slab_types st,uint16_t el_count) {
+			uint32_t offset = 0;
+			slab_remover(slab_index,st);
+			//
+			// communicate to consumers
+			_slab_events->_readers.store(0);
+			_slab_events->_table_change.clear();
+			redactcast_slab_op(slab_index, offset, st, el_count);
+			return slab_index;
 		}
 
 
@@ -507,6 +510,20 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 		}
 
 
+		void reader_clearing(void) {
+			if ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
+				auto remaining =_slab_events->_readers.fetch_sub(1,std::memory_order_acq_rel);
+				if ( remaining == 1 && (_slab_events->_readers.load(std::memory_order_acquire) == 0) ) {
+					cout << "clearing event" << endl;
+					clear_event();
+				}
+			}
+		}
+
+
+		/**
+		 * handle_receive_slab_event
+		 */
 
 		void handle_receive_slab_event(void) {
 			//
@@ -525,7 +542,13 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 				}
 				case SP_CELL_REQUEST: {
 					if ( _allocator ) {			// must have the allocator role
-						unload_msg_and_create_slab(cell);
+						SP_slab_types st = cell->_st;
+						uint16_t el_count = cell->_el_count;
+						//
+						signal_cell_event_set();
+						reader_clearing();
+						create_slab_and_broadcast(st,el_count); 
+						return;
 					}
 					break;
 				}
@@ -534,15 +557,8 @@ class SlabProvider : public SharedSegments, public TokGenerator {
 				}
 			}
 			//
-			if ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
-cout << " decrement reader ";
-				auto remaining =_slab_events->_readers.fetch_sub(1,std::memory_order_acq_rel);
-cout << remaining << endl;
-				if ( remaining == 0 ) {
-					clear_event();
-				}
-			}
-
+			reader_clearing();
+			//
 		}
 
 		//
@@ -593,6 +609,10 @@ cout << remaining << endl;
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+
+		/**
+		 * expand
+		 */
 		void expand(SP_slab_types &st,key_t &slab_index,uint16_t &slab_offset,uint16_t el_count) {
 			//
 			uint16_t bytes_needed = this->bytes_needed(st);
@@ -643,7 +663,9 @@ cout << remaining << endl;
 		}
 
 
-
+		/**
+		 * contract
+		 */
 		void contract(SP_slab_types &st,key_t &slab_index,uint16_t &slab_offset,uint16_t el_count) {
 			uint16_t bytes_needed = this->bytes_needed(st);
 			uint8_t buffer[bytes_needed];
@@ -671,6 +693,7 @@ cout << remaining << endl;
 				}
 			}
 			//  did not return so, a need another prev sized slab
+			// results from shrinking sections while smaller ones are still being given away to new entries. 
 			if ( _allocator ) {						// if the role of allocator is given to this thread/proc
 				//
 				slab_index = create_slab_and_broadcast(st,el_count);
@@ -714,7 +737,7 @@ cout << remaining << endl;
 
 
 
-
+#ifdef DEBUG
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 class test_SlabProvider : public SlabProvider {
@@ -736,9 +759,9 @@ class test_SlabProvider : public SlabProvider {
 			return _test_region;
 		}
 
-		int detach([[maybe_unused]] key_t key,[[maybe_unused]] bool forceDestroy) {
-			return 0;
+		virtual void slab_remover([[maybe_unused]] key_t slab_index,[[maybe_unused]] SP_slab_types st) {
 		}
+
 
 		virtual void *slab_adder([[maybe_unused]] key_t slab_index,[[maybe_unused]] SP_slab_types st,[[maybe_unused]] uint16_t el_count) { 
 			add_slab_entry(slab_index, _second_test_region, st, el_count);
@@ -754,3 +777,4 @@ cout << "creating a resource " << endl;
 		void		*_second_test_region{nullptr};
 };
 
+#endif

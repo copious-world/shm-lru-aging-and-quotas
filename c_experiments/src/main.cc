@@ -115,8 +115,6 @@ void print_stored(pair<uint32_t,uint32_t> *primary_storage,uint32_t print_max = 
 
 
 
-
-
 // -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
 
 SharedSegmentsManager *g_ssm_catostrophy_handler = nullptr;
@@ -444,6 +442,10 @@ void test_slab_threads() {
   //
   // slab_thread_runner
   test_SlabProvider sp;
+  test_SlabProvider sp_alloc;
+
+  sp_alloc.set_allocator_role(true);
+
 
   uint8_t tc = 2;
 
@@ -453,6 +455,7 @@ void test_slab_threads() {
 
   cout << "Setting slab communicator" << endl;
   sp.set_slab_communicator(slab_com,tc,1);
+  sp_alloc.set_slab_communicator(slab_com,tc,1);
 
   const char *my_file_list[4] = {
                                   "src/node_shm_HH.h", 
@@ -461,7 +464,7 @@ void test_slab_threads() {
                                   "src/main.c"
                                 };
 
-  sp.set_token_grist_list(my_file_list,4);
+  sp_alloc.set_token_grist_list(my_file_list,4);
   //
   slab_parameters sparms[4];
   SP_slab_types st = SP_slab_t_4;
@@ -470,10 +473,10 @@ void test_slab_threads() {
   for ( int i = 0; i < 4; i++ ) {
     sparms[i].el_count = el_count;
     sparms[i].st = st;
-    auto tk = sp.gen_slab_index();
+    auto tk = sp_alloc.gen_slab_index();
     sparms[i].slab_index = tk;
 
-    auto sz = sp.slab_size_bytes(st,el_count);
+    auto sz = sp_alloc.slab_size_bytes(st,el_count);
 
     void *a_slab = new uint8_t[sz];
     sparms[i].slab = a_slab;
@@ -483,25 +486,38 @@ void test_slab_threads() {
 
   //
   st = SP_slab_t_4;
-  auto sz = sp.slab_size_bytes(st,el_count);
+  auto sz = sp_alloc.slab_size_bytes(st,el_count);
 
   uint8_t buffer2[sz];
-  sp.set_second_test_region(buffer2);
-
+  sp_alloc.set_second_test_region(buffer2);
 
   thread handler([&](void) {
-      sp.slab_thread_runner(0);
+      for ( int i = 0; i < 3; i++ ) {
+        sp.slab_thread_runner(0);
+      }
       cout << " thread finished " << endl;
   });
 
+
+  thread alloc_handler([&](void) {
+      sp_alloc.slab_thread_runner(0);
+      cout << " thread finished " << endl;
+  });
+
+  
+
   try {
-    sp.create_slab_and_broadcast(st,el_count);
+    auto slab_index = sp_alloc.create_slab_and_broadcast(st,el_count);
+    for ( int i = 0; i < 4; i++ ) tick();
+    sp_alloc.remove_slab_and_broadcast(slab_index,st,el_count);
+    for ( int i = 0; i < 4; i++ ) tick();
+    sp.request_slab_and_broadcast(st,el_count);
   } catch ( std::runtime_error e ) {
     cout << e.what() << endl;
   }
 
-
   handler.join();
+  alloc_handler.join();
 
   // while ( true ) tick();
 
