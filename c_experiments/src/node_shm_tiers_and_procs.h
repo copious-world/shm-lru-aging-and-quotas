@@ -768,7 +768,7 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		 * Initiates the process by which the system find a place to write data. This method waits on the position to write data.
 		 * 
-		 * This method first waits on access only if its entry has already been breached by itself or a process looking to pick up
+		 * This method first waits on access only if its entry has already been reached by itself or a process looking to pick up
 		 * hash parameters. Once a process or thread is servicing the search for the next location to return for a previous request.
 		 * 
 		 * This puts to a tier. Most often, this will be called with tier 0 for a new piece of data.

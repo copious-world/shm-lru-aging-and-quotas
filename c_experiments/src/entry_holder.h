@@ -36,7 +36,6 @@ using namespace std;
  * 
 */
 
-
 template<class Entry, uint16_t const ExpectedMax = 100>
 class SharedQueue_SRSW {    // single reader, single writer
 	//
@@ -124,13 +123,14 @@ class SharedQueue_SRSW {    // single reader, single writer
 
 
 		void		reset(void) {
+			//
 			_beg = &_entries[0];
 			_end = _beg + ExpectedMax;
 			_r_cached = _beg;
 			_w_cached = _beg;
 			_r.store(_beg);
 			_w.store(_beg);
-
+			//
 			memset(_entries,0,sizeof(Entry)*ExpectedMax);
 		}
 

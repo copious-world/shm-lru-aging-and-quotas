@@ -510,6 +510,10 @@ cout << "event cleared " << (++_ev_clear_count) << endl;
 		}
 
 
+
+		/**
+		 * reader_clearing
+		 */
 		void reader_clearing(void) {
 			if ( _slab_events->_readers.load(std::memory_order_acquire) > 0 ) {
 				auto remaining =_slab_events->_readers.fetch_sub(1,std::memory_order_acq_rel);

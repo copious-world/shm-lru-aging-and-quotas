@@ -16,7 +16,8 @@ typedef struct BASIC_ELEMENT_HDR {
 
 
 template<class StackEl>
-class AtomicStack {
+class AtomicStack {		// ----
+	//
 	public:
 
 		AtomicStack() : _status(true) {
