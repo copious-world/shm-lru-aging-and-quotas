@@ -219,6 +219,12 @@ class AtomicStack {		// ----
 			return true; 
 		}
 
+
+		static size_t check_region_size(uint32_t max_free) {
+			size_t total_size = 2*sizeof(atomic<uint32_t>) + sizeof(StackEl)*(max_free+1);
+			return total_size;
+		}
+
 	public:
 
 

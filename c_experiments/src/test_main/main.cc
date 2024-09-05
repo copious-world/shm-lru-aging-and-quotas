@@ -80,6 +80,7 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 
 #include "../node_shm_tiers_and_procs.h"
 
+#include "../atomic_queue.h"
 
 [[maybe_unused]] static TierAndProcManager<4> *g_tiers_procs = nullptr;
 
@@ -532,6 +533,49 @@ void test_slab_threads() {
 
 
 
+void test_shared_queue(void) {
+  //
+  auto sz = AtomicQueue<Basic_q_element>::check_region_size(200);
+
+  cout << "test_shared_queue: " << sz << endl;
+
+  cout << "Basic_q_element size: " << sizeof(Basic_q_element) << endl;
+  cout << "Basic_q_element size less atomics: "  << (sz - 4*(sizeof(atomic<uint32_t>))) << endl;
+  cout << "Basic_q_element els: " << ((sz - 4*(sizeof(atomic<uint32_t>)))/sizeof(Basic_q_element) - 1) << endl;
+
+  cout << endl;
+
+  uint8_t *region = new uint8_t[sz];
+
+  AtomicQueue<Basic_q_element> qchck;
+  auto free_els = qchck.setup_queue_region(region,sizeof(Basic_q_element),sz);
+
+
+  uint32_t test = 0;
+  for ( int i = 0; i < 4; i++ ) {
+    auto status = qchck.pop_number(region + 2*sizeof(atomic<uint32_t>),1,&test);
+    cout << "pop_number: " << i << " status: " << status << " offset: " << test << endl;
+  }
+
+  cout << "allocated free elements: "  << free_els << endl;
+  Basic_q_element bqe;
+
+  for ( int i = 0; i < 4; i++ ) {
+    bqe._info = i + 5;
+    auto status = qchck.push_queue(bqe);
+    cout << " EMPTY? " << (qchck.empty() ? "true" : "false" ) << " status: " << status << endl;
+  }
+
+  cout << "completed all pushes" << endl;
+
+  for ( int i = 0; i < 4; i++ ) {
+    auto status = qchck.pop_queue(bqe);
+    cout << "bqe._info = " << bqe._info << " EMPTY? " << (qchck.empty() ? "true" : "false" ) << " status: " << status << endl;
+  }
+
+}
+
+
 /**
  * main ...
  * 
@@ -561,11 +605,14 @@ int main(int argc, char **argv) {
   nowish = std::chrono::system_clock::to_time_t(right_now);
 
 
-  test_simple_stack();
-  test_toks();
-  test_slab_primitives();
-  test_initialization();
-  test_slab_threads();
+  test_shared_queue();
+
+  // test_simple_stack();
+  // test_toks();
+  // test_slab_primitives();
+  // test_initialization();
+
+  //test_slab_threads();
 
   // ----
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
