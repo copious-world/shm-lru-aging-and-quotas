@@ -146,6 +146,14 @@ class AtomicStack {		// ----
 		}
 
 		/**
+		 * empty
+		*/
+		bool free_mem_empty(void) {
+			auto free = _count_free->load(std::memory_order_acquire);
+			return (free == 0);
+		}
+
+		/**
 		 * 	step -- step is the size of the list object header plus the object data allowed length..
 		*/
 		uint16_t setup_region_free_list(uint8_t *start, size_t step, size_t region_size) {

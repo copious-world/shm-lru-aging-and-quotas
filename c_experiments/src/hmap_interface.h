@@ -989,7 +989,7 @@ class HMap_interface {
 		virtual void 		value_restore_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) = 0;
 		virtual void		cropper_runner(uint8_t slice_for_thread, uint8_t assigned_thread_id) = 0;
 
-		virtual void		random_generator_thread_runner(void) = 0;
+		virtual void		random_generator_thread_runner(void) {}
 		virtual void		set_random_bits(void *shared_bit_region) = 0;
 
 		virtual uint64_t	update(uint32_t el_match_key, uint32_t hash_bucket, uint32_t v_value) = 0;

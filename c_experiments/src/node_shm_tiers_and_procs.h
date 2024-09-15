@@ -489,6 +489,7 @@ class TierAndProcManager : public LRU_Consts {
 					//
 
 					// hash_table_value_restore_thread
+					// needs a configuration parameter CONFIG
 					auto random_generator_runner = [this](uint8_t tier,LRU_c_impl *lru) {
 						this->_random_generator_running[tier] = true;
 						while ( this->_random_generator_running[tier] ) {

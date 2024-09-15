@@ -27,6 +27,7 @@ using namespace std;
 #include "hmap_interface.h"
 #include "node_shm_HH.h"
 #include "node_shm_sparse_slabs.h"
+#include "node_shm_queued.h"
 
 #include "holey_buffer.h"
 #include "atomic_proc_rw_state.h"
@@ -111,6 +112,7 @@ const uint32_t DEFAULT_MICRO_TIMEOUT = 2; // 2 seconds
 typedef enum STP_table_choice {
 	STP_TABLE_HH,
 	STP_TABLE_SLABS,
+	STP_TABLE_QUEUED,
 	STP_TABLE_INTERNAL_ONLY
 } stp_table_choice;
 
@@ -369,6 +371,11 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 					_hmap = new SSlab_map<>(reg1,hh_seg_sz,els_per_tier,_am_initializer);
 					break;
 				}
+				case STP_TABLE_QUEUED: {
+					_hmap = new QUEUED_map<>(reg1,hh_seg_sz,els_per_tier,_am_initializer);
+					break;
+				}
+
 				case STP_TABLE_INTERNAL_ONLY:
 				default: {
 					_hmap = nullptr;

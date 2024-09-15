@@ -612,7 +612,7 @@ int main(int argc, char **argv) {
   // test_slab_primitives();
   // test_initialization();
 
-  //test_slab_threads();
+  // test_slab_threads();
 
   // ----
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
