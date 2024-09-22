@@ -47,12 +47,10 @@ using namespace std;
 #include "shm_shared_segs.h"
 
 #include "node_shm_HH.h"
-#include "node_shm_LRU.h"
-
+#include "node_shm_LRU_defs.h"
 
 // lsof | egrep "98306|COMMAND"
 // ipcs -mp
-
 
 
 namespace node_shm {

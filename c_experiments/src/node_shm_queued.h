@@ -1,5 +1,5 @@
-#ifndef _H_SPARSE_SLABS_HASH_SHM_
-#define _H_SPARSE_SLABS_HASH_SHM_
+#ifndef _H_QUEUED_HASH_SHM_
+#define _H_QUEUED_HASH_SHM_
 
 #pragma once
 
@@ -28,9 +28,10 @@
 #include "hmap_interface.h"
 #include "random_selector.h"
 #include "entry_holder.h"
+#include "hh_queues_and_states.h"
+
 #include "array_p_defs.h"
 
-#include "hh_queues_and_states.h"
 
 
 
@@ -83,7 +84,7 @@ using namespace std;
 */
 
 
-template<const uint32_t NEIGHBORHOOD = 32>
+template<const uint32_t TABLE_SIZE = 100>
 class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 
 	public:
@@ -117,11 +118,8 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 			_initializer = false;
 			_max_count = max_element_count;
 			//
-			uint8_t sz = sizeof(HHash);
-			uint8_t header_size = (sz  + (sz % sizeof(uint64_t)));
-			//
 			// initialize from constructor
-			setup_region(header_size,(max_element_count/2),num_threads);
+			setup_region(am_initializer);
 			//
 			_proc_id = _com->next_thread_id();
 		}
@@ -136,9 +134,10 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 * -- header_size --> HHash
 		 *  the regions are setup as, [values 1][buckets 1][values 2][buckets 2][controls 1 and 2]
 		*/
-		void setup_region(bool am_initializer,uint8_t header_size,uint32_t max_count,uint32_t num_threads) {
+		void setup_region(bool am_initializer) {
 			// ----
-			_com->_proc_refs->set_region(_region,_max_count);
+			_com->_proc_refs->set_region(_region,TABLE_SIZE);
+			_com->_proc_refs->setup_all_queues(_region,TABLE_SIZE,am_initializer);
 			//
 		}
 
@@ -151,9 +150,9 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 * 
 		*/
 
-		static uint32_t check_expected_hh_region_size(uint32_t els_per_tier, uint32_t els_per_tier) {
-
-			uint32_t predict = els_per_tier*els_per_tier;
+		static uint32_t check_expected_hh_region_size([[maybe_unused]] uint32_t els_per_tier, uint32_t num_threads) {
+			auto reg_sz = ExternalInterfaceQs<TABLE_SIZE>::check_expected_com_region_size(TABLE_SIZE);
+			uint32_t predict = reg_sz*num_threads;
 			return predict;
 		}
 
@@ -184,7 +183,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 * cbit_stashes		- stash object references, one if the bucket is a base, two if the bucket is a member with the second being the stash of the base
 		*/
 
-		void _adder_bucket_queue_release([[maybe_unused]] atomic<uint32_t> *control_bits, uint32_t el_key, uint32_t h_bucket, uint32_t offset_value, [[maybe_unused]] uint8_t which_table, [[maybe_unused]] uint32_t cbits, [[maybe_unused]] uint32_t cbits_op, [[maybe_unused]] uint32_t cbits_base_op, [[maybe_unused]] hh_element *bucket, [[maybe_unused]] hh_element *buffer, [[maybe_unused]] hh_element *end_buffer,[[maybe_unused]] CBIT_stash_holder *cbit_stashes[4]) {
+		void _adder_bucket_queue_release([[maybe_unused]] atomic<uint32_t> *control_bits, uint32_t el_key, [[maybe_unused]] uint32_t h_bucket, uint32_t offset_value, [[maybe_unused]] uint8_t which_table, [[maybe_unused]] uint32_t cbits, [[maybe_unused]] uint32_t cbits_op, [[maybe_unused]] uint32_t cbits_base_op, [[maybe_unused]] hh_element *bucket, [[maybe_unused]] hh_element *buffer, [[maybe_unused]] hh_element *end_buffer,[[maybe_unused]] CBIT_stash_holder *cbit_stashes[4]) {
 			//
 			_com->com_put(el_key,offset_value,_proc_id);
 		}
@@ -284,7 +283,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 
 		// el_key == hull_hash (usually)
 
-		uint32_t get(uint32_t el_key, uint32_t h_bucket) override {  // full_hash,hash_bucket
+		uint32_t get(uint32_t el_key, [[maybe_unused]] uint32_t h_bucket) override {  // full_hash,hash_bucket
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 
@@ -312,14 +311,14 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 * 
 		*/
 		// el_key == hull_hash (usually)
-		uint64_t update(uint32_t el_key, uint32_t h_bucket, uint32_t v_value) override {
+		uint64_t update(uint32_t el_key, [[maybe_unused]] uint32_t h_bucket, uint32_t v_value) override {
 			//
 			if ( v_value == 0 ) return UINT64_MAX;
 			if ( el_key == UINT32_MAX ) return UINT64_MAX;
-			_com->com_put(el_key,offset_value,_proc_id);
+			_com->com_put(el_key,v_value,_proc_id);
 			//
 			uint64_t loaded_key = (((uint64_t)el_key) << HALF) | v_value; // LOADED
-			loaded_key = stamp_key(loaded_key,selector);
+			loaded_key = stamp_key(loaded_key,1);
 			//
 			return loaded_key;
 		}
@@ -355,7 +354,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 * 		As this module must have previously assigned the bucket, the 32-bit bucket word carries the segment selector
 		 * 		derived for the stored element.
 		 */
-		uint32_t del(uint32_t el_key, uint32_t h_bucket) override {
+		uint32_t del(uint32_t el_key, [[maybe_unused]] uint32_t h_bucket) override {
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 			//
@@ -379,6 +378,21 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 * 
 		*/
 		void clear(void) override {}
+
+
+
+		// pointless
+
+		virtual void 		value_restore_runner([[maybe_unused]] uint8_t slice_for_thread, [[maybe_unused]] uint8_t assigned_thread_id) override {
+		}
+		virtual void		cropper_runner([[maybe_unused]] uint8_t slice_for_thread, [[maybe_unused]] uint8_t assigned_thread_id) override {
+		}
+		virtual void		set_random_bits([[maybe_unused]] void *shared_bit_region) override {
+		}
+		virtual void share_lock(void) override {
+		}
+		virtual void share_unlock(void) override {
+		}
 
 
 	public: 
@@ -413,4 +427,4 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 };
 
 
-#endif // _H_SPARSE_SLABS_HASH_SHM_
+#endif // _H_QUEUED_HASH_SHM_

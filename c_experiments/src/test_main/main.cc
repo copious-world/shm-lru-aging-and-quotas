@@ -536,12 +536,16 @@ void test_slab_threads() {
 void test_shared_queue(void) {
   //
   auto sz = AtomicQueue<Basic_q_element>::check_region_size(200);
+  auto cnt_atoms = AtomicQueue<Basic_q_element>::atomics_count();
+  auto cnt_stck_atoms = AtomicStack<Basic_q_element>::atomics_count();
+  auto cnt_q_atoms = (cnt_atoms - cnt_stck_atoms);
 
   cout << "test_shared_queue: " << sz << endl;
+  cout << "TOTAL SHARED ATOMICS: " << (size_t)cnt_atoms << endl;
 
   cout << "Basic_q_element size: " << sizeof(Basic_q_element) << endl;
-  cout << "Basic_q_element size less atomics: "  << (sz - 4*(sizeof(atomic<uint32_t>))) << endl;
-  cout << "Basic_q_element els: " << ((sz - 4*(sizeof(atomic<uint32_t>)))/sizeof(Basic_q_element) - 1) << endl;
+  cout << "Basic_q_element size less atomics: "  << (sz - cnt_atoms*(sizeof(atomic<uint32_t>))) << endl;
+  cout << "Basic_q_element els: " << ((sz - cnt_atoms*(sizeof(atomic<uint32_t>)))/sizeof(Basic_q_element) - 1) << endl;
 
   cout << endl;
 
@@ -552,8 +556,8 @@ void test_shared_queue(void) {
 
 
   uint32_t test = 0;
-  for ( int i = 0; i < 4; i++ ) {
-    auto status = qchck.pop_number(region + 2*sizeof(atomic<uint32_t>),1,&test);
+  for ( int i = 0; i < 4; i++ ) {       // note that this usage is for testing only
+    auto status = qchck.pop_number(region + cnt_q_atoms*sizeof(atomic<uint32_t>),1,&test);
     cout << "pop_number: " << i << " status: " << status << " offset: " << test << endl;
   }
 
@@ -571,6 +575,57 @@ void test_shared_queue(void) {
   for ( int i = 0; i < 4; i++ ) {
     auto status = qchck.pop_queue(bqe);
     cout << "bqe._info = " << bqe._info << " EMPTY? " << (qchck.empty() ? "true" : "false" ) << " status: " << status << endl;
+  }
+
+}
+
+
+void test_shared_queue_threads(void) {
+  //
+  auto sz = AtomicQueue<Basic_q_element>::check_region_size(200);
+
+  cout << "test_shared_queue: " << sz << endl;
+
+  cout << "Basic_q_element size: " << sizeof(Basic_q_element) << endl;
+  cout << "Basic_q_element size less atomics: "  << (sz - 4*(sizeof(atomic<uint32_t>))) << endl;
+  cout << "Basic_q_element els: " << ((sz - 4*(sizeof(atomic<uint32_t>)))/sizeof(Basic_q_element) - 1) << endl;
+
+  cout << endl;
+
+  // uint8_t *region = new uint8_t[sz];
+
+  AtomicQueue<Basic_q_element> qchck;
+  //auto free_els = qchck.setup_queue_region(region,sizeof(Basic_q_element),sz);
+
+
+
+  uint8_t thrd_count = 8;
+  thread *all_threads[thrd_count];
+
+  for ( uint8_t t = 0; t < thrd_count; t++ ) {
+    thread *a_thread = new thread([&](int j) {
+      // use the queue
+      Basic_q_element bqe;
+      for ( int i = 0; i < 4; i++ ) {
+        bqe._info = i + 5*j;
+        auto status = qchck.push_queue(bqe);
+        cout << " EMPTY? " << (qchck.empty() ? "true" : "false" ) << " status: " << status << endl;
+      }
+
+      cout << "completed all pushes" << endl;
+
+      for ( int i = 0; i < 4; i++ ) {
+        auto status = qchck.pop_queue(bqe);
+        cout << "bqe._info = " << bqe._info << " EMPTY? " << (qchck.empty() ? "true" : "false" ) << " status: " << status << endl;
+      }
+
+    },t);
+    all_threads[t] = a_thread;
+  }
+
+
+  for ( uint8_t t = 0; t < thrd_count; t++ ) {
+    all_threads[t]->join();
   }
 
 }

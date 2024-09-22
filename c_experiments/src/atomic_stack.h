@@ -8,6 +8,8 @@
 
 using namespace std;
 
+const uint32_t NUM_SHARED_ATOMICS_STACK_CTRL = 2;
+
 
 typedef struct BASIC_ELEMENT_HDR {
 	uint32_t	_info;
@@ -59,6 +61,7 @@ class AtomicStack {		// ----
 			uint32_t *tmp_p = reserved_offsets;
 			//
 			while ( n-- ) {  // consistently pop the free stack
+				//
 				uint32_t next_offset = UINT32_MAX;
 				uint32_t first_offset = UINT32_MAX;
 				do {
@@ -166,9 +169,9 @@ class AtomicStack {		// ----
 			_max_free = (atomic<uint32_t>*)(start + sizeof(atomic<uint32_t>*));		// whereever this is pointing now (may be UINT32_MAX)
 
 			//
-			_ctrl_free = (StackEl *)(start + 2*sizeof(atomic<uint32_t>*));
+			_ctrl_free = (StackEl *)(start + NUM_SHARED_ATOMICS_STACK_CTRL*sizeof(atomic<uint32_t>*));
 			_ctrl_free->init(0);
-			_ctrl_free->_next = (step + 2*sizeof(atomic<uint32_t>*));	// step in bytes
+			_ctrl_free->_next = (step + NUM_SHARED_ATOMICS_STACK_CTRL*sizeof(atomic<uint32_t>*));	// step in bytes
 
 			//
 			size_t curr = _ctrl_free->_next;
@@ -208,7 +211,7 @@ class AtomicStack {		// ----
 			_stack_region_end = start + region_size;
 			_count_free = (atomic<uint32_t>*)(start);		// whereever this is pointing now (may be UINT32_MAX)
 			_max_free = (atomic<uint32_t>*)(start + sizeof(atomic<uint32_t>*));		// whereever this is pointing now (may be UINT32_MAX)
-			_ctrl_free = (StackEl *)(start + 2*sizeof(atomic<uint32_t>*));
+			_ctrl_free = (StackEl *)(start + NUM_SHARED_ATOMICS_STACK_CTRL*sizeof(atomic<uint32_t>*));
 			_max_free_local = _max_free->load();
 		}
 
@@ -229,11 +232,17 @@ class AtomicStack {		// ----
 
 
 		static size_t check_region_size(uint32_t max_free) {
-			size_t total_size = 2*sizeof(atomic<uint32_t>) + sizeof(StackEl)*(max_free+1);
+			size_t total_size = NUM_SHARED_ATOMICS_STACK_CTRL*sizeof(atomic<uint32_t>) + sizeof(StackEl)*(max_free+1);
 			return total_size;
 		}
+		
 
 	public:
+
+
+		static uint8_t atomics_count(void) {
+			return NUM_SHARED_ATOMICS_STACK_CTRL;
+		}
 
 
 		bool							_status;

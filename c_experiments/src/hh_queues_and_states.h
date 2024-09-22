@@ -172,7 +172,7 @@ static constexpr uint32_t one_levels[32] {
 /**
  * zero_above
  */
-static uint32_t zero_above(uint8_t hole) {
+static inline uint32_t zero_above(uint8_t hole) {
 	if ( hole >= 31 ) {
 		return  0xFFFFFFFF;
 	}
@@ -185,7 +185,7 @@ static uint32_t zero_above(uint8_t hole) {
  */
 
 		//
-static uint32_t ones_above(uint8_t hole) {
+static inline uint32_t ones_above(uint8_t hole) {
 	if ( hole >= 31 ) {
 		return  0;
 	}

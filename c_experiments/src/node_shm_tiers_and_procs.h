@@ -11,6 +11,8 @@ using namespace std;
 using namespace std::chrono;
 
 
+class LRU_cache;
+
 /**
  * 
  * This module provides the entry points to API calls which provide access to storage operations 

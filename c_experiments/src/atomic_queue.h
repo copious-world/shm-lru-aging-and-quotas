@@ -10,7 +10,7 @@
 using namespace std;
 
 
-const uint8_t NUM_SHARED_ATOMS = 4;
+const uint8_t NUM_SHARED_ATOMS_Q = 4;
 
 
 typedef struct BASIC_Q_ELEMENT_HDR {
@@ -75,7 +75,7 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 			if ( t_offset > 0 ) {
 				QueueEl *tail = (QueueEl *)(start + t_offset);
 				output = *tail;
-				this->_atomic_stack_push((start + NUM_SHARED_ATOMS*sizeof(atomic<uint32_t>)), tail);
+				this->_atomic_stack_push((start + NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>)), tail);
 				decr_pop_count();
 				return 0;
 			}
@@ -96,7 +96,7 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 			uint32_t front_offset = 0;
 			//
 			// Get a free object from the object stack.
-			uint32_t rslt = this->pop_number(start + NUM_SHARED_ATOMS*sizeof(atomic<uint32_t>), 1, &el_offset);
+			uint32_t rslt = this->pop_number(start + NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>), 1, &el_offset);
 			if ( el_offset == 0 || rslt == UINT32_MAX ) {   // out of space (possibly wrong offset)
 				return UINT32_MAX;
 			}
@@ -106,15 +106,16 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 			//
 			std::atomic_thread_fence(std::memory_order_acquire);
 			//
-			el_offset += NUM_SHARED_ATOMS*sizeof(atomic<uint32_t>);  // adjust to queue frame
+			el_offset += NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>);  // adjust to queue frame
 			QueueEl *el = (QueueEl *)(start + el_offset);
 			*el = input;   // 
 			auto atom_fp = (atomic<uint32_t> *)(&(el->_prev));
 			atom_fp->store(0);
+			auto head = _q_head;
+
 			//
 			do {
 				//
-				auto head = _q_head;
 				front_offset = head->load(std::memory_order_relaxed);
 				//
 				if ( front_offset == UINT32_MAX ) { // empty, take no action
@@ -129,7 +130,7 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 					// On sucess, the first offset remains zero.
 					if ( front_offset == 0 ) {  // this is the proc that wrote the new header
 						// store the tail offset... since this is the only element in the queue, the tail will refer to it.
-						_q_tail->store(el_offset,std::memory_order_acq_rel);
+						_q_tail->store(el_offset,std::memory_order_release);
 						*el = input;						// retrieve value (this op is independent of setting head and tail)
 						auto atom_fp = (atomic<uint32_t> *)(&(el->_prev));  // the first element as no previous
 						atom_fp->store(0);
@@ -165,6 +166,7 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 				auto fp_no_change = fp;
 				// Now, it is worth trying to be the one to set the prev of the original header.
 				// This narrows down the control over the header to just one proc/thread.
+				// --- old first, now gets the new first in its prev
 				while ( !(atom_fp->compare_exchange_weak(fp, el_offset, std::memory_order_acq_rel)) && (fp == fp_no_change) )
 				;
 				if ( fp != fp_no_change ) {
@@ -179,7 +181,7 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 				// This proc is the one that set the previous ref of the original header 
 				// Other procs may be waiting on this change.
 				// If more than one valid operation has gotten to this point 
-				head->store(std::memory_order_release);
+				head->store(el_offset,std::memory_order_release);
 				decr_push_count();
 				return rslt;
 			}
@@ -256,23 +258,29 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 			_q_tail = _q_head + 1;
 			_q_head->store(0);
 			_q_tail->store(0);
+			_q_push_count = _q_tail + 1;
 			_q_push_count->store(0);
+			_q_pop_count = _q_push_count + 1;
 			_q_pop_count->store(0);
-			auto sz = region_size - NUM_SHARED_ATOMS*sizeof(atomic<uint32_t>);
-			return this->setup_region_free_list((start + NUM_SHARED_ATOMS*sizeof(atomic<uint32_t>)),step,sz);
+			auto sz = region_size - NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>);
+			return this->setup_region_free_list((start + NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>)),step,sz);
 		}
 
 
 		void attach_queue_region(uint8_t *start, size_t region_size) {
 			_q_head = (atomic<uint32_t> *)start;
 			_q_tail = _q_head + 1;
-			auto sz = region_size - NUM_SHARED_ATOMS*sizeof(atomic<uint32_t>);
-			this->attach_region_free_list((start+ NUM_SHARED_ATOMS*sizeof(atomic<uint32_t>)), sz);
+			auto sz = region_size - NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>);
+			this->attach_region_free_list((start+ NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>)), sz);
 		}
 
 		static size_t check_region_size(uint32_t el_count) {
-			size_t total_size = NUM_SHARED_ATOMS*sizeof(atomic<uint32_t>) + AtomicStack<QueueEl>::check_region_size(el_count);
+			size_t total_size = NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>) + AtomicStack<QueueEl>::check_region_size(el_count);
 			return total_size;
+		}
+
+		static uint8_t atomics_count(void) {
+			return NUM_SHARED_ATOMS_Q + AtomicStack<QueueEl>::atomics_count();
 		}
 
 	public:

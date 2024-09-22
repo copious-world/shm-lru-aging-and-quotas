@@ -34,9 +34,6 @@ using namespace std;
 #include "time_bucket.h"
 #include "random_selector.h"
 #include "shm_seg_manager.h"
-
-#include "node_shm_tiers_and_procs.h"
-
 #include "atomic_queue.h"
 
 
@@ -239,8 +236,8 @@ class ExternalInterfaceQs {
 				pid = p;
 				return p;
 			}
-			return 255;
 		}
+		return 255;
 	}
 
     // ---- check_expected_com_region_size
