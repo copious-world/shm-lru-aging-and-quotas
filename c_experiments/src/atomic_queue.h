@@ -93,6 +93,8 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 		uint32_t push_queue(QueueEl &input) {
 			uint32_t el_offset = 0;
 			uint8_t *start = (uint8_t *)_q_head;
+cout << "START: " << start << endl;
+
 			uint32_t front_offset = 0;
 			//
 			// Get a free object from the object stack.
@@ -270,6 +272,8 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 		void attach_queue_region(uint8_t *start, size_t region_size) {
 			_q_head = (atomic<uint32_t> *)start;
 			_q_tail = _q_head + 1;
+			_q_push_count = _q_tail + 1;
+			_q_pop_count = _q_push_count + 1;
 			auto sz = region_size - NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>);
 			this->attach_region_free_list((start+ NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>)), sz);
 		}

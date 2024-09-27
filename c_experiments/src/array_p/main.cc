@@ -86,7 +86,7 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 // -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
 
 
-#include "../array_p_defs.h"
+#include "../array_p_defs_storage_app.h"
 
 using namespace node_shm;
 
@@ -124,68 +124,6 @@ void print_stored(pair<uint32_t,uint32_t> *primary_storage,uint32_t print_max = 
 
 
 
-typedef struct STORES {
-
-  uint32_t      _min_hash{0};
-  atomic_flag   _reading;
-  unordered_map<uint32_t,uint32_t>  _table;
-
-  void await_reading(void) {
-    while ( _reading.test_and_set() ) tick();
-  }
-
-  void release_reading(void) {
-    _reading.clear();
-  }
-
-} stores;
-
-
-template<const uint8_t t_count,const uint32_t N>
-class StoreHVPairs {
-  public:
-
-    StoreHVPairs(void) {
-      _sect_size = N/t_count;
-      for ( uint8_t t = 0; t < t_count; t++ ) {
-        stores &thread_section = _sections[t];
-        thread_section._reading.clear();
-        thread_section._min_hash = t*_sect_size;
-      }
-    }
-    virtual ~StoreHVPairs(void) {}
-
-    bool store_pair(uint32_t hash, uint32_t val, uint8_t thread_index) {
-      stores &thread_section = _sections[thread_index];
-      //
-      thread_section.await_reading();   // manage just the relation between store and get
-      //
-      auto ref = hash - thread_section._min_hash;
-      thread_section._table[ref] = val;
-      //
-      thread_section.release_reading();
-      return true;
-    }
-
-
-
-    uint32_t get_val(uint32_t hash, uint8_t thread_index) {
-      stores &thread_section = _sections[thread_index];
-      //
-      thread_section.await_reading();   // manage just the relation between store and get
-      //
-      auto ref = hash - thread_section._min_hash;
-      uint32_t val = thread_section._table[ref];
-      //
-      thread_section.release_reading();
-      return val;
-    }
-
-    uint32_t                              _sect_size{0};
-    array<stores,(size_t)(t_count)>       _sections;
-
-};
-
 /// Internal thread management
 
 thread input_com_threads[20];
@@ -194,13 +132,12 @@ thread client_com_threads[20];
 
 static const uint32_t TABLE_SIZE = (20000);
 
-static ExternalInterfaceQs<TABLE_SIZE> *g_com = nullptr;
-static StoreHVPairs<8,TABLE_SIZE> *g_storage = nullptr;
+static Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE> *g_com = nullptr;
 
-ExternalInterfaceQs<TABLE_SIZE> *initialize_com_region(uint8_t client_count,uint8_t service_count,uint8_t q_entry_count) {
+Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE> *initialize_com_region(uint8_t client_count,uint8_t service_count,uint8_t q_entry_count) {
   size_t rsiz = ExternalInterfaceQs<TABLE_SIZE>::check_expected_com_region_size(q_entry_count);
   void *data_region = new uint8_t[rsiz];
-  ExternalInterfaceQs<TABLE_SIZE> *eiq = new ExternalInterfaceQs<TABLE_SIZE>(client_count,service_count,data_region,q_entry_count,true);
+  Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE> *eiq = new Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE>(client_count,service_count,data_region,q_entry_count,true);
   return eiq;
 }
 
@@ -219,53 +156,19 @@ void launch_threads(void) {
   for ( uint8_t i = 0; i < t_count; i++ ) {
     input_com_threads[i] = thread([](uint8_t j){
       if ( g_com != nullptr ) {
-        cout << "in : " << (int)j << endl;
-        g_com->await_put(j);
-        cout << "handling request: " << j << endl;
-        put_cell setter;
-        while ( g_com->unload_put_req(setter,j) ) {
-          auto hh = setter._hash;
-          auto val = setter._value;
-          g_storage->store_pair(hh,val,j);
-        }
-        g_com->clear_put(j);
+        g_com->put_handler(j);
       }
     },i);
   }
   for ( uint8_t i = 0; i < t_count; i++ ) {
     output_com_threads[i] = thread([](uint8_t j){
       if ( g_com != nullptr ) {
-        cout << "out : " << (int)j << endl;
-        g_com->await_get(j);
-        request_cell getter;
-        while ( g_com->unload_get_req(getter,j) ) {
-          auto hh = getter._hash;
-          auto return_to_pid = getter._proc_id;
-          auto val = g_storage->get_val(hh,j);
-          g_com->write_to_proc(hh,val,return_to_pid);
-        }
-        g_com->clear_get(j);
+        g_com->get_handler(j);
       }
     },i);
   }
 }
 
-
-void launch_client(uint8_t t_count) {
-  for ( uint8_t i = 0; i < t_count; i++ ) {
-    client_com_threads[i] = thread([](uint8_t j){
-      if ( g_com != nullptr ) {
-        //
-        cout << "client : " << (int)j << endl;
-        //
-        uint32_t hh = 898989;
-        uint32_t val = 0xFED;
-        g_com->com_put(hh,val,j);
-        //
-      }
-    },i);
-  }
-}
 
 
 void await_thread_end(uint8_t t_count,uint8_t client_t_count) {
@@ -312,15 +215,12 @@ int main(int argc, char **argv) {
   const uint8_t client_count = 2;
   const uint8_t service_count = 8;
 
-  ExternalInterfaceQs<TABLE_SIZE> *eiq = initialize_com_region(client_count,service_count,100);
+  Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE> *eiq = initialize_com_region(client_count,service_count,100);
   g_com = eiq;
-
-
-  g_storage = new StoreHVPairs<8,TABLE_SIZE>();
 
   launch_threads();
   for ( int i = 0; i < 20; i++ ) tick();
-  launch_client(1);
+
   await_thread_end(8,1);
 
   // ----

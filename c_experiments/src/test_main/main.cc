@@ -82,6 +82,8 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 
 #include "../atomic_queue.h"
 
+#include "../array_p_defs_storage_app.h"
+
 [[maybe_unused]] static TierAndProcManager<4> *g_tiers_procs = nullptr;
 
 using namespace node_shm;
@@ -583,20 +585,26 @@ void test_shared_queue(void) {
 void test_shared_queue_threads(void) {
   //
   auto sz = AtomicQueue<Basic_q_element>::check_region_size(200);
+  auto cnt_atoms = AtomicQueue<Basic_q_element>::atomics_count();
+  // auto cnt_stck_atoms = AtomicStack<Basic_q_element>::atomics_count();
+  // auto cnt_q_atoms = (cnt_atoms - cnt_stck_atoms);
 
   cout << "test_shared_queue: " << sz << endl;
+  cout << "TOTAL SHARED ATOMICS: " << (size_t)cnt_atoms << endl;
 
   cout << "Basic_q_element size: " << sizeof(Basic_q_element) << endl;
-  cout << "Basic_q_element size less atomics: "  << (sz - 4*(sizeof(atomic<uint32_t>))) << endl;
-  cout << "Basic_q_element els: " << ((sz - 4*(sizeof(atomic<uint32_t>)))/sizeof(Basic_q_element) - 1) << endl;
+  cout << "Basic_q_element size less atomics: "  << (sz - cnt_atoms*(sizeof(atomic<uint32_t>))) << endl;
+  cout << "Basic_q_element els: " << ((sz - cnt_atoms*(sizeof(atomic<uint32_t>)))/sizeof(Basic_q_element) - 1) << endl;
 
   cout << endl;
 
-  // uint8_t *region = new uint8_t[sz];
+  uint8_t *region = new uint8_t[sz];
+
 
   AtomicQueue<Basic_q_element> qchck;
-  //auto free_els = qchck.setup_queue_region(region,sizeof(Basic_q_element),sz);
+  auto free_els = qchck.setup_queue_region(region,sizeof(Basic_q_element),sz);
 
+  cout << "allocated free elements: "  << free_els << endl;
 
 
   uint8_t thrd_count = 8;
@@ -631,6 +639,75 @@ void test_shared_queue_threads(void) {
 }
 
 
+void test_node_shm_queued(void) {
+
+  uint8_t thrd_count = 8;
+  uint8_t client_count = 8;
+  // thread *all_threads[thrd_count];
+
+  uint32_t els_per_tier = 200000;
+  uint32_t els_per_com_queue = 200;
+
+  auto sz = Storage_ExternalInterfaceQs<8,200>::check_expected_com_region_size(200);
+  //
+  cout << "region size: " << sz << endl;
+  //
+  uint8_t *region = new uint8_t[sz];
+  //
+
+  Storage_ExternalInterfaceQs<8,200> q_test(client_count,thrd_count,region,els_per_com_queue,true);
+  QUEUED_map<200> q_client(region,sz,els_per_com_queue,client_count);
+
+
+
+  cout << "q_test._proc_refs._put_com->_put_queue._count_free: " << q_test._proc_refs._put_com[0]._put_queue._count_free << endl;
+  cout << "q_client._com._proc_refs._put_com->_put_queue._count_free: " << q_client._com._proc_refs._put_com[0]._put_queue._count_free << endl;
+
+  cout << "region initialized: ..." << endl;
+
+  atomic_flag running;
+
+  running.clear();
+
+  thread *client_thread = new thread([&](int j) {
+
+    for ( int i = 0; i < 8; i++ ) {
+      //
+      q_client.add_key_value_known_refs(nullptr,121 + i,UINT32_MAX,200 + i,0,0,0,0,nullptr,nullptr,nullptr,nullptr);
+
+    }
+
+    running.test_and_set();
+
+  },1);
+
+
+  thread *server_thread_put = new thread([&](int j) {
+    //
+    while ( !running.test() ) {
+      //q_test.put_handler(j);
+      tick();
+    }
+    //
+  },1);
+
+
+  thread *server_thread_get = new thread([&](int j) {
+    //
+    while ( !running.test() ) {
+      //q_test.get_handler(j);
+      tick();
+    }
+    //
+  },1);
+
+
+  client_thread->join();
+  server_thread_put->join();
+  server_thread_get->join();
+
+}
+
 /**
  * main ...
  * 
@@ -660,7 +737,10 @@ int main(int argc, char **argv) {
   nowish = std::chrono::system_clock::to_time_t(right_now);
 
 
-  test_shared_queue();
+//  test_shared_queue();
+//  test_shared_queue_threads();
+
+  test_node_shm_queued();
 
   // test_simple_stack();
   // test_toks();
@@ -668,6 +748,7 @@ int main(int argc, char **argv) {
   // test_initialization();
 
   // test_slab_threads();
+
 
   // ----
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;

@@ -152,6 +152,7 @@ class AtomicStack {		// ----
 		 * empty
 		*/
 		bool free_mem_empty(void) {
+cout << " _count_free: " << _count_free << endl;
 			auto free = _count_free->load(std::memory_order_acquire);
 			return (free == 0);
 		}

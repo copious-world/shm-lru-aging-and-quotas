@@ -119,9 +119,9 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 			_max_count = max_element_count;
 			//
 			// initialize from constructor
-			setup_region(am_initializer);
+			setup_region();
 			//
-			_proc_id = _com->next_thread_id();
+			_proc_id = _com.next_thread_id();
 		}
 
 
@@ -134,10 +134,9 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 * -- header_size --> HHash
 		 *  the regions are setup as, [values 1][buckets 1][values 2][buckets 2][controls 1 and 2]
 		*/
-		void setup_region(bool am_initializer) {
+		void setup_region(void) {
 			// ----
-			_com->_proc_refs->set_region(_region,TABLE_SIZE);
-			_com->_proc_refs->setup_all_queues(_region,TABLE_SIZE,am_initializer);
+			_com.initialize(_num_threads,_num_threads,_region,TABLE_SIZE,false);
 			//
 		}
 
@@ -184,8 +183,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		*/
 
 		void _adder_bucket_queue_release([[maybe_unused]] atomic<uint32_t> *control_bits, uint32_t el_key, [[maybe_unused]] uint32_t h_bucket, uint32_t offset_value, [[maybe_unused]] uint8_t which_table, [[maybe_unused]] uint32_t cbits, [[maybe_unused]] uint32_t cbits_op, [[maybe_unused]] uint32_t cbits_base_op, [[maybe_unused]] hh_element *bucket, [[maybe_unused]] hh_element *buffer, [[maybe_unused]] hh_element *end_buffer,[[maybe_unused]] CBIT_stash_holder *cbit_stashes[4]) {
-			//
-			_com->com_put(el_key,offset_value,_proc_id);
+			_com.com_put(el_key,offset_value,_proc_id);
 		}
 
 
@@ -288,7 +286,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 
 			uint32_t val = 0;
-			_com->com_req(el_key,val,_proc_id);
+			_com.com_req(el_key,val,_proc_id);
 			//
 			return val;
 		}
@@ -315,7 +313,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			if ( v_value == 0 ) return UINT64_MAX;
 			if ( el_key == UINT32_MAX ) return UINT64_MAX;
-			_com->com_put(el_key,v_value,_proc_id);
+			_com.com_put(el_key,v_value,_proc_id);
 			//
 			uint64_t loaded_key = (((uint64_t)el_key) << HALF) | v_value; // LOADED
 			loaded_key = stamp_key(loaded_key,1);
@@ -358,7 +356,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 			//
-			_com->com_put(el_key,UINT32_MAX,_proc_id);
+			_com.com_put(el_key,UINT32_MAX,_proc_id);
 
 			return el_key;
 		}
@@ -402,7 +400,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 */  
 
 
-		ExternalInterfaceQs<TABLE_SIZE> 		*_com;
+		ExternalInterfaceQs<TABLE_SIZE> 		_com;
 		uint8_t									_proc_id;
 
 		// ---- ---- ---- ---- ---- ---- ----
