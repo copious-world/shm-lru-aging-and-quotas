@@ -38,6 +38,8 @@ using namespace std;
 
 
 
+static const uint8_t Q_CTRL_ATOMIC_FLAG_COUNT = 2;
+
 
 typedef struct PROC_COM {
   uint32_t    	_hash;
@@ -82,51 +84,56 @@ typedef struct PUT {
  * 
 */
 
-class RequestEntries : public AtomicQueue<request_cell> {
+
+template<class CELL_TYPE>
+class AppAtomicQueue : public AtomicQueue<CELL_TYPE> {
 
 	public:
 
 		size_t setup_queue(uint8_t *start, size_t el_count, bool am_initializer) {
-			size_t step = sizeof(request_cell);
-			size_t region_size = (el_count + 4)*step;
+			size_t step = sizeof(CELL_TYPE);
+			size_t region_size = AppAtomicQueue<CELL_TYPE>::check_expected_queue_region_size(el_count);
 			if ( am_initializer ) {
-				setup_queue_region(start,step,region_size);
+				this->setup_queue_region(start,step,region_size);
 			} else {
-cout << "attaching queue: " << endl;
-				attach_queue_region(start,region_size);
-cout << "free count: " << this->_count_free << endl;
+				this->attach_queue_region(start,region_size);
 			}
 			return region_size;
 		}
 
 		static uint32_t check_expected_queue_region_size(size_t el_count) {
-			return sizeof(request_cell)*(el_count + 4);
+			return AtomicQueue<CELL_TYPE>::check_region_size(el_count);
 		}
 
 };
 
 
-class PutEntries : public  AtomicQueue<put_cell> {
+class RequestEntries : public AppAtomicQueue<request_cell> {
 
 	public:
 
-		size_t setup_queue(uint8_t *start, size_t el_count, bool am_initializer) {
-			size_t step = sizeof(put_cell);
-			size_t region_size = (el_count + 4)*step;
-			if ( am_initializer ) {
-				setup_queue_region(start,step,region_size);
-			} else {
-cout << "attaching queue: " << endl;
-				attach_queue_region(start,region_size);
-cout << "free count: " << this->_count_free << endl;
-			}
-			return region_size;
+		static uint32_t check_expected_queue_region_size(size_t el_count) {
+			return AppAtomicQueue<request_cell>::check_region_size(el_count) + Q_CTRL_ATOMIC_FLAG_COUNT*sizeof(atomic_flag);
 		}
+
+		size_t setup_queue(uint8_t *start, size_t el_count, bool am_initializer) {
+			return AppAtomicQueue<request_cell>::setup_queue(start, el_count, am_initializer);
+		}
+
+};
+
+
+class PutEntries : public  AppAtomicQueue<put_cell> {
+
+	public:
 
 		static uint32_t check_expected_queue_region_size(size_t el_count) {
-			return sizeof(put_cell)*(el_count + 4);
+			return AppAtomicQueue<put_cell>::check_region_size(el_count) + Q_CTRL_ATOMIC_FLAG_COUNT*sizeof(atomic_flag);
 		}
 
+		size_t setup_queue(uint8_t *start, size_t el_count, bool am_initializer) {
+			return AppAtomicQueue<put_cell>::setup_queue(start, el_count, am_initializer);
+		}
 };
 
 
@@ -134,6 +141,12 @@ typedef struct PUT_QUEUE_MANAGER {
 	atomic_flag								*_write_awake;
 	atomic_flag								*_client_privilege;
 	PutEntries								_put_queue;
+
+
+	static uint32_t check_expected_queue_region_size(size_t el_count) {
+		return PutEntries::check_expected_queue_region_size(el_count);
+	}
+	
 } put_queue_manager;
 
 
@@ -141,6 +154,11 @@ typedef struct GET_QUEUE_MANAGER {
 	atomic_flag								*_get_awake;
 	atomic_flag								*_client_privilege;
 	RequestEntries							_get_queue;
+
+	static uint32_t check_expected_queue_region_size(size_t el_count) {
+		return RequestEntries::check_expected_queue_region_size(el_count);
+	}
+
 } get_queue_manager;
 
 
@@ -160,9 +178,19 @@ struct TAB_PROC_DESCR {
 
 	void set_region(void *data,size_t el_count,bool am_initializer = false) {
 		_outputs = (proc_com_cell *)data;
+		//
 		uint8_t *start = (uint8_t *)data;
 		auto m_procs = min(max_req_procs,_num_client_p);
 		start += sizeof(proc_com_cell)*m_procs;
+		//
+		proc_com_cell *out_cell = _outputs;
+		while ( out_cell < (proc_com_cell *)start ) {
+			out_cell->_proc_id = 255;
+			out_cell->_reader.clear();
+			out_cell->_writer.clear();
+			out_cell++;
+		}
+		//
 		setup_all_queues(start, el_count, am_initializer);
 	}
 
@@ -189,9 +217,9 @@ struct TAB_PROC_DESCR {
 
 	static uint32_t check_expected_region_size(size_t el_count) {
 		uint32_t sz = 0;
-		sz += PutEntries::check_expected_queue_region_size(el_count) + 2*sizeof(atomic_flag);
-		sz += RequestEntries::check_expected_queue_region_size(el_count) + 2*sizeof(atomic_flag);
-		sz *= max_service_threads;
+		sz += put_queue_manager::check_expected_queue_region_size(el_count);
+		sz += get_queue_manager::check_expected_queue_region_size(el_count);
+		sz *= max_service_threads;		// on queue per service thread
 		sz += sizeof(proc_com_cell)*max_req_procs;
 		sz += sizeof(struct TAB_PROC_DESCR<max_req_procs,max_service_threads>);
 		return sz;
@@ -217,8 +245,7 @@ class ExternalInterfaceQs {
   public:
 
 
-	ExternalInterfaceQs() {
-	}
+	ExternalInterfaceQs() {}
 
     ExternalInterfaceQs(uint8_t client_count,uint8_t thread_count,void *data_region,size_t el_count,bool am_initializer = false) {
 		//
@@ -266,12 +293,19 @@ public:
 		}
     	//
     }
+
+
+	/**
+	 * next_thread_id
+	 * 	find a spot in the output section of the shared com buffer, and return its index.
+	 * 	Overwrite the marker showing that it is not taken with the index.
+	 */
 	uint8_t next_thread_id(void) {
 		proc_com_cell *tpc = _proc_refs._outputs;
 		for ( uint8_t p = 0; p < _thread_count; p++ ) {
 			auto pid = tpc->_proc_id;
 			if ( pid == 255 ) {
-				pid = p;
+				tpc->_proc_id = p;
 				return p;
 			}
 		}
@@ -313,24 +347,22 @@ public:
 	 * com_put
 	 */
     void com_put(uint32_t hh,uint32_t val,uint8_t return_to_pid) {
-      put_cell entry;
-      entry._hash = hh;
-      entry._value = val;
-      entry._proc_id = return_to_pid;
-      uint8_t tnum = (hh%N)/_sect_size;
-      //
-cout << "before check queue full " << endl;
-
-	  while ( _proc_refs._put_com[tnum]._put_queue.full() ) tick();
-
-cout << "before put " << endl;
-      _proc_refs._put_com[tnum]._put_queue.push_queue(entry);
-      //
-cout << "after put " << endl;
-
-      _proc_refs._put_com[tnum]._client_privilege->clear();     // wake up the service thread
-
-cout << "cleared" << endl;
+		put_cell entry;
+		entry._hash = hh;
+		entry._value = val;
+		entry._proc_id = return_to_pid;
+		uint8_t tnum = (hh%N)/_sect_size;
+		//
+		while ( _proc_refs._put_com[tnum]._put_queue.full() ) tick();
+		//
+		auto result = _proc_refs._put_com[tnum]._put_queue.push_queue(entry);
+		uint16_t pcnt = 0;
+		while ( result == UINT32_MAX && pcnt < 1024 ) {
+			for ( int i = 0; i < 100; i++ ) tick();
+			pcnt++;
+			result = _proc_refs._put_com[tnum]._put_queue.push_queue(entry);
+		}
+		//
     }
 
 
@@ -339,19 +371,34 @@ cout << "cleared" << endl;
 	 * com_req
 	 */
     void com_req(uint32_t hh,uint32_t &val,uint8_t return_to_pid) {
-      request_cell entry;
-      entry._hash = hh;
-      entry._proc_id = return_to_pid;
-      uint8_t tnum = (hh%N)/_sect_size;
-      //
-	  while ( _proc_refs._get_com[tnum]._get_queue.full() ) tick();
-      _proc_refs._get_com[tnum]._get_queue.push_queue(entry);
-      //
-      _proc_refs._outputs[return_to_pid]._reader.test_and_set();
-      _proc_refs._get_com[tnum]._client_privilege->clear();     // wake up the service thread
-
-      while( _proc_refs._outputs[return_to_pid]._reader.test() ) tick();
-      val = _proc_refs._outputs[return_to_pid]._value;
+		request_cell entry;
+		entry._hash = hh;
+		entry._proc_id = return_to_pid;
+		uint8_t tnum = (hh%N)/_sect_size;
+		//
+		while ( !(_proc_refs._outputs[return_to_pid]._writer.test_and_set()) ) tick();  // if doubling back on itself for any reason.
+		while ( !(_proc_refs._outputs[return_to_pid]._reader.test_and_set()) ) tick();  // for com with service.
+		//
+		while ( _proc_refs._get_com[tnum]._get_queue.full() ){ tick(); }  // let the tnum thread clear some things out
+		auto result = _proc_refs._get_com[tnum]._get_queue.push_queue(entry);
+		uint16_t pcnt = 0;
+		while ( (result == UINT32_MAX) && pcnt < 1024 ) {
+			for ( int i = 0; i < 100; i++ ) tick();
+			pcnt++;
+			result = _proc_refs._get_com[tnum]._get_queue.push_queue(entry);
+		}
+		//
+		uint16_t cnt = 0;
+		while ( _proc_refs._outputs[return_to_pid]._reader.test() && cnt < 1024 ) { cnt++, tick(); } // for com with service.
+		if ( cnt >= 1024 ) {
+			while ( _proc_refs._outputs[return_to_pid]._reader.test() ) {
+				_proc_refs._outputs[return_to_pid]._reader.clear();
+			}
+			val = UINT32_MAX;
+		} else {
+			val = _proc_refs._outputs[return_to_pid]._value;
+		}
+		_proc_refs._outputs[return_to_pid]._writer.clear();
     }
 
 
@@ -359,30 +406,40 @@ cout << "cleared" << endl;
 	 * unload_put_req
 	 */
     bool unload_put_req(put_cell &setter,uint8_t tnum) {
-      if ( _proc_refs._put_com[tnum]._put_queue.empty() ) return false;
-      _proc_refs._put_com[tnum]._put_queue.pop_queue(setter);
-      return true;
+		if ( _proc_refs._put_com[tnum]._put_queue.empty() ) return false;
+		auto result = _proc_refs._put_com[tnum]._put_queue.pop_queue(setter);
+		if ( result == UINT32_MAX ) return false;
+		return true;
     }
+
 
 	/**
 	 * unload_get_req
 	 */
     bool unload_get_req(request_cell &getter,uint8_t tnum) {
-      if ( _proc_refs._get_com[tnum]._get_queue.empty() ) return false;
-      _proc_refs._get_com[tnum]._get_queue.pop_queue(getter);
-      return true;
+		if ( _proc_refs._get_com[tnum]._get_queue.empty() ) {
+			return false;
+		}
+		auto result = _proc_refs._get_com[tnum]._get_queue.pop_queue(getter);
+		if ( result == UINT32_MAX ) return false;
+		return true;
     }
 
 	/**
 	 * write_to_proc
 	 */
     void write_to_proc(uint32_t hh,uint32_t val,uint8_t return_to_pid) {
-      _proc_refs._outputs[return_to_pid]._hash = hh;
-      _proc_refs._outputs[return_to_pid]._value = val;
-      _proc_refs._outputs[return_to_pid]._reader.clear();
+		_proc_refs._outputs[return_to_pid]._hash = hh;
+		_proc_refs._outputs[return_to_pid]._value = val;
+		while ( _proc_refs._outputs[return_to_pid]._reader.test() ) {
+			_proc_refs._outputs[return_to_pid]._reader.clear();
+		}
     }
 
+
   public:
+
+  bool report{false};
 
     table_proc_com        _proc_refs;
     uint8_t               _thread_count{0};

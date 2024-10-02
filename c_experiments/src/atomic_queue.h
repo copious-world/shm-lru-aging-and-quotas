@@ -10,7 +10,7 @@
 using namespace std;
 
 
-const uint8_t NUM_SHARED_ATOMS_Q = 4;
+const uint8_t NUM_SHARED_ATOMS_Q = 5;
 
 
 typedef struct BASIC_Q_ELEMENT_HDR {
@@ -42,16 +42,17 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 		*/
 		uint32_t pop_queue(QueueEl &output) {
 			//
+			incr_pop_count();
+			wait_on_push_count();		// one semaphore just in case the queue is near empty during a push
+			//
 			uint8_t *start = (uint8_t *)_q_head;
 			auto tail_ref = _q_tail;
 			uint32_t tail_offset = tail_ref->load(std::memory_order_relaxed);
 			//
 			if ( tail_offset == 0 ) { // empty, take no action
+				decr_pop_count();
 				return UINT32_MAX;
 			}
-			//
-			incr_pop_count();
-			wait_on_push_count();		// one semaphore just in case the queue is near empty during a push
 			//
 			std::atomic_thread_fence(std::memory_order_acquire);
 			// ----
@@ -61,6 +62,8 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 			do {
 				//
 				if ( tail_offset == 0 ) {  // tail_offset updates with the failed exchange_weak
+					auto head = _q_head;
+					head->store(0,std::memory_order_release);
 					decr_pop_count();
 					return(UINT32_MAX);			/// failed memory allocation...
 				}
@@ -76,8 +79,14 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 				QueueEl *tail = (QueueEl *)(start + t_offset);
 				output = *tail;
 				this->_atomic_stack_push((start + NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>)), tail);
+				if ( prev_offset == 0 ) {
+					auto head = _q_head;
+					head->store(0,std::memory_order_release);
+				}
 				decr_pop_count();
 				return 0;
+			} else {
+				_q_head->store(0,std::memory_order_release);
 			}
 			//
 			decr_pop_count();
@@ -93,9 +102,9 @@ class AtomicQueue : public AtomicStack<QueueEl> {		// ----
 		uint32_t push_queue(QueueEl &input) {
 			uint32_t el_offset = 0;
 			uint8_t *start = (uint8_t *)_q_head;
-cout << "START: " << start << endl;
 
 			uint32_t front_offset = 0;
+			uint32_t tail_offset = 0;
 			//
 			// Get a free object from the object stack.
 			uint32_t rslt = this->pop_number(start + NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>), 1, &el_offset);
@@ -113,12 +122,15 @@ cout << "START: " << start << endl;
 			*el = input;   // 
 			auto atom_fp = (atomic<uint32_t> *)(&(el->_prev));
 			atom_fp->store(0);
+			//
 			auto head = _q_head;
+			auto tail = _q_tail;
 
 			//
 			do {
 				//
 				front_offset = head->load(std::memory_order_relaxed);
+				tail_offset = tail->load(std::memory_order_relaxed);
 				//
 				if ( front_offset == UINT32_MAX ) { // empty, take no action
 					decr_push_count();
@@ -132,6 +144,8 @@ cout << "START: " << start << endl;
 					// On sucess, the first offset remains zero.
 					if ( front_offset == 0 ) {  // this is the proc that wrote the new header
 						// store the tail offset... since this is the only element in the queue, the tail will refer to it.
+						while ( !(_q_tail->compare_exchange_weak(tail_offset,el_offset,std::memory_order_acq_rel) ) )
+						;
 						_q_tail->store(el_offset,std::memory_order_release);
 						*el = input;						// retrieve value (this op is independent of setting head and tail)
 						auto atom_fp = (atomic<uint32_t> *)(&(el->_prev));  // the first element as no previous
@@ -201,8 +215,26 @@ cout << "START: " << start << endl;
 			return this->free_mem_empty();
 		}
 
-		void incr_push_count(void) {
-			_q_push_count->fetch_add(1,std::memory_order_acquire);
+		void incr_push_count(void) {  // _popper-
+			while ( !(_popper->test_and_set()) )
+			;
+			auto cur_count = _q_push_count->fetch_add(1,std::memory_order_acquire);
+			if ( cur_count == 0 ) {
+				auto cnt = _q_pop_count->load(std::memory_order_acquire);
+				if ( cnt == 0 ) {
+					_popper->clear();
+					return;
+				}
+				_q_push_count->store(0,std::memory_order_release);
+				while ( cnt > 0 ) {
+					cnt = _q_pop_count->load(std::memory_order_acquire);
+					tick();
+				}
+				_q_push_count->store(1,std::memory_order_release);
+				_popper->clear();
+			} else {
+				_popper->clear();
+			}
 		}
 
 		void decr_push_count(void) {
@@ -213,7 +245,10 @@ cout << "START: " << start << endl;
 		}
 
 		void incr_pop_count(void) {
+			while ( !(_popper->test_and_set()) )
+			;
 			_q_pop_count->fetch_add(1,std::memory_order_acquire);
+			_popper->clear();
 		}
 
 		void decr_pop_count(void) {
@@ -231,13 +266,10 @@ cout << "START: " << start << endl;
 		 */
 
 		void wait_on_push_count(void) {
-			if ( _q_head->load(std::memory_order_acquire) == _q_tail->load(std::memory_order_acquire) ) {
-				while ( _q_push_count->load(std::memory_order_acquire) > 0 ) {
-					tick();
-					while ( _q_head->load(std::memory_order_acquire) == _q_tail->load(std::memory_order_acquire) ) {
-						tick();
-					}
-				}
+			auto cnt = _q_push_count->load(std::memory_order_acquire);
+			while ( cnt > 0 ) {
+				tick();
+				cnt = _q_push_count->load(std::memory_order_acquire);
 			}
 		}
 
@@ -247,11 +279,10 @@ cout << "START: " << start << endl;
 		 */
 
 		void wait_on_pop_count(void) {
-			if ( _q_head->load(std::memory_order_acquire) == _q_tail->load(std::memory_order_acquire) ) {
-				while ( _q_pop_count->load(std::memory_order_acquire) > 0 ) {
-					tick();
-					while ( !(this->empty()) ) tick();
-				}
+			auto cnt = _q_pop_count->load(std::memory_order_acquire);
+			while ( cnt > 0 ) {
+				tick();
+				cnt = _q_pop_count->load(std::memory_order_acquire);
 			}
 		}
 
@@ -264,6 +295,8 @@ cout << "START: " << start << endl;
 			_q_push_count->store(0);
 			_q_pop_count = _q_push_count + 1;
 			_q_pop_count->store(0);
+			_popper = (atomic_flag *)(_q_pop_count + 1);
+			_popper->clear();
 			auto sz = region_size - NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>);
 			return this->setup_region_free_list((start + NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>)),step,sz);
 		}
@@ -274,6 +307,7 @@ cout << "START: " << start << endl;
 			_q_tail = _q_head + 1;
 			_q_push_count = _q_tail + 1;
 			_q_pop_count = _q_push_count + 1;
+			_popper = (atomic_flag *)(_q_pop_count + 1);
 			auto sz = region_size - NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>);
 			this->attach_region_free_list((start+ NUM_SHARED_ATOMS_Q*sizeof(atomic<uint32_t>)), sz);
 		}
@@ -293,6 +327,7 @@ cout << "START: " << start << endl;
 		atomic<uint32_t> 				*_q_tail;
 		atomic<uint32_t> 				*_q_push_count;
 		atomic<uint32_t> 				*_q_pop_count;
+		atomic_flag						*_popper;
 		//
 
 };

@@ -91,6 +91,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 
 		// SSlab_map LRU_cache -- constructor
 		QUEUED_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
+cout << "QUEUED_map: num_threads: " << num_threads << endl;;
 			initialize_all(region, seg_sz, max_element_count, num_threads, am_initializer);
 		}
 
@@ -119,9 +120,11 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 			_max_count = max_element_count;
 			//
 			// initialize from constructor
-			setup_region();
+			this->setup_region();
 			//
 			_proc_id = _com.next_thread_id();
+
+cout << "QUEUED_map::initialize_all _proc_id: " <<  (int)_proc_id << endl;
 		}
 
 

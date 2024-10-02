@@ -152,7 +152,6 @@ class AtomicStack {		// ----
 		 * empty
 		*/
 		bool free_mem_empty(void) {
-cout << " _count_free: " << _count_free << endl;
 			auto free = _count_free->load(std::memory_order_acquire);
 			return (free == 0);
 		}
@@ -233,7 +232,8 @@ cout << " _count_free: " << _count_free << endl;
 
 
 		static size_t check_region_size(uint32_t max_free) {
-			size_t total_size = NUM_SHARED_ATOMICS_STACK_CTRL*sizeof(atomic<uint32_t>) + sizeof(StackEl)*(max_free+1);
+			const uint8_t extra_for_header = 1;
+			size_t total_size = NUM_SHARED_ATOMICS_STACK_CTRL*sizeof(atomic<uint32_t>) + sizeof(StackEl)*(max_free + extra_for_header);
 			return total_size;
 		}
 		

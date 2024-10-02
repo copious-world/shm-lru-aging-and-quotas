@@ -124,22 +124,18 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<TABLE_SIZE> {
 	}
 
 	void put_handler(uint8_t t_num) {			/// t_num a thread number
-
-        this->await_put(t_num);
-
+		//
         put_cell setter;
         while ( this->unload_put_req(setter,t_num) ) {
           auto hh = setter._hash;
           auto val = setter._value;
           _storage.store_pair(hh,val,t_num);
         }
-        this->clear_put(t_num);
+		//
 	}
 
 
 	void get_handler(uint8_t t_num) {
-		//
-		this->await_get(t_num);
 		//
 		request_cell getter;
 		while ( this->unload_get_req(getter,t_num) ) {
@@ -149,7 +145,6 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<TABLE_SIZE> {
 			this->write_to_proc(hh,val,return_to_pid);
 		}
 		//
-		this->clear_get(t_num);
 	}
 
 

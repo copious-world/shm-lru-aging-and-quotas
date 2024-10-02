@@ -648,7 +648,7 @@ void test_node_shm_queued(void) {
   uint32_t els_per_tier = 200000;
   uint32_t els_per_com_queue = 200;
 
-  auto sz = Storage_ExternalInterfaceQs<8,200>::check_expected_com_region_size(200);
+  auto sz = Storage_ExternalInterfaceQs<8,200>::check_expected_com_region_size( els_per_com_queue );
   //
   cout << "region size: " << sz << endl;
   //
@@ -673,38 +673,84 @@ void test_node_shm_queued(void) {
 
     for ( int i = 0; i < 8; i++ ) {
       //
+      cout << "add: " << (121 + i) << "," << (200 + i) << endl;
       q_client.add_key_value_known_refs(nullptr,121 + i,UINT32_MAX,200 + i,0,0,0,0,nullptr,nullptr,nullptr,nullptr);
 
     }
+
+    cout << "wait q 4 empty " << endl;
+    while ( !q_client._com._proc_refs._put_com[4]._put_queue.empty() ) tick();
+    cout << "wait q 5 empty " << endl;
+    while ( !q_client._com._proc_refs._put_com[5]._put_queue.empty() ) tick();
+
+
+    cout << "start retrieving values: " << endl;
+
+    for ( int i = 0; i < 8; i++ ) {
+      //
+      auto val = q_client.get(121+i,UINT32_MAX);
+      cout << val << endl;
+      //
+    }
+
+    while ( !q_client._com._proc_refs._get_com[4]._get_queue.empty() ) tick();
+    while ( !q_client._com._proc_refs._get_com[5]._get_queue.empty() ) tick();
 
     running.test_and_set();
 
   },1);
 
 
-  thread *server_thread_put = new thread([&](int j) {
+  thread *server_thread_put_4 = new thread([&](int j) {
     //
     while ( !running.test() ) {
-      //q_test.put_handler(j);
+      q_test.put_handler(j);
       tick();
     }
     //
-  },1);
+  },4);
 
 
-  thread *server_thread_get = new thread([&](int j) {
+  thread *server_thread_put_5 = new thread([&](int j) {
     //
     while ( !running.test() ) {
-      //q_test.get_handler(j);
+      q_test.put_handler(j);
       tick();
     }
     //
-  },1);
+  },5);
+
+
+
+  thread *server_thread_get_4 = new thread([&](int j) {
+    //
+    while ( !running.test() ) {
+      q_test.get_handler(j);
+      tick();
+    }
+
+    cout << "get thread 4 exit" << endl;
+    //
+  },4);
+
+
+  thread *server_thread_get_5 = new thread([&](int j) {
+    //
+    while ( !running.test() ) {
+      q_test.get_handler(j);
+      tick();
+    }
+    cout << "get thread 5 exit" << endl;
+    //
+  },5);
+
 
 
   client_thread->join();
-  server_thread_put->join();
-  server_thread_get->join();
+  server_thread_put_4->join();
+  server_thread_put_5->join();
+  server_thread_get_4->join();
+  server_thread_get_5->join();
 
 }
 
