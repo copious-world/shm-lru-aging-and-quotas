@@ -26,6 +26,7 @@ using namespace std;
 #include "node_shm_HH.h"
 #include "node_shm_sparse_slabs.h"
 #include "node_shm_queued.h"
+#include "node_shm_internal.h"
 
 #include "holey_buffer.h"
 #include "atomic_proc_rw_state.h"
@@ -148,13 +149,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		static uint32_t check_expected_lru_region_size(size_t record_size, size_t els_per_tier, uint32_t num_procs) {
 			//
-			size_t this_tier_atomics_sz = LRU_ATOMIC_HEADER_WORDS*sizeof(atomic<uint32_t>);  // currently 5 accessed
-			size_t com_reader_per_proc_sz = sizeof(Com_element)*num_procs;
-			size_t max_count_lru_regions_sz = (sizeof(LRU_element) + record_size)*(els_per_tier + 2);
-			// _max_count*2 + num_procs
-			size_t holey_buffer_sz = sizeof(pair<uint32_t,uint32_t>)*els_per_tier*2 + sizeof(pair<uint32_t,uint32_t>)*num_procs; // storage for timeout management
-
-			uint32_t predict = (this_tier_atomics_sz + com_reader_per_proc_sz + max_count_lru_regions_sz + holey_buffer_sz);
+			uint32_t predict = LRU_Consts::check_expected_lru_region_size(record_size,els_per_tier,num_procs);
 			//
 			return predict;
 		}
@@ -233,11 +228,51 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 				case STP_TABLE_INTERNAL_ONLY:
 				default: {
-					_hmap = nullptr;
-					cout << "STP_TABLE_INTERNAL_ONLY is not implemented" << endl;
+					_hmap = new INTERNAL_map<>(nullptr,0,els_per_tier,_am_initializer);
 					break;
 				}
 			}
+		}
+
+
+		void section_allocation_requirements(stp_table_choice tchoice, uint32_t num_procs, uint32_t num_tiers) {
+			LRU_Alloc_Sections_and_Threads last;
+			//
+			last._num_tiers = num_tiers;
+			switch (tchoice) {
+				case STP_TABLE_HH: {
+					last._alloc_hash_tables = true;
+					last._num_hash_tables = 2;
+					last._alloc_randoms = true;
+					last._alloc_secondary_com_buffer = false;
+					break;
+				}
+				case STP_TABLE_SLABS: {
+					last._alloc_hash_tables = true;
+					last._num_hash_tables = 2;  // refers the top level split, the sp_element split...
+					last._num_initial_typed_slab = 4; // refers to the number of slab types 4-cell to 32-cells
+					last._alloc_randoms = true;
+					last._alloc_secondary_com_buffer = false;
+					break;
+				}
+				case STP_TABLE_QUEUED: {
+					last._alloc_hash_tables = false;
+					last._num_hash_tables = 0;
+					last._alloc_randoms = false;
+					last._alloc_secondary_com_buffer = true;
+					break;
+				}
+
+				default:
+				case STP_TABLE_INTERNAL_ONLY: {
+					last._alloc_hash_tables = false;
+					last._num_hash_tables = 0;
+					last._alloc_randoms = false;
+					last._alloc_secondary_com_buffer = false;
+					break;
+				}
+			}
+
 
 		}
 

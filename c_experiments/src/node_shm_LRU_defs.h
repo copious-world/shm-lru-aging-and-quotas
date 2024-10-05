@@ -19,6 +19,7 @@
 
 using namespace std;
 
+#include "random_selector.h"
 #include "atomic_proc_rw_state.h"
 
 
@@ -141,6 +142,20 @@ typedef struct LRU_ELEMENT_HDR {
 
 
 
+typedef struct _LRU_Alloc_Sections_and_Threads_ {
+	bool			_alloc_randoms;		// do allocation and launch threads
+	//
+	bool			_alloc_hash_tables;	// do allocation and launch threads
+	uint8_t			_num_hash_tables;	// usually one or two (sparse may be more)
+	uint8_t			_num_initial_typed_slab{0};	// usually one or two (sparse may be more)
+	//
+	uint8_t			_num_tiers;
+	//
+	bool			_alloc_secondary_com_buffer{false}; // for the queued case
+
+} LRU_Alloc_Sections_and_Threads;
+
+
 //
 //	LRU_cache --
 //
@@ -165,6 +180,34 @@ class LRU_Consts {
 		uint32_t			_NTiers;
 		uint32_t			_Procs;
 		bool				_am_initializer;
+
+
+
+		/**
+		 * check_expected_lru_region_size
+		*/
+
+		static uint32_t check_expected_lru_region_size(size_t record_size, size_t els_per_tier, uint32_t num_procs) {
+			//
+			size_t this_tier_atomics_sz = LRU_ATOMIC_HEADER_WORDS*sizeof(atomic<uint32_t>);  // currently 5 accessed
+			size_t com_reader_per_proc_sz = sizeof(Com_element)*num_procs;
+			size_t max_count_lru_regions_sz = (sizeof(LRU_element) + record_size)*(els_per_tier + 2);
+			// _max_count*2 + num_procs
+			size_t holey_buffer_sz = sizeof(pair<uint32_t,uint32_t>)*els_per_tier*2 + sizeof(pair<uint32_t,uint32_t>)*num_procs; // storage for timeout management
+
+			uint32_t predict = (this_tier_atomics_sz + com_reader_per_proc_sz + max_count_lru_regions_sz + holey_buffer_sz);
+			//
+			return predict;
+		}
+
+
+		static uint32_t check_expected_com_size(uint32_t num_procs, uint32_t num_tiers) {
+			size_t tier_atomics_sz = NUM_ATOMIC_OPS*num_tiers*sizeof(atomic_flag *);  // ref to the atomic flag
+			size_t proc_tier_com_sz = sizeof(Com_element)*num_procs*num_tiers;
+			uint32_t seg_size = tier_atomics_sz + proc_tier_com_sz;
+			return seg_size;
+		}
+
 };
 
 

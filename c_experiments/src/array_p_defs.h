@@ -90,9 +90,9 @@ class AppAtomicQueue : public AtomicQueue<CELL_TYPE> {
 
 	public:
 
-		size_t setup_queue(uint8_t *start, size_t el_count, bool am_initializer) {
+		size_t setup_queue(uint8_t *start, size_t q_entry_count, bool am_initializer) {
 			size_t step = sizeof(CELL_TYPE);
-			size_t region_size = AppAtomicQueue<CELL_TYPE>::check_expected_queue_region_size(el_count);
+			size_t region_size = AppAtomicQueue<CELL_TYPE>::check_expected_queue_region_size(q_entry_count);
 			if ( am_initializer ) {
 				this->setup_queue_region(start,step,region_size);
 			} else {
@@ -101,8 +101,8 @@ class AppAtomicQueue : public AtomicQueue<CELL_TYPE> {
 			return region_size;
 		}
 
-		static uint32_t check_expected_queue_region_size(size_t el_count) {
-			return AtomicQueue<CELL_TYPE>::check_region_size(el_count);
+		static uint32_t check_expected_queue_region_size(size_t q_entry_count) {
+			return AtomicQueue<CELL_TYPE>::check_region_size(q_entry_count);
 		}
 
 };
@@ -112,12 +112,12 @@ class RequestEntries : public AppAtomicQueue<request_cell> {
 
 	public:
 
-		static uint32_t check_expected_queue_region_size(size_t el_count) {
-			return AppAtomicQueue<request_cell>::check_region_size(el_count) + Q_CTRL_ATOMIC_FLAG_COUNT*sizeof(atomic_flag);
+		static uint32_t check_expected_queue_region_size(size_t q_entry_count) {
+			return AppAtomicQueue<request_cell>::check_region_size(q_entry_count) + Q_CTRL_ATOMIC_FLAG_COUNT*sizeof(atomic_flag);
 		}
 
-		size_t setup_queue(uint8_t *start, size_t el_count, bool am_initializer) {
-			return AppAtomicQueue<request_cell>::setup_queue(start, el_count, am_initializer);
+		size_t setup_queue(uint8_t *start, size_t q_entry_count, bool am_initializer) {
+			return AppAtomicQueue<request_cell>::setup_queue(start, q_entry_count, am_initializer);
 		}
 
 };
@@ -127,12 +127,12 @@ class PutEntries : public  AppAtomicQueue<put_cell> {
 
 	public:
 
-		static uint32_t check_expected_queue_region_size(size_t el_count) {
-			return AppAtomicQueue<put_cell>::check_region_size(el_count) + Q_CTRL_ATOMIC_FLAG_COUNT*sizeof(atomic_flag);
+		static uint32_t check_expected_queue_region_size(size_t q_entry_count) {
+			return AppAtomicQueue<put_cell>::check_region_size(q_entry_count) + Q_CTRL_ATOMIC_FLAG_COUNT*sizeof(atomic_flag);
 		}
 
-		size_t setup_queue(uint8_t *start, size_t el_count, bool am_initializer) {
-			return AppAtomicQueue<put_cell>::setup_queue(start, el_count, am_initializer);
+		size_t setup_queue(uint8_t *start, size_t q_entry_count, bool am_initializer) {
+			return AppAtomicQueue<put_cell>::setup_queue(start, q_entry_count, am_initializer);
 		}
 };
 
@@ -143,8 +143,8 @@ typedef struct PUT_QUEUE_MANAGER {
 	PutEntries								_put_queue;
 
 
-	static uint32_t check_expected_queue_region_size(size_t el_count) {
-		return PutEntries::check_expected_queue_region_size(el_count);
+	static uint32_t check_expected_queue_region_size(size_t q_entry_count) {
+		return PutEntries::check_expected_queue_region_size(q_entry_count);
 	}
 	
 } put_queue_manager;
@@ -155,8 +155,8 @@ typedef struct GET_QUEUE_MANAGER {
 	atomic_flag								*_client_privilege;
 	RequestEntries							_get_queue;
 
-	static uint32_t check_expected_queue_region_size(size_t el_count) {
-		return RequestEntries::check_expected_queue_region_size(el_count);
+	static uint32_t check_expected_queue_region_size(size_t q_entry_count) {
+		return RequestEntries::check_expected_queue_region_size(q_entry_count);
 	}
 
 } get_queue_manager;
@@ -176,7 +176,7 @@ struct TAB_PROC_DESCR {
 
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
-	void set_region(void *data,size_t el_count,bool am_initializer = false) {
+	void set_region(void *data,size_t q_entry_count,bool am_initializer = false) {
 		_outputs = (proc_com_cell *)data;
 		//
 		uint8_t *start = (uint8_t *)data;
@@ -191,10 +191,10 @@ struct TAB_PROC_DESCR {
 			out_cell++;
 		}
 		//
-		setup_all_queues(start, el_count, am_initializer);
+		setup_all_queues(start, q_entry_count, am_initializer);
 	}
 
-	void setup_all_queues(uint8_t *start, size_t el_count,bool am_initializer = false) {
+	void setup_all_queues(uint8_t *start, size_t q_entry_count,bool am_initializer = false) {
 		//
 		auto num_t = min(max_service_threads,_num_service_threads);
 		for ( uint8_t t = 0; t < num_t; t++ ) {
@@ -203,22 +203,22 @@ struct TAB_PROC_DESCR {
 			_put_com[t]._client_privilege = (atomic_flag *)start;
 			start += sizeof(atomic_flag);
 			//
-			start += _put_com[t]._put_queue.setup_queue(start, el_count, am_initializer);
+			start += _put_com[t]._put_queue.setup_queue(start, q_entry_count, am_initializer);
 			//
 			_get_com[t]._get_awake = (atomic_flag *)start;
 			start += sizeof(atomic_flag);
 			_get_com[t]._client_privilege = (atomic_flag *)start;
 			//
-			start += _get_com[t]._get_queue.setup_queue(start, el_count, am_initializer);
+			start += _get_com[t]._get_queue.setup_queue(start, q_entry_count, am_initializer);
 		}
 		//
 	}
 
 
-	static uint32_t check_expected_region_size(size_t el_count) {
+	static uint32_t check_expected_region_size(size_t q_entry_count) {
 		uint32_t sz = 0;
-		sz += put_queue_manager::check_expected_queue_region_size(el_count);
-		sz += get_queue_manager::check_expected_queue_region_size(el_count);
+		sz += put_queue_manager::check_expected_queue_region_size(q_entry_count);
+		sz += get_queue_manager::check_expected_queue_region_size(q_entry_count);
 		sz *= max_service_threads;		// on queue per service thread
 		sz += sizeof(proc_com_cell)*max_req_procs;
 		sz += sizeof(struct TAB_PROC_DESCR<max_req_procs,max_service_threads>);
@@ -240,31 +240,16 @@ typedef struct TAB_PROC_DESCR<> table_proc_com;
  *  ExternalInterfaceQs
  * 
  */
-template<const uint32_t N>
+template<const uint32_t TABLE_SIZE>
 class ExternalInterfaceQs {
   public:
 
 
 	ExternalInterfaceQs() {}
 
-    ExternalInterfaceQs(uint8_t client_count,uint8_t thread_count,void *data_region,size_t el_count,bool am_initializer = false) {
+    ExternalInterfaceQs(uint8_t client_count,uint8_t thread_count,void *data_region,size_t max_els_sored,bool am_initializer = false) {
 		//
-		_proc_refs.set_region(data_region,el_count,am_initializer);
-		
-		_sect_size = N/thread_count;
-		//
-		_thread_count = thread_count;
-		_client_count = client_count;
-		_proc_refs._num_client_p = client_count;
-		_proc_refs._num_service_threads = thread_count;
-		//
-		for ( uint8_t t = 0; t < thread_count; t++ ) {
-			_proc_refs._put_com[t]._write_awake->clear();
-			_proc_refs._put_com[t]._client_privilege->clear();
-			_proc_refs._get_com[t]._get_awake->clear();
-			_proc_refs._get_com[t]._client_privilege->clear();
-		}
-    	//
+		initialize(client_count, thread_count, data_region, max_els_stored, am_initializer);
     }
 
     virtual ~ExternalInterfaceQs(void) {}
@@ -274,11 +259,12 @@ class ExternalInterfaceQs {
 public:
 
 
-    void initialize(uint8_t client_count,uint8_t thread_count,void *data_region,size_t el_count,bool am_initializer = false) {
+    void initialize(uint8_t client_count,uint8_t thread_count,void *data_region,size_t max_els_stored,bool am_initializer = false) {
 		//
-		_proc_refs.set_region(data_region,el_count,am_initializer);
+		_proc_refs.set_region(data_region,TABLE_SIZE,am_initializer);
 		
-		_sect_size = N/thread_count;
+		_sect_size = max_els_stored/thread_count;
+		_max_els_stored = max_els_sored;
 		//
 		_thread_count = thread_count;
 		_client_count = client_count;
@@ -316,8 +302,7 @@ public:
     //
 	static uint32_t check_expected_com_region_size(uint8_t q_entry_count) {
 		//
-      	size_t el_count = q_entry_count;
-		uint32_t c_regions_size = table_proc_com::check_expected_region_size(el_count);
+		uint32_t c_regions_size = table_proc_com::check_expected_region_size(size_t)q_entry_count);
 		//
 		return c_regions_size;
 	}
@@ -351,7 +336,7 @@ public:
 		entry._hash = hh;
 		entry._value = val;
 		entry._proc_id = return_to_pid;
-		uint8_t tnum = (hh%N)/_sect_size;
+		uint8_t tnum = (hh%_max_els_stored)/_sect_size;
 		//
 		while ( _proc_refs._put_com[tnum]._put_queue.full() ) tick();
 		//
@@ -374,7 +359,7 @@ public:
 		request_cell entry;
 		entry._hash = hh;
 		entry._proc_id = return_to_pid;
-		uint8_t tnum = (hh%N)/_sect_size;
+		uint8_t tnum = (hh%_max_els_stored)/_sect_size;
 		//
 		while ( !(_proc_refs._outputs[return_to_pid]._writer.test_and_set()) ) tick();  // if doubling back on itself for any reason.
 		while ( !(_proc_refs._outputs[return_to_pid]._reader.test_and_set()) ) tick();  // for com with service.
@@ -445,6 +430,7 @@ public:
     uint8_t               _thread_count{0};
     uint8_t               _client_count{0};
     uint32_t              _sect_size{0};
+    uint32_t              _max_els_stored{0};
 
 };
 

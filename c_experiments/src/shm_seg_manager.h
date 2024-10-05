@@ -107,21 +107,14 @@ class SharedSegmentsTForm : public SharedSegments {
 		}
 
 		/**
-		 * initialize_com
+		 * initialize_com_shm
 		*/
-
-		// return ((Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *));
-		// _owner_proc_area = ((Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *)) + (_proc*_NTiers);
 
 		int initialize_com_shm(key_t com_key, bool am_initializer, uint32_t num_procs, uint32_t num_tiers) {
 			//
 			int status = 0;
 			//
-			size_t tier_atomics_sz = NUM_ATOMIC_FLAG_OPS_PER_TIER*num_tiers*sizeof(atomic_flag *);  // ref to the atomic flag
-			size_t proc_tier_com_sz = sizeof(Com_element)*num_procs*num_tiers;
-			//
-			size_t seg_size = tier_atomics_sz + proc_tier_com_sz;
-			_com_buffer_size = seg_size;
+			_com_buffer_size = LRU_Consts::check_expected_com_size(num_procs,num_tiers);
 			//
 			if ( am_initializer ) {
 				status = _shm_creator(com_key,seg_size);
@@ -136,15 +129,13 @@ class SharedSegmentsTForm : public SharedSegments {
 		}
 
 
-		// initialize_randoms_shm
-		//
+		/**
+		 * initialize_randoms_shm
+		 */
 		int initialize_randoms_shm(key_t randoms_key, bool am_initializer) {
 			int status = 0;
 			//
-			size_t tier_atomics_sz = 4*sizeof(uint32_t);  // ref to the atomic flag
-			size_t bit_word_store_sz = 256*sizeof(uint32_t);
-			//
-			size_t seg_size = 4*(tier_atomics_sz + bit_word_store_sz);
+			size_t seg_size = Random_bits_generator<>::check_expected_region_size;
 			_random_bits_buffer_size = seg_size;
 			//
 			if ( am_initializer ) {
@@ -160,26 +151,14 @@ class SharedSegmentsTForm : public SharedSegments {
 		}
 
 
-		// _step = (sizeof(LRU_element) + _record_size);
-		// _lb_time = (atomic<uint32_t> *)(region);   // these are governing time boundaries of the particular tier
-		// _ub_time = _lb_time + 1;
-		// _cascaded_com_area = (Com_element *)(_ub_time + 1);
-		// _end_cascaded_com_area = _cascaded_com_area + _Procs;
-		// initialize_com_area(num_procs)  .. 
-		// _max_count*_step;
-		// _reserve_end = _region + _region_size;
-		// _reserve_start = end;
-		// _reserve_count_free = factor*num_procs// (_max_count/100)*_reserve_percent;
+		/**
+		 * initialize_lru_shm
+		 */
 
 		int initialize_lru_shm(key_t key, bool am_initializer, uint32_t max_obj_size, uint32_t num_procs, uint32_t els_per_tier) {
 			int status = 0;
 			//
-			size_t boundaries_atomics_sz = LRU_ATOMIC_HEADER_WORDS*sizeof(atomic<uint32_t>);		// atomics used to gain control of specific ops
-			size_t com_read_per_proc_sz = sizeof(Com_element)*num_procs;	// for requesting and returning values 
-			size_t max_count_lru_regions_sz = (sizeof(LRU_element) + max_obj_size)*(els_per_tier  + 2); // storage
-			size_t holey_buffer_sz = sizeof(pair<uint32_t,uint32_t>)*els_per_tier*2 + sizeof(pair<uint32_t,uint32_t>)*num_procs; // storage for timeout management
-			//
-			size_t seg_size = (boundaries_atomics_sz + com_read_per_proc_sz + max_count_lru_regions_sz + holey_buffer_sz);
+			size_t seg_size = LRU_Consts::check_expected_lru_region_size(max_obj_size,els_per_tier,num_procs);
 			//
 			if ( am_initializer ) {
 				status = _shm_creator(key,seg_size);
@@ -191,22 +170,16 @@ class SharedSegmentsTForm : public SharedSegments {
 			if ( status == 0 ) {
 				_seg_to_lrus[key] = _ids_to_seg_addrs[key];
 			}
+			//
 			return status;
 		}
 
-		// x2 the sum of the following
-		//uint32_t v_regions_size = (sizeof(uint64_t)*max_count);
-		//uint32_t h_regions_size = (sizeof(uint32_t)*max_count);
-		//sz = sizeof(HHash)
-		//uint8_t header_size = (sz  + (sz % sizeof(uint32_t)));
 
+		/**
+		 * initialize_hmm_shm
+		 */
 		int initialize_hmm_shm(key_t key,  bool am_initializer, uint32_t els_per_tier,uint32_t num_threads) {
 			int status = 0;
-			//
-			// size_t hhash_header_allotment_sz = 2*sizeof(HHash);
-			// size_t value_reagion_sz = sizeof(uint64_t)*els_per_tier;
-			// size_t bucket_region_sz = sizeof(uint32_t)*els_per_tier;
-			// size_t control_bits_sz = sizeof(atomic<uint32_t>)*els_per_tier;
 			size_t seg_size = HH::check_expected_hh_region_size(els_per_tier,num_threads);
 			//
 			if ( am_initializer ) {
@@ -221,8 +194,9 @@ class SharedSegmentsTForm : public SharedSegments {
 			return status;
 		}
 
-
-		//  tier_segments_initializers
+		/**
+		 * tier_segments_initializers
+		 */
 
 		int tier_segments_initializers(bool am_initializer,list<uint32_t> &lru_keys,list<uint32_t> &hh_keys,uint32_t max_obj_size,uint32_t num_procs,uint32_t els_per_tier) {
 			//
@@ -248,13 +222,15 @@ class SharedSegmentsTForm : public SharedSegments {
 		}
 
 
-		// region_intialization_ops
-		//
+		/**
+		 * region_intialization_ops
+		 */
+
 		int region_intialization_ops(list<uint32_t> &lru_keys,list<uint32_t> &hh_keys, bool am_initializer, 
 										uint32_t num_procs, uint32_t num_tiers, uint32_t els_per_tier,
 											uint32_t max_obj_size, key_t com_key, key_t randoms_key = 0) {
 			int status = 0;
-			
+			//
 			status = this->initialize_com_shm(com_key,am_initializer,num_procs,num_tiers);
 			if ( status != 0 ) return status;
 			//
@@ -267,7 +243,7 @@ class SharedSegmentsTForm : public SharedSegments {
 			//
 			status = this->tier_segments_initializers(am_initializer,lru_keys,hh_keys,max_obj_size,num_procs,els_per_tier);
 			if ( status != 0 ) return status;
-			
+			//
 			return status;
 		}
 

@@ -655,8 +655,8 @@ void test_node_shm_queued(void) {
   uint8_t *region = new uint8_t[sz];
   //
 
-  Storage_ExternalInterfaceQs<8,200> q_test(client_count,thrd_count,region,els_per_com_queue,true);
-  QUEUED_map<200> q_client(region,sz,els_per_com_queue,client_count);
+  Storage_ExternalInterfaceQs<8,200> q_test(client_count,thrd_count,region,els_per_tier,true);  // thread count is relevant
+  QUEUED_map<200> q_client(region,sz,els_per_tier,client_count);  // one per thread
 
 
 

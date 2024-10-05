@@ -1,5 +1,5 @@
-#ifndef _H_QUEUED_HASH_SHM_
-#define _H_QUEUED_HASH_SHM_
+#ifndef _H_INTERNAL_HASH_SHM_
+#define _H_INTERNAL_HASH_SHM_
 
 #pragma once
 
@@ -27,10 +27,6 @@
 
 #include "hmap_interface.h"
 #include "random_selector.h"
-#include "entry_holder.h"
-#include "hh_queues_and_states.h"
-
-#include "array_p_defs.h"
 
 
 
@@ -85,16 +81,16 @@ using namespace std;
 
 
 template<const uint32_t TABLE_SIZE = 100>
-class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
+class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 
 	public:
 
 		// SSlab_map LRU_cache -- constructor
-		QUEUED_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
+		INTERNAL_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
 			initialize_all(region, seg_sz, max_element_count, num_threads, am_initializer);
 		}
 
-		virtual ~QUEUED_map() {
+		virtual ~INTERNAL_map() {
 		}
 
 	public:
@@ -109,34 +105,12 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			_reason = "OK";
 			//
-			_region = region;
-			_endof_region = _region + seg_sz;
-			//
 			_num_threads = num_threads;
 			//
 			_status = true;
 			_initializer = false;
 			_max_count = max_element_count;
 			//
-			// initialize from constructor
-			this->setup_region();
-			//
-			_proc_id = _com.next_thread_id();
-		}
-
-
-	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-
-		// REGIONS...
-
-		/**
-		 * setup_region -- part of initialization if the process is the intiator..
-		 * -- header_size --> HHash
-		 *  the regions are setup as, [values 1][buckets 1][values 2][buckets 2][controls 1 and 2]
-		*/
-		void setup_region(void) {
-			// ----
-			_com.initialize(_num_threads,_num_threads,_region,_max_count,false);
 			//
 		}
 
@@ -149,9 +123,8 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 * 
 		*/
 
-		static uint32_t check_expected_hh_region_size([[maybe_unused]] uint32_t els_per_tier, uint32_t num_threads) {
-			auto reg_sz = ExternalInterfaceQs<TABLE_SIZE>::check_expected_com_region_size(TABLE_SIZE);
-			uint32_t predict = reg_sz*num_threads;
+		static uint32_t check_expected_hh_region_size([[maybe_unused]] uint32_t els_per_tier,[[maybe_unused]] uint32_t num_threads) {
+			uint32_t predict = 0;
 			return predict;
 		}
 
@@ -183,7 +156,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		*/
 
 		void _adder_bucket_queue_release([[maybe_unused]] atomic<uint32_t> *control_bits, uint32_t el_key, [[maybe_unused]] uint32_t h_bucket, uint32_t offset_value, [[maybe_unused]] uint8_t which_table, [[maybe_unused]] uint32_t cbits, [[maybe_unused]] uint32_t cbits_op, [[maybe_unused]] uint32_t cbits_base_op, [[maybe_unused]] hh_element *bucket, [[maybe_unused]] hh_element *buffer, [[maybe_unused]] hh_element *end_buffer,[[maybe_unused]] CBIT_stash_holder *cbit_stashes[4]) {
-			_com.com_put(el_key,offset_value,_proc_id);
+			_local_map.insert(h_bucket,pair<uint32_t,uint32_t>(el_key,offset_value));
 		}
 
 
@@ -284,9 +257,15 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		uint32_t get(uint32_t el_key, [[maybe_unused]] uint32_t h_bucket) override {  // full_hash,hash_bucket
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
-
+			//
 			uint32_t val = 0;
-			_com.com_req(el_key,val,_proc_id);
+			auto range = _local_map.equal_range(h_bucket);
+			for ( auto it = range.first; it != range.second; ++it ) {
+				if ( it->first == el_key ) {
+					val = it->second.second;
+					break;
+				}
+			}
 			//
 			return val;
 		}
@@ -313,7 +292,15 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			if ( v_value == 0 ) return UINT64_MAX;
 			if ( el_key == UINT32_MAX ) return UINT64_MAX;
-			_com.com_put(el_key,v_value,_proc_id);
+
+			uint32_t val = 0;
+			auto range = _local_map.equal_range(h_bucket);
+			for ( auto it = range.first; it != range.second; ++it ) {
+				if ( it->first == el_key ) {
+					it->second.second = v_value;
+					break;
+				}
+			}
 			//
 			uint64_t loaded_key = (((uint64_t)el_key) << HALF) | v_value; // LOADED
 			loaded_key = stamp_key(loaded_key,1);
@@ -356,7 +343,14 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 			//
-			_com.com_put(el_key,UINT32_MAX,_proc_id);
+			uint32_t val = 0;
+			auto range = _local_map.equal_range(h_bucket);
+			for ( auto it = range.first; it != range.second; ++it ) {
+				if ( it->first == el_key ) {
+					_local_map.erase(it);
+					break;
+				}
+			}
 
 			return el_key;
 		}
@@ -400,8 +394,7 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		 */  
 
 
-		ExternalInterfaceQs<TABLE_SIZE> 		_com;
-		uint8_t									_proc_id;
+		unordered_map<uint32_t,pair<uint32_t,uint32_t>>						_local_map;
 
 		// ---- ---- ---- ---- ---- ---- ----
 		//
@@ -409,10 +402,6 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 		const char 						*_reason;
 		//
 		bool							_initializer;
-		//
-		uint8_t		 					*_region;
-		uint8_t		 					*_endof_region;
-
 		//
 		/**
 		 * DATA STRUCTURES:
@@ -425,4 +414,4 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 };
 
 
-#endif // _H_QUEUED_HASH_SHM_
+#endif // _H_INTERNAL_HASH_SHM_

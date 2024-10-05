@@ -140,9 +140,7 @@ class TierAndProcManager : public LRU_Consts {
 
 		static uint32_t check_expected_com_region_size(uint32_t num_procs, uint32_t num_tiers) {
 			//
-			size_t tier_atomics_sz = (LRU_c_impl::NUM_ATOMIC_OPS)*sizeof(atomic_flag);  // ref to the atomic flag
-			size_t proc_tier_com_sz = sizeof(Com_element)*num_procs;  // each process writes into its own message block per tier
-			uint32_t predict = num_tiers*(tier_atomics_sz*2 + proc_tier_com_sz);
+			uint32_t predict = LRU_c_impl::check_expected_com_size(num_procs,num_tiers);
 			//
 			return predict;
 		}
@@ -688,12 +686,13 @@ class TierAndProcManager : public LRU_Consts {
 						memset((void *)lru_element_offsets,0,sizeof(uint32_t)*(additional_locations+1)); 
 
 						// the next thing off the free stack.
-						//
+						// obtain storage for the object data 
 						bool mem_claimed = (UINT32_MAX != lru->claim_free_mem(additional_locations,lru_element_offsets)); // negotiate getting a list from free memory
 						//
 						// if there are elements, they are already removed from free memory and this basket belongs to this process..
 						if ( mem_claimed ) {
 							//
+							// OFFSETS TO HASH TABLE
 							uint32_t *current = lru_element_offsets;   // offset to new elemnents in the regions
 							uint32_t offset = 0;
 							//

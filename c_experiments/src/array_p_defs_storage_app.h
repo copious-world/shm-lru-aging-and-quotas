@@ -54,19 +54,25 @@ typedef struct STORES {
 } stores;
 
 
-template<const uint8_t THREAD_COUNT,const uint32_t TABLE_SIZE>
+template<const uint8_t THREAD_COUNT>
 class StoreHVPairs {
   public:
 
     StoreHVPairs(void) {
-      _sect_size = TABLE_SIZE/THREAD_COUNT;
-      for ( uint8_t t = 0; t < THREAD_COUNT; t++ ) {
-        stores &thread_section = _sections[t];
-        thread_section._reading.clear();
-        thread_section._min_hash = t*_sect_size;
-      }
     }
     virtual ~StoreHVPairs(void) {}
+
+
+	void initalize(size_t max_els_stored) {
+		//
+		_sect_size = max_els_stored/THREAD_COUNT;
+		for ( uint8_t t = 0; t < THREAD_COUNT; t++ ) {
+			stores &thread_section = _sections[t];
+			thread_section._reading.clear();
+			thread_section._min_hash = t*_sect_size;
+		}
+		//
+	}
 
     bool store_pair(uint32_t hash, uint32_t val, uint8_t thread_index) {
       stores &thread_section = _sections[thread_index];
@@ -108,9 +114,9 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<TABLE_SIZE> {
   public:
 
 	Storage_ExternalInterfaceQs(uint8_t client_count,uint8_t thread_count,
-									void *data_region,size_t el_count,bool _am_initializer = false)
-		: ExternalInterfaceQs<TABLE_SIZE> (client_count,thread_count,data_region,el_count,_am_initializer) {
-
+									void *data_region,size_t max_els_stored,bool _am_initializer = false)
+		: ExternalInterfaceQs<TABLE_SIZE> (client_count,thread_count,data_region,max_els_stored,_am_initializer) {
+			_storage.initialize(max_els_stored);
 	}
 
     virtual ~Storage_ExternalInterfaceQs(void) {}
@@ -151,7 +157,7 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<TABLE_SIZE> {
   public:
 
 
-	StoreHVPairs<THREAD_COUNT,TABLE_SIZE> _storage;
+	StoreHVPairs<THREAD_COUNT> _storage;
 
 
 };
