@@ -117,7 +117,7 @@ class SharedSegmentsTForm : public SharedSegments {
 			_com_buffer_size = LRU_Consts::check_expected_com_size(num_procs,num_tiers);
 			//
 			if ( am_initializer ) {
-				status = _shm_creator(com_key,seg_size);
+				status = _shm_creator(com_key,_com_buffer_size);
 			} else {
 				int at_shmflg = 0;
 				status = this->_shm_attacher(com_key, at_shmflg);

@@ -143,8 +143,12 @@ typedef struct LRU_ELEMENT_HDR {
 
 
 typedef struct _LRU_Alloc_Sections_and_Threads_ {
-	bool			_alloc_randoms;		// do allocation and launch threads
+	
+	bool			_run_random_upates_threads{false};
+	bool			_run_restore_threads{false};
+	bool			_run_cropper_threads{false};
 	//
+	bool			_alloc_randoms;		// do allocation and launch threads
 	bool			_alloc_hash_tables;	// do allocation and launch threads
 	uint8_t			_num_hash_tables;	// usually one or two (sparse may be more)
 	uint8_t			_num_initial_typed_slab{0};	// usually one or two (sparse may be more)

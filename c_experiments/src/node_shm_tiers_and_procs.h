@@ -75,6 +75,8 @@ class TierAndProcManager : public LRU_Consts {
 													uint32_t num_procs, uint32_t num_tiers,
 														uint32_t els_per_tier, uint32_t max_obj_size,void **random_segs = nullptr) {
 			//
+			clear_all_variables();
+			//
 			_am_initializer = am_initializer; // need to keep around for downstream initialization
 			//
 			_Procs = num_procs;
@@ -146,6 +148,105 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 
+		static LRU_Alloc_Sections_and_Threads section_allocation_requirements(stp_table_choice tchoice, [[maybe_unused]] uint32_t num_procs, uint32_t num_tiers) {
+			LRU_Alloc_Sections_and_Threads last;
+			//
+			last._num_tiers = num_tiers;
+			switch (tchoice) {
+				case STP_TABLE_HH: {
+					last._alloc_hash_tables = true;
+					last._num_hash_tables = 2;
+					last._alloc_randoms = true;
+					last._alloc_secondary_com_buffer = false;
+					last._run_random_upates_threads = true;
+					last._run_restore_threads = true;
+					last._run_cropper_threads = true;
+					break;
+				}
+				case STP_TABLE_SLABS: {
+					last._alloc_hash_tables = true;
+					last._num_hash_tables = 2;  // refers the top level split, the sp_element split...
+					last._num_initial_typed_slab = 4; // refers to the number of slab types 4-cell to 32-cells
+					last._alloc_randoms = true;
+					last._alloc_secondary_com_buffer = false;
+					last._run_random_upates_threads = true;
+					last._run_restore_threads = true;
+					last._run_cropper_threads = true;
+					break;
+				}
+				case STP_TABLE_QUEUED: {
+					last._alloc_hash_tables = false;
+					last._num_hash_tables = 0;
+					last._alloc_randoms = false;
+					last._alloc_secondary_com_buffer = true;
+					last._run_random_upates_threads = false;
+					last._run_restore_threads = false;
+					last._run_cropper_threads = false;
+					break;
+				}
+				default:
+				case STP_TABLE_INTERNAL_ONLY: {
+					last._alloc_hash_tables = false;
+					last._num_hash_tables = 0;
+					last._alloc_randoms = false;
+					last._alloc_secondary_com_buffer = false;
+					last._run_random_upates_threads = false;
+					last._run_restore_threads = false;
+					last._run_cropper_threads = false;
+					break;
+				}
+			}
+			return last;
+		}
+
+
+		void clear_all_variables(void) {
+			//
+			_com_buffer = nullptr;
+			//
+			for ( uint8_t t = 0; t < MAX_TIERS; t++ ) {
+				_tiers[t] = nullptr;
+			}
+			//
+			for ( uint8_t t = 0; t < MAX_TIERS; t++ ) {
+				_tier_threads[t] = nullptr;
+				_thread_running[t] = false;
+			}
+			//
+			for ( uint8_t t = 0; t < MAX_TIERS; t++ ) {
+				_tier_removal_threads[t] = nullptr;
+				_removals_running[t] = false;
+			}
+			//
+			for ( uint8_t t = 0; t < MAX_TIERS; t++ ) {
+				_tier_evictor_threads[t] = nullptr;
+				_evictors_running[t] = false;
+			}
+			//
+			for ( uint8_t t = 0; t < MAX_TIERS; t++ ) {
+				_tier_value_restore_for_hmap_threads_0[t] = nullptr;
+				_tier_value_restore_for_hmap_threads_1[t] = nullptr;
+				this->_restores_running[t][0] = false;
+				this->_restores_running[t][1] = false;
+
+			}
+			//
+			for ( uint8_t t = 0; t < MAX_TIERS; t++ ) {
+				_tier_cropper_for_hmap_threads_0[t] = nullptr;
+				_tier_cropper_for_hmap_threads_1[t] = nullptr;
+				this->_croppers_running[t][0] = false;
+				this->_croppers_running[t][1] = false;
+			}
+			//
+			for ( uint8_t t = 0; t < MAX_TIERS; t++ ) {
+				_tier_random_generator_for_hmap_threads[t] = nullptr;
+				_random_generator_running[t] = false;
+			}
+			//
+		}
+
+
+
 		/**
 		 * get_owner_proc_area
 		*/
@@ -204,7 +305,7 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * get_proc_entries
 		*/
-		Com_element	*get_proc_entries(void) {
+		Com_element		*get_proc_entries(void) {
 			return (Com_element *)(_com_buffer + _NTiers*sizeof(atomic_flag *));
 		}
 
@@ -219,6 +320,7 @@ class TierAndProcManager : public LRU_Consts {
 			//
 			if ( _com_buffer == nullptr ) return false;
 			set_reader_atomic_tags();
+			set_removal_atomic_tags();
 			set_owner_proc_area();
 			//
 			if ( _am_initializer ) {
@@ -439,10 +541,13 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * launch_second_phase_threads
 		*/
-		void 		launch_second_phase_threads() {  // handle reads 
+		void 		launch_second_phase_threads(LRU_Alloc_Sections_and_Threads &last) {  // handle reads ...
+			//
 			uint32_t P = _Procs;
 			uint32_t T = _NTiers;
 			for ( uint8_t i = 0; i < T; i++ ) {
+				// secondary_runner -- this is always run...
+				// 	the secondary thread performs insertions and initiates overflow handlers
 				auto secondary_runner = [&](uint8_t tier) {
 					uint32_t P = this->_Procs;
 					com_or_offset **messages_reserved = new com_or_offset *[P];
@@ -456,17 +561,19 @@ class TierAndProcManager : public LRU_Consts {
         		};
 				_tier_threads[i] = new thread(secondary_runner,i);
 				//
+				// removal_runner -- this is always run...
+				// 	runs a thread that ensures a record is competely removed from all system tables and nodes.
 				auto removal_runner = [&](uint8_t tier) {
 					this->_removals_running[tier] = true;
 					while ( this->_removals_running[tier] ) {
 						this->removal_thread(tier);
 					}
 				};
-				_tier_removal_threads[i] = new thread(removal_runner,(i + P));
+				_tier_removal_threads[i] = new thread(removal_runner,i);
 				//
 				LRU_c_impl *tier_lru = access_tier(i);
 				if ( tier_lru != nullptr ) {
-					//
+					
 					auto evictor_runner = [&](uint8_t tier,LRU_c_impl *lru) {
 						this->_evictors_running[tier] = true;
 						while ( this->_evictors_running[tier] ) {
@@ -475,31 +582,48 @@ class TierAndProcManager : public LRU_Consts {
         			};
 					//
 					_tier_evictor_threads[i] = new thread(evictor_runner,i,tier_lru);
-					//
-					// hash_table_value_restore_thread
-					auto restore_runner = [this](uint8_t slice_for_thread,uint8_t tier,LRU_c_impl *lru) {
-						this->_restores_running[tier][slice_for_thread] = true;
-						while ( this->_restores_running[tier][slice_for_thread] ) {
-	            			lru->hash_table_value_restore_thread(slice_for_thread);
-						}
-        			};
-					//
-					_tier_value_restore_for_hmap_threads_0[i] = new thread(restore_runner,0,i,tier_lru);
-					_tier_value_restore_for_hmap_threads_1[i] = new thread(restore_runner,1,i,tier_lru);
-					//
+					// //
+					// // hash_table_value_restore_thread
+					if ( last._run_restore_threads ) {
+						auto restore_runner = [this](uint8_t slice_for_thread,uint8_t tier,LRU_c_impl *lru) {
+							this->_restores_running[tier][slice_for_thread] = true;
+							while ( this->_restores_running[tier][slice_for_thread] ) {
+								lru->hash_table_value_restore_thread(slice_for_thread);
+							}
+						};
+						//
+						_tier_value_restore_for_hmap_threads_0[i] = new thread(restore_runner,0,i,tier_lru);
+						_tier_value_restore_for_hmap_threads_1[i] = new thread(restore_runner,1,i,tier_lru);
+						//
+					}
 
-					// hash_table_value_restore_thread
-					// needs a configuration parameter CONFIG
-					auto random_generator_runner = [this](uint8_t tier,LRU_c_impl *lru) {
-						this->_random_generator_running[tier] = true;
-						while ( this->_random_generator_running[tier] ) {
-	            			lru->hash_table_random_generator_thread_runner();
-						}
-        			};
-					//
-					_tier_random_generator_for_hmap_threads[i] = new thread(random_generator_runner,i,tier_lru);
-					//
-					
+					if ( last._run_cropper_threads ) {
+						auto cropper_runner = [this](uint8_t slice_for_thread,uint8_t tier,LRU_c_impl *lru) {
+							this->_croppers_running[tier][slice_for_thread] = true;
+							while ( this->_croppers_running[tier][slice_for_thread] ) {
+								lru->hash_table_cropper_runner_thread(slice_for_thread);
+							}
+						};
+						//
+						_tier_cropper_for_hmap_threads_0[i] = new thread(cropper_runner,0,i,tier_lru);
+						_tier_cropper_for_hmap_threads_1[i] = new thread(cropper_runner,1,i,tier_lru);
+						//
+					}
+
+					if ( last._run_random_upates_threads ) {
+						// hash_table_value_restore_thread
+						// needs a configuration parameter CONFIG
+						auto random_generator_runner = [this](uint8_t tier,LRU_c_impl *lru) {
+							this->_random_generator_running[tier] = true;
+							while ( this->_random_generator_running[tier] ) {
+								lru->hash_table_random_generator_thread_runner();
+							}
+						};
+						//
+						_tier_random_generator_for_hmap_threads[i] = new thread(random_generator_runner,i,tier_lru);
+						//
+					}
+
 				}
 			}
 		}
@@ -508,20 +632,31 @@ class TierAndProcManager : public LRU_Consts {
 		/**
 		 * 			shutdown_threads  -- a final action.. turns off all threads used by this application.
 		*/
-		void shutdown_threads() {
+		void shutdown_threads(LRU_Alloc_Sections_and_Threads &last) {
 			for ( uint8_t tier = 0; tier < this->_NTiers; tier++  ) {
 				this->_thread_running[tier] = false;
 				this->_removals_running[tier] = false;
 				this->_evictors_running[tier] = false;
-				this->_restores_running[tier][0] = false;
-				this->_restores_running[tier][1] = false;
+				if ( last._run_restore_threads ) {
+					this->_restores_running[tier][0] = false;
+					this->_restores_running[tier][1] = false;
+				}
 			}
 			for ( uint8_t i = 0; i < this->_NTiers; i++  ) {
-				_tier_threads[i]->join();
-				_tier_removal_threads[i]->join();
-				_tier_evictor_threads[i]->join();
-				_tier_value_restore_for_hmap_threads_0[i]->join();
-				_tier_value_restore_for_hmap_threads_1[i]->join();
+				if ( _tier_threads[i] != nullptr ) _tier_threads[i]->join();
+				if ( _tier_removal_threads[i] != nullptr ) _tier_removal_threads[i]->join();
+				if ( _tier_evictor_threads[i] != nullptr ) _tier_evictor_threads[i]->join();
+				if ( last._run_restore_threads ) {
+					if ( _tier_value_restore_for_hmap_threads_0[i] != nullptr ) _tier_value_restore_for_hmap_threads_0[i]->join();
+					if ( _tier_value_restore_for_hmap_threads_1[i] != nullptr ) _tier_value_restore_for_hmap_threads_1[i]->join();
+				}
+				if ( last._run_random_upates_threads ) {
+					if ( _tier_random_generator_for_hmap_threads[i] != nullptr ) _tier_random_generator_for_hmap_threads[i]->join();
+				}
+				if ( last._run_cropper_threads ) {
+					if ( _tier_cropper_for_hmap_threads_0[i] != nullptr ) _tier_cropper_for_hmap_threads_0[i]->join();
+					if ( _tier_cropper_for_hmap_threads_1[i] != nullptr ) _tier_cropper_for_hmap_threads_1[i]->join();
+				}
 			}
 		}
 
@@ -723,7 +858,7 @@ class TierAndProcManager : public LRU_Consts {
 									// 	the lru calls upon the hash table to store the hash/offset pair...
 									//
 
-									auto thread_id = lru->_thread_id;
+									//auto thread_id = lru->_thread_id;
 									uint8_t which_slice;
 									atomic<uint32_t> *control_bits;
 									uint32_t cbits = 0;
@@ -930,7 +1065,7 @@ class TierAndProcManager : public LRU_Consts {
 							return 0;
 						}
 					} else {
-						// hash_table_value_restore_thread
+						// 
 						memset(data,0,sz);
 						auto tier_search_runner = [this](uint32_t tier, uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz) {
 							uint32_t timestamp = 0;
@@ -1023,7 +1158,7 @@ class TierAndProcManager : public LRU_Consts {
 		 * removal_thread - this method is the inner loop of the removal thread. 
 		 * 	See the thread initializer to understand the looping of the thread.
 		 * 
-		 *	This method contains a loop, which the method operating on all removal requests it has available.
+		 *	This method contains a loop, which calls the method operating on all removal requests it has available.
 		 *	The thread will stop looping as soon as it empties the `_removal_work` queue.
 		 *	
 		*/
@@ -1102,6 +1237,10 @@ class TierAndProcManager : public LRU_Consts {
 		thread					*_tier_value_restore_for_hmap_threads_0[MAX_TIERS];
 		thread					*_tier_value_restore_for_hmap_threads_1[MAX_TIERS];
 		bool					_restores_running[MAX_TIERS][2];
+		//
+		thread					*_tier_cropper_for_hmap_threads_0[MAX_TIERS];
+		thread					*_tier_cropper_for_hmap_threads_1[MAX_TIERS];
+		bool					_croppers_running[MAX_TIERS][2];
 		//
 		thread					*_tier_random_generator_for_hmap_threads[MAX_TIERS];
 		bool					_random_generator_running[MAX_TIERS];

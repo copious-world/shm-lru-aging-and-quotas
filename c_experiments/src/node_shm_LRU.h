@@ -118,6 +118,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				_ub_time->store(UINT32_MAX);
 				_memory_requested->store(0);
 				_reserve_evictor->clear();
+
+cout << "_reserve_evictor: " << _reserve_evictor << endl;
 				//
 				initialize_com_area(num_procs);
 				//
@@ -225,55 +227,12 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 					_hmap = new QUEUED_map<>(reg1,hh_seg_sz,els_per_tier,_am_initializer);
 					break;
 				}
-
 				case STP_TABLE_INTERNAL_ONLY:
 				default: {
-					_hmap = new INTERNAL_map<>(nullptr,0,els_per_tier,_am_initializer);
+					_hmap = new INTERNAL_map<>(els_per_tier,_am_initializer);
 					break;
 				}
 			}
-		}
-
-
-		void section_allocation_requirements(stp_table_choice tchoice, uint32_t num_procs, uint32_t num_tiers) {
-			LRU_Alloc_Sections_and_Threads last;
-			//
-			last._num_tiers = num_tiers;
-			switch (tchoice) {
-				case STP_TABLE_HH: {
-					last._alloc_hash_tables = true;
-					last._num_hash_tables = 2;
-					last._alloc_randoms = true;
-					last._alloc_secondary_com_buffer = false;
-					break;
-				}
-				case STP_TABLE_SLABS: {
-					last._alloc_hash_tables = true;
-					last._num_hash_tables = 2;  // refers the top level split, the sp_element split...
-					last._num_initial_typed_slab = 4; // refers to the number of slab types 4-cell to 32-cells
-					last._alloc_randoms = true;
-					last._alloc_secondary_com_buffer = false;
-					break;
-				}
-				case STP_TABLE_QUEUED: {
-					last._alloc_hash_tables = false;
-					last._num_hash_tables = 0;
-					last._alloc_randoms = false;
-					last._alloc_secondary_com_buffer = true;
-					break;
-				}
-
-				default:
-				case STP_TABLE_INTERNAL_ONLY: {
-					last._alloc_hash_tables = false;
-					last._num_hash_tables = 0;
-					last._alloc_randoms = false;
-					last._alloc_secondary_com_buffer = false;
-					break;
-				}
-			}
-
-
 		}
 
 
@@ -323,6 +282,11 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 		void hash_table_value_restore_thread(uint8_t slice_for_thread) {  // a wrapper (parent must call a while loop... )
 			_hmap->value_restore_runner(slice_for_thread,this->_thread_id);
+		}
+
+
+		void hash_table_cropper_runner_thread(uint8_t slice_for_thread) {
+			_hmap->cropper_runner(slice_for_thread,this->_thread_id);
 		}
 
 
@@ -745,6 +709,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 #else
 			_evictor_spinner.wait();
 #endif
+cout << "RUNNING EVICTOR: " << endl;
 			uint8_t thread_id = this->_thread_id;
 			if ( (_Tier+1) < _max_tiers ) {
 				uint32_t req_count = _Procs;
@@ -759,7 +724,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				}
 			}
 			_reserve_evictor->clear();
-			//
+			
 		}
 
 

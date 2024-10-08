@@ -247,8 +247,7 @@ class ExternalInterfaceQs {
 
 	ExternalInterfaceQs() {}
 
-    ExternalInterfaceQs(uint8_t client_count,uint8_t thread_count,void *data_region,size_t max_els_sored,bool am_initializer = false) {
-		//
+    ExternalInterfaceQs(uint8_t client_count,uint8_t thread_count,void *data_region,size_t max_els_stored,bool am_initializer = false) {
 		initialize(client_count, thread_count, data_region, max_els_stored, am_initializer);
     }
 
@@ -264,7 +263,7 @@ public:
 		_proc_refs.set_region(data_region,TABLE_SIZE,am_initializer);
 		
 		_sect_size = max_els_stored/thread_count;
-		_max_els_stored = max_els_sored;
+		_max_els_stored = max_els_stored;
 		//
 		_thread_count = thread_count;
 		_client_count = client_count;
@@ -302,7 +301,7 @@ public:
     //
 	static uint32_t check_expected_com_region_size(uint8_t q_entry_count) {
 		//
-		uint32_t c_regions_size = table_proc_com::check_expected_region_size(size_t)q_entry_count);
+		uint32_t c_regions_size = table_proc_com::check_expected_region_size((size_t)q_entry_count);
 		//
 		return c_regions_size;
 	}

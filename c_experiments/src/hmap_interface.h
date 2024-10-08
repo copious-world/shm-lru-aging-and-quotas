@@ -842,7 +842,18 @@ class Spinners {
 		virtual ~Spinners(void) { unlock(); }
 
 		void lock(){
-			while ( _flag.test_and_set() ) __libcpp_thread_yield();
+			auto test = _flag.test();
+			while ( test ) {
+				test = _flag.test();
+			}
+			while ( !test ) {
+				test = _flag.test_and_set(std::memory_order_acq_rel);
+				if ( test ) {
+					test = false;
+				} else {
+					test = _flag.test();
+				}
+			}
 		}
 
 		void unlock(){
@@ -850,12 +861,11 @@ class Spinners {
 		}
 
 		void wait() {
-			while ( _flag.test(std::memory_order_acquire) ) __libcpp_thread_yield();
-			_flag.test_and_set();
+			while ( !(_flag.test(std::memory_order_acquire)) ) __libcpp_thread_yield();
 		}
 
 		void signal() {
-			_flag.clear();
+			while ( !(_flag.test_and_set(std::memory_order_acq_rel)) );
 		}
 
 	private:

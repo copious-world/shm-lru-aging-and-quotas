@@ -86,8 +86,8 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 	public:
 
 		// SSlab_map LRU_cache -- constructor
-		INTERNAL_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
-			initialize_all(region, seg_sz, max_element_count, num_threads, am_initializer);
+		INTERNAL_map(uint32_t max_element_count, [[maybe_unused]] bool am_initializer = false) {
+			initialize_all(max_element_count);
 		}
 
 		virtual ~INTERNAL_map() {
@@ -96,21 +96,15 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 	public:
 
 		// LRU_cache -- constructor
-		void initialize_all(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
-			if ( am_initializer ) {
-				_reason = "Queued store is never the initializer in the module. See the main executable.";
-				_status = false;
-				return;
-			}
+		void initialize_all(uint32_t max_element_count) {
+			//
+			_table_access.clear();
 			//
 			_reason = "OK";
-			//
-			_num_threads = num_threads;
 			//
 			_status = true;
 			_initializer = false;
 			_max_count = max_element_count;
-			//
 			//
 		}
 
@@ -156,7 +150,10 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 		*/
 
 		void _adder_bucket_queue_release([[maybe_unused]] atomic<uint32_t> *control_bits, uint32_t el_key, [[maybe_unused]] uint32_t h_bucket, uint32_t offset_value, [[maybe_unused]] uint8_t which_table, [[maybe_unused]] uint32_t cbits, [[maybe_unused]] uint32_t cbits_op, [[maybe_unused]] uint32_t cbits_base_op, [[maybe_unused]] hh_element *bucket, [[maybe_unused]] hh_element *buffer, [[maybe_unused]] hh_element *end_buffer,[[maybe_unused]] CBIT_stash_holder *cbit_stashes[4]) {
-			_local_map.insert(h_bucket,pair<uint32_t,uint32_t>(el_key,offset_value));
+			while ( !(_table_access.test_and_set()) ) tick();
+			pair<uint32_t,uint32_t> p(el_key,offset_value);
+			_local_map.emplace(h_bucket,p);
+			_table_access.clear();
 		}
 
 
@@ -258,6 +255,8 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 			//
+			while ( !(_table_access.test_and_set()) ) tick();
+			//
 			uint32_t val = 0;
 			auto range = _local_map.equal_range(h_bucket);
 			for ( auto it = range.first; it != range.second; ++it ) {
@@ -266,6 +265,8 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 					break;
 				}
 			}
+			//
+			_table_access.clear();
 			//
 			return val;
 		}
@@ -292,8 +293,9 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			if ( v_value == 0 ) return UINT64_MAX;
 			if ( el_key == UINT32_MAX ) return UINT64_MAX;
-
-			uint32_t val = 0;
+			//
+			while ( !(_table_access.test_and_set()) ) tick();
+			//
 			auto range = _local_map.equal_range(h_bucket);
 			for ( auto it = range.first; it != range.second; ++it ) {
 				if ( it->first == el_key ) {
@@ -301,6 +303,8 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 					break;
 				}
 			}
+			//
+			_table_access.clear();
 			//
 			uint64_t loaded_key = (((uint64_t)el_key) << HALF) | v_value; // LOADED
 			loaded_key = stamp_key(loaded_key,1);
@@ -343,7 +347,8 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 			//
-			uint32_t val = 0;
+			while ( !(_table_access.test_and_set()) ) tick();
+			//
 			auto range = _local_map.equal_range(h_bucket);
 			for ( auto it = range.first; it != range.second; ++it ) {
 				if ( it->first == el_key ) {
@@ -351,7 +356,8 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 					break;
 				}
 			}
-
+			//
+			_table_access.clear();
 			return el_key;
 		}
 
@@ -394,7 +400,7 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 		 */  
 
 
-		unordered_map<uint32_t,pair<uint32_t,uint32_t>>						_local_map;
+		unordered_multimap<uint32_t,pair<uint32_t,uint32_t>>						_local_map;
 
 		// ---- ---- ---- ---- ---- ---- ----
 		//
@@ -407,9 +413,12 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 		 * DATA STRUCTURES:
 		 */  
 
-		uint32_t						_num_threads;
 		uint32_t						_max_count;
 		uint32_t						_max_n;   // max_count/2 ... the size of a slice.
+
+		//
+
+		atomic_flag						_table_access;
 		//
 };
 

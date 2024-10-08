@@ -63,7 +63,7 @@ class StoreHVPairs {
     virtual ~StoreHVPairs(void) {}
 
 
-	void initalize(size_t max_els_stored) {
+	void initialize(size_t max_els_stored) {
 		//
 		_sect_size = max_els_stored/THREAD_COUNT;
 		for ( uint8_t t = 0; t < THREAD_COUNT; t++ ) {

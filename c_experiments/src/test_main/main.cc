@@ -669,7 +669,7 @@ void test_node_shm_queued(void) {
 
   running.clear();
 
-  thread *client_thread = new thread([&](int j) {
+  thread *client_thread = new thread([&]([[maybe_unused]] int j) {
 
     for ( int i = 0; i < 8; i++ ) {
       //
@@ -754,6 +754,53 @@ void test_node_shm_queued(void) {
 
 }
 
+
+void front_end_internal_test(void) {
+  stp_table_choice tchoice = STP_TABLE_INTERNAL_ONLY;
+  uint32_t num_procs = 8;
+  uint32_t num_tiers = 3;
+  uint32_t proc_number = 1;
+  uint32_t els_per_tier = 20000;
+  //
+  LRU_Alloc_Sections_and_Threads last = TierAndProcManager<>::section_allocation_requirements(tchoice, num_procs, num_tiers);
+
+  auto com_buf_sz = TierAndProcManager<>::check_expected_com_region_size(num_procs,num_tiers);
+
+  uint8_t *com_buffer = new uint8_t[com_buf_sz];
+  //
+  map<key_t,void *> lru_segs;
+  map<key_t,void *> hh_table_segs;
+  map<key_t,size_t> seg_sizes;
+  bool am_initializer = true;
+  uint32_t max_obj_size = 128;
+  void **random_segs = nullptr;
+
+  for ( uint32_t t = 0; t < num_tiers; t++ ) {
+    seg_sizes[t] = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier, num_procs);
+    lru_segs[t] = new uint8_t[seg_sizes[t]];
+  }
+
+cout << "Initialize TierAndProcManager:: " << endl;
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  TierAndProcManager<> tapm(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+cout << "Launch threads... TierAndProcManager:: " << endl;
+
+  tapm.launch_second_phase_threads(last);
+  //
+
+cout << "Shutting down threads... TierAndProcManager:: " << endl;
+
+  //
+  tapm.shutdown_threads(last);
+}
+
 /**
  * main ...
  * 
@@ -785,8 +832,10 @@ int main(int argc, char **argv) {
 
 //  test_shared_queue();
 //  test_shared_queue_threads();
+// test_node_shm_queued();
 
-  test_node_shm_queued();
+  // 
+  front_end_internal_test();
 
   // test_simple_stack();
   // test_toks();
