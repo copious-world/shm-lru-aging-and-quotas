@@ -11,6 +11,11 @@ using namespace std;
 using namespace std::chrono;
 
 
+void default_delay(void) {
+	for ( uint8_t d = 0; d < 10; d++ ) { tick(); }
+}
+
+
 class LRU_cache;
 
 /**
@@ -97,30 +102,38 @@ class TierAndProcManager : public LRU_Consts {
 				//
 				_tiers[tier] = new LRU_c_impl(lru_region, max_obj_size, seg_sz, els_per_tier, _reserve_size, _Procs, _am_initializer, tier);
 				_tiers[tier]->set_tier_table((LRU_cache **)_tiers,_NTiers);
-				// initialize hopscotch
+				if ( tchoice == STP_TABLE_INTERNAL_ONLY ) {
+					LRU_c_impl *lru = _tiers[tier];
+					if ( lru != nullptr ) {
+						lru->set_hash_impl(nullptr,0,els_per_tier,tchoice);
+					}
+				}
+
 				tier++;
 				if ( tier > _NTiers ) break;
 			}
 			//
-			tier = 0;
-			void **random_seg_ref = random_segs;
-			//
-			for ( auto p : hh_table_segs ) {
+			if ( tchoice != STP_TABLE_INTERNAL_ONLY ) {
+				tier = 0;
+				void **random_seg_ref = random_segs;
 				//
-				key_t key = p.first;
-				void *hh_region = p.second;
-				size_t hh_seg_sz = seg_sizes[key];
-				//
-				LRU_c_impl *lru = _tiers[tier];
-				if ( lru != nullptr ) {
-					lru->set_hash_impl(hh_region,hh_seg_sz,els_per_tier,tchoice);
-					if ( random_seg_ref != nullptr ) {
-						lru->set_random_bits(*random_seg_ref++);
+				for ( auto p : hh_table_segs ) {
+					//
+					key_t key = p.first;
+					void *hh_region = p.second;
+					size_t hh_seg_sz = seg_sizes[key];
+					//
+					LRU_c_impl *lru = _tiers[tier];
+					if ( lru != nullptr ) {
+						lru->set_hash_impl(hh_region,hh_seg_sz,els_per_tier,tchoice);
+						if ( random_seg_ref != nullptr ) {
+							lru->set_random_bits(*random_seg_ref++);
+						}
 					}
+					// initialize hopscotch
+					tier++;
+					if ( tier > _NTiers ) break;
 				}
-				// initialize hopscotch
-				tier++;
-				if ( tier > _NTiers ) break;
 			}
 
 			_status = true;
@@ -353,7 +366,7 @@ class TierAndProcManager : public LRU_Consts {
 
 
 		LRU_c_impl	*access_tier(uint8_t tier) {
-			if ( (0 <= tier) && (tier < MAX_TIERS) ) {
+			if ( (0 <= tier) && (tier < _NTiers) ) {
 				return _tiers[tier];
 			}
 			return nullptr;
@@ -361,14 +374,13 @@ class TierAndProcManager : public LRU_Consts {
 
 		LRU_c_impl	*from_time(uint32_t timestamp) {
 			LRU_c_impl *lru = nullptr;
-			for ( uint8_t i = 0; i < MAX_TIERS; i++ ) {
+			for ( uint8_t i = 0; i < _NTiers; i++ ) {
 				lru = _tiers[i];
 				uint32_t lb_time = lru->_lb_time->load();
 				if ( timestamp > lb_time ) {
 					return lru;
 				}
 			}
-
 			return nullptr;
 		}
 
@@ -392,6 +404,7 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 		atomic<COM_BUFFER_STATE> *get_read_marker(uint8_t tier = 0) {
+cout << "_owner_proc_area: " << _owner_proc_area << endl;
 			Com_element *ce = (_owner_proc_area + tier);  // From the instance's reserved com elements by it's `_proc` member.
 			return &(ce->_marker);   // The marker (may be the first field), provides access to just the atomically shared field.
 		}
@@ -408,25 +421,25 @@ class TierAndProcManager : public LRU_Consts {
 
 
 		Com_element	*access_point(uint8_t proc, uint8_t tier = 0) {
-			Com_element *owner_proc_area = get_owner_proc_area(proc);;
+			Com_element *owner_proc_area = get_owner_proc_area(proc);
 			Com_element *ce = (owner_proc_area + tier);
 			return ce;
 		}
 
 		atomic<COM_BUFFER_STATE> *get_read_marker(uint8_t proc, uint8_t tier = 0) {
-			Com_element *owner_proc_area = get_owner_proc_area(proc);;
+			Com_element *owner_proc_area = get_owner_proc_area(proc);
 			Com_element *ce = (owner_proc_area + tier);
 			return &(ce->_marker);
 		}
 
 		uint64_t	*get_hash_parameter(uint8_t proc, uint8_t tier = 0) {
-			Com_element *owner_proc_area = get_owner_proc_area(proc);;
+			Com_element *owner_proc_area = get_owner_proc_area(proc);
 			Com_element *ce = (owner_proc_area + tier);
 			return &(ce->_hash);
 		}
 
 		uint32_t	*get_offset_parameter(uint8_t proc, uint8_t tier = 0) {
-			Com_element *owner_proc_area = get_owner_proc_area(proc);;
+			Com_element *owner_proc_area = get_owner_proc_area(proc);
 			Com_element *ce = (owner_proc_area + tier);
 			return &(ce->_offset);
 		}
@@ -550,8 +563,8 @@ class TierAndProcManager : public LRU_Consts {
 				// 	the secondary thread performs insertions and initiates overflow handlers
 				auto secondary_runner = [&](uint8_t tier) {
 					uint32_t P = this->_Procs;
-					com_or_offset **messages_reserved = new com_or_offset *[P];
-					com_or_offset **duplicate_reserved = new com_or_offset *[P];
+					com_or_offset *messages_reserved = new com_or_offset[P];
+					com_or_offset *duplicate_reserved = new com_or_offset[P];
 					this->_thread_running[tier] = true;
 					while ( this->_thread_running[tier] ) {
 	            		this->second_phase_write_handler(P,messages_reserved,duplicate_reserved,tier);
@@ -641,6 +654,13 @@ class TierAndProcManager : public LRU_Consts {
 					this->_restores_running[tier][0] = false;
 					this->_restores_running[tier][1] = false;
 				}
+				if ( last._run_random_upates_threads ) {
+					_random_generator_running[tier] = false;
+				}
+				if ( last._run_cropper_threads ) {
+					_croppers_running[tier][0] = false;
+					_croppers_running[tier][1] = false;
+				}
 			}
 			for ( uint8_t i = 0; i < this->_NTiers; i++  ) {
 				if ( _tier_threads[i] != nullptr ) _tier_threads[i]->join();
@@ -697,7 +717,7 @@ class TierAndProcManager : public LRU_Consts {
 
 		// At the app level obtain the LRU for the tier and work from there
 		//
-		int 		second_phase_write_handler(uint16_t proc_count, com_or_offset **messages_reserved, com_or_offset **duplicate_reserved, uint8_t assigned_tier = 0) {
+		int 		second_phase_write_handler(uint16_t proc_count, com_or_offset *messages_reserved, com_or_offset *duplicate_reserved, uint8_t assigned_tier = 0) {
 			//
 			if ( _com_buffer == NULL  ) {    // com buffer not intialized
 				return -5; // plan error numbers: this error is huge problem cannot operate
@@ -714,9 +734,10 @@ class TierAndProcManager : public LRU_Consts {
 				queue<uint32_t> ready_procs;		// ---- ---- ---- ---- ---- ----
 				second_phase_waiter(ready_procs, proc_count, assigned_tier);
 				//
+cout << "second_phase_waiter: " << (int)(assigned_tier) << endl;
 				//
-				com_or_offset **messages = messages_reserved;  // get this many addrs if possible...
-				com_or_offset **accesses = duplicate_reserved;
+				com_or_offset *messages = messages_reserved;  // get this many addrs if possible...
+				com_or_offset *accesses = duplicate_reserved;
 				//
 				// 
 				// FIRST: gather messages that are aready for addition to shared data structures.
@@ -733,20 +754,27 @@ class TierAndProcManager : public LRU_Consts {
 					uint32_t proc = ready_procs.front();
 					ready_procs.pop();
 					//
+cout << "read_marker: " << endl;
 					atomic<COM_BUFFER_STATE> *read_marker = this->get_read_marker(proc, assigned_tier);
+cout << "access_point: " << endl;
 					Com_element *access = this->access_point(proc,assigned_tier);
 					//
+cout << "read_marker: " << read_marker <<  "  " << access << endl;
 					if ( read_marker->load() == CLEARED_FOR_ALLOC ) {   // process has a message
 						//
+cout << "read_marker claim_for_alloc: " << endl;
 						claim_for_alloc(read_marker); // This is the atomic update of the write state
 						//
-						messages[ready_msg_count]->_cel = access;
-						accesses[ready_msg_count]->_cel = access;
+cout << "read_marker claim_for_alloc: " << ready_msg_count << " messages " << messages << " accesses " << accesses << endl;
+						messages[ready_msg_count]._cel = access;
+						accesses[ready_msg_count]._cel = access;
 						//
+cout << "read_marker claim_for_alloc: " << ready_msg_count << " messages[0]._cel " << messages[ready_msg_count]._cel << " accesses " << accesses[0]._offset << endl;
+						ready_msg_count++;
 					}
 					//
-					ready_msg_count++;
 				}
+cout << "read_marker ready_msg_count: " << ready_msg_count << endl;
 				// rof; 
 				//
 				// SECOND: If duplicating, free the message slot, otherwise gather memory for storing new objecs
@@ -755,15 +783,17 @@ class TierAndProcManager : public LRU_Consts {
 				if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
 					// 	-- FILTER - only allocate for new objects
 					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
+
+cout << " ADDITIONAL LOCATIONS " << endl;
 					//
 					// accesses are null or zero offset if the hash already has an allocated location.
 					// If accesses[i] is a zero offset, then the element is new. Otherwise, the element 
 					// already exists and its offset has been placed into the corresponding messages[i] location.
 					// If accesses[i] is a zero offset, then the messages[i] is a reference to the data write location.
 					//
-					com_or_offset **tmp_dups = accesses;
-					com_or_offset **end_dups = accesses + ready_msg_count;  // look at the whole bufffer, see who is set
-					com_or_offset **tmp = messages;
+					com_or_offset *tmp_dups = accesses;
+					com_or_offset *end_dups = accesses + ready_msg_count;  // look at the whole bufffer, see who is set
+					com_or_offset *tmp = messages;
 
 					// Walk the messages and accesses in sync step.
 					//	That is, for the write that are updates of things in the table, 
@@ -774,15 +804,15 @@ class TierAndProcManager : public LRU_Consts {
 					uint32_t maybe_update[ready_msg_count];
 					uint8_t count_updates = 0;
 					while ( tmp_dups < end_dups ) {			/// UPDATE ops cleared first (nothing new in the hash table)
-						com_or_offset *dup_access = *tmp_dups++;
+						com_or_offset dup_access = *tmp_dups++;
 						//
 						// this element has been found and this is actually a data_loc...
-						if ( dup_access->_offset != 0 ) {			// duplicated, an occupied location for the hash
-							com_or_offset *to = *tmp;
-							uint32_t data_loc = to->_offset;		// offset is in the messages buffer
-							to->_offset = 0; 						// clear position
+						if ( dup_access._offset != 0 ) {			// duplicated, an occupied location for the hash
+							com_or_offset to = *tmp;
+							uint32_t data_loc = to._offset;		// offset is in the messages buffer
+							to._offset = 0; 						// clear position
 							maybe_update[count_updates++] = data_loc;
-							Com_element *cel = dup_access->_cel;	// duplicate was not clear... ref to com element
+							Com_element *cel = dup_access._cel;	// duplicate was not clear... ref to com element
 							cel->_offset = data_loc;				// to the com element ... output the known offset
 							// now get the control word location
 							atomic<COM_BUFFER_STATE> *read_marker = &(cel->_marker);			// use the data location
@@ -795,6 +825,7 @@ class TierAndProcManager : public LRU_Consts {
 					if ( count_updates > 0 ) {
 						lru->timestamp_update(maybe_update,count_updates);
 					}
+cout << "before additional locations" << endl;
 					//
 					//	additional_locations
 					//		new items go into memory -- hence new allocation (or taking) of positions
@@ -815,6 +846,8 @@ class TierAndProcManager : public LRU_Consts {
 						}
 						// GET LIST FROM FREE MEMORY 
 						//
+
+cout << "Free mem requested"  << endl;
 						// should be on stack
 						uint32_t lru_element_offsets[additional_locations+1];
 						// clear the buffer
@@ -824,6 +857,7 @@ class TierAndProcManager : public LRU_Consts {
 						// obtain storage for the object data 
 						bool mem_claimed = (UINT32_MAX != lru->claim_free_mem(additional_locations,lru_element_offsets)); // negotiate getting a list from free memory
 						//
+cout << "free mem claimed" << endl;
 						// if there are elements, they are already removed from free memory and this basket belongs to this process..
 						if ( mem_claimed ) {
 							//
@@ -832,26 +866,30 @@ class TierAndProcManager : public LRU_Consts {
 							uint32_t offset = 0;
 							//
 							uint32_t N = ready_msg_count;
-							com_or_offset **tmp = messages;
-							com_or_offset **end_m = messages + N;
+							com_or_offset *tmp = messages;
+							com_or_offset *end_m = messages + N;
 							//
 							// map hashes to the offsets
 							//
 							while ( tmp < end_m ) {   // only as many elements as proc placing data into the tier (parameter)
 								// read from com buf
-								com_or_offset *access_point = *tmp++;
-								if ( access_point != nullptr ) {
+								com_or_offset access_point = *tmp++;
+								if ( access_point._cel != nullptr ) {
 									//
 									offset = *current++;
 									//
-									Com_element *ce = access_point->_cel;
+cout << "access point (offset)" << offset << endl;
+									Com_element *ce = access_point._cel;
+cout << "access point 2 (ce)" << ce << endl;
 									//
 									uint32_t *write_offset_here = (&ce->_offset);
 									uint64_t *hash_parameter =  (&ce->_hash);
+cout << "access point 3: ... " << hash_parameter << endl;
 									//
 									uint64_t hash64 = hash_parameter[0];
 									uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
 									uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
+cout << "access point 4" << endl;
 									//
 									// second phase writer hands the hash and offset to the lru
 									//	this is the first time the lru pairs the hash and offset.
@@ -869,9 +907,11 @@ class TierAndProcManager : public LRU_Consts {
 									hh_element *el = nullptr;
 									CBIT_stash_holder *cbit_stashes[4];
 
+
+cout << "getting augmented hash" << endl;
 									// hash_bucket goes in by ref and will be stamped
 									uint64_t augmented_hash = lru->get_augmented_hash_locking(full_hash,&control_bits,&hash_bucket,&which_slice,&cbits,&cbits_op,&cbits_base_op,&el,&buffer,&end_buffer,cbit_stashes);
-
+cout << "augmented_hash: " << augmented_hash << endl;
 									if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
 										write_offset_here[0] = offset;
 										// the 64 bit version goes back to the caller...
@@ -880,10 +920,13 @@ class TierAndProcManager : public LRU_Consts {
 										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
 										clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
 										// -- if there is a problem, it will affect older entries
+cout << "store in hash: " << endl;
 										lru->store_in_hash_unlocking(control_bits,full_hash,hash_bucket,offset,which_slice,cbits,cbits_op,cbits_base_op,el,buffer,end_buffer,cbit_stashes);
 									} // else the bucket has not been locked...
 								}
 							}
+
+cout << "attaching to LRU list"  << endl;
 							//
 							lru->attach_to_lru_list(lru_element_offsets,ready_msg_count);  // attach to an LRU as a whole bucket...
 						} else {
@@ -913,7 +956,7 @@ class TierAndProcManager : public LRU_Consts {
 		 * 
 		*/
 
-		int 		put_method(uint32_t &hash_bucket, uint32_t &full_hash, bool updating, char* buffer, unsigned int size, uint32_t timestamp, uint32_t tier, void (delay_func)()) {
+		int 		put_method(uint32_t &hash_bucket, uint32_t &full_hash, bool updating, char* buffer, unsigned int size, uint32_t timestamp, uint32_t tier = 0, void (delay_func)(void) = default_delay) {
 			//
 			if ( _com_buffer == nullptr ) return -1;  // has not been initialized
 			if ( (buffer == nullptr) || (size <= 0) ) return -1;  // might put a limit on size lower and uppper
@@ -941,25 +984,31 @@ class TierAndProcManager : public LRU_Consts {
 				// tell a reader to get some free memory
 				uint32_t *hpar_low = (uint32_t *)hash_parameter;
 				uint32_t *hpar_hi = (hpar_low + 1);
+cout << "write parameters" << endl;
 				hpar_low[0] = hash_bucket;	// put in the hash so that the reader can see if this is a duplicate
 				hpar_hi[0] = full_hash;		// but also, this is the hash (not yet augmented)
 				// the write offset should come back to the process's read maker
 				offset_offset[0] = updating ? UINT32_MAX : 0;
 				//
 				//
+cout << "cleared_for_alloc: " << endl;
 				cleared_for_alloc(read_marker);   // allocators can now claim this process request
 				//
 				// will sigal just in case this is the first writer done and a thread is out there with nothing to do.
 				// wakeup a conditional reader if it happens to be sleeping and mark it for reading, 
 				// which prevents this process from writing until the data is consumed
+cout << "wake_up_write_handlers: " << endl;
 				bool status = wake_up_write_handlers(tier);
 				if ( !status ) {
 					return -2;
 				}
 				//
+cout << "await_write_offset: " << endl;
 				if ( await_write_offset(read_marker,MAX_WAIT_LOOPS,delay_func) ) {
 					//
+cout << "await_write_offset offset_offset: "  << offset_offset << endl;
 					uint32_t write_offset = offset_offset[0];
+cout << "await_write_offset write_offset: "  << write_offset << endl;
 					//
 					if ( (write_offset == UINT32_MAX) && !(updating) ) {	// a duplicate has been found
 						clear_for_write(read_marker);   // next write from this process can now proceed...
@@ -967,10 +1016,15 @@ class TierAndProcManager : public LRU_Consts {
 					}
 					//
 					uint8_t *m_insert = lru->data_location(write_offset);  // write offset filtered by above line
+
+cout << "await write m_insert " << m_insert << endl;
 					if ( m_insert != nullptr ) {
+cout << "hpar_low[0]: " << hpar_low[0] << endl;
 						hash_bucket = hpar_low[0]; // return the augmented hash ... update by reference...
+cout << "hpar_hi[0]: " << hpar_hi[0] << endl;
 						full_hash = hpar_hi[0];
 						memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));  // COPY IN NEW DATA HERE...
+cout << "data copied" << endl; 
 					} else {
 						clear_for_write(read_marker);   // next write from this process can now proceed...
 						return -1;

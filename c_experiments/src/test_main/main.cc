@@ -768,6 +768,8 @@ void front_end_internal_test(void) {
 
   uint8_t *com_buffer = new uint8_t[com_buf_sz];
   //
+  cout << "front_end_internal_test com_buf_sz: " << com_buf_sz << " com_buffer: " << ((void *)com_buffer) << " com_buffer: " << ((void *)(com_buffer + com_buf_sz)) << endl;
+  //
   map<key_t,void *> lru_segs;
   map<key_t,void *> hh_table_segs;
   map<key_t,size_t> seg_sizes;
@@ -778,6 +780,7 @@ void front_end_internal_test(void) {
   for ( uint32_t t = 0; t < num_tiers; t++ ) {
     seg_sizes[t] = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier, num_procs);
     lru_segs[t] = new uint8_t[seg_sizes[t]];
+    cout << "lru_segs[t]:: []" << t << "]  " << lru_segs[t] << endl;
   }
 
 cout << "Initialize TierAndProcManager:: " << endl;
@@ -795,8 +798,18 @@ cout << "Launch threads... TierAndProcManager:: " << endl;
   tapm.launch_second_phase_threads(last);
   //
 
-cout << "Shutting down threads... TierAndProcManager:: " << endl;
+  uint32_t hash_bucket = 0;
+  uint32_t full_hash = 0;
+  bool updating = false;
+  unsigned int size = 64;
+  char* buffer = new char[size];
+  strcpy(buffer,"this is a test");
+  uint32_t timestamp = now();
 
+
+  tapm.put_method(hash_bucket, full_hash, updating, buffer, size, timestamp);
+
+cout << "Shutting down threads... TierAndProcManager:: " << endl;
   //
   tapm.shutdown_threads(last);
 }

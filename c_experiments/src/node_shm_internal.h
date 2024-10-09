@@ -257,7 +257,7 @@ class INTERNAL_map : public Random_bits_generator<>, public HMap_interface {
 			//
 			while ( !(_table_access.test_and_set()) ) tick();
 			//
-			uint32_t val = 0;
+			uint32_t val = UINT32_MAX;
 			auto range = _local_map.equal_range(h_bucket);
 			for ( auto it = range.first; it != range.second; ++it ) {
 				if ( it->first == el_key ) {

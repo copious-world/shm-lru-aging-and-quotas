@@ -959,8 +959,15 @@ class Shared_KeyValueManager : public KeyValueManager {
 		*/
 		inline bool add_entries(uint32_t *lru_element_offsets,uint32_t *entry_times,uint32_t ready_msg_count) {
 			//
+
+cout << "add_entries: _writer_lock, _reader_lock :: lru_element_offsets " << lru_element_offsets << " entry_times " << entry_times << endl;
+
 			_writer_lock.lock();
 			_reader_lock.lock(true);
+
+cout << "add_entries: _share_N, _reader_lock: " << _share_N << " _share_M: " << _share_M << endl;
+			if ( _share_N == nullptr ) return false;
+			if ( _share_M == nullptr ) return false;
 
 			_N = _share_N->load();
 			_M = _share_M->load();
@@ -969,7 +976,9 @@ class Shared_KeyValueManager : public KeyValueManager {
 			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
 				uint32_t value = lru_element_offsets[i];
 				uint32_t key = entry_times[i];
+cout << "lru_element_offsets[i] " << value << "  entry_times[i]   " << key << endl;
 				any_ok |= this->add_entry(key, value);
+cout << "added "  << any_ok << endl;
 			}
 			//
 			if ( any_ok ) {
@@ -978,9 +987,11 @@ class Shared_KeyValueManager : public KeyValueManager {
 				_share_nouveau_max->store(_nouveau_max);
 				_share_nouveau_min->store(_nouveau_min);
 			}
+cout << "UNLOCK" << endl;
 			_reader_lock.unlock();
 			_writer_lock.unlock();
 			//
+cout << "Attatched " << endl;
 			return any_ok;
 		}
 

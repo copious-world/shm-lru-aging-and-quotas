@@ -59,6 +59,12 @@ inline uint64_t epoch_ms(void) {
 }
 
 
+inline uint32_t now(void) {
+	uint32_t ms;
+	ms = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+	return ms;
+}
+
 
 uint32_t g_prev_time = 0;
 uint32_t g_interval_counter = 0;

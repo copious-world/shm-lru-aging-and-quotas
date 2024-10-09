@@ -113,13 +113,15 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 
 			// time lower bound and upper bound for a tier...
 			if ( am_initializer ) {
-				_count_free->store(_max_count);	
-				_lb_time->store(UINT32_MAX);
+				_count_free->store(_max_count);
+				if ( tier == 0 ) {
+					_lb_time->store(now()-1);
+				} else {
+					_lb_time->store(UINT32_MAX);
+				}
 				_ub_time->store(UINT32_MAX);
 				_memory_requested->store(0);
 				_reserve_evictor->clear();
-
-cout << "_reserve_evictor: " << _reserve_evictor << endl;
 				//
 				initialize_com_area(num_procs);
 				//
@@ -338,19 +340,27 @@ cout << "_reserve_evictor: " << _reserve_evictor << endl;
 		 * The `_cel` parameter refers to the process table.
 		*/
 
-		uint32_t		filter_existence_check(com_or_offset **messages,com_or_offset **accesses,uint32_t ready_msg_count) {
+		uint32_t		filter_existence_check(com_or_offset *messages,com_or_offset *accesses,uint32_t ready_msg_count) {
 			uint32_t new_msgs_count = 0;
-			while ( --ready_msg_count >= 0 ) {  // walk this list backwards...
+			int rmc = (int)ready_msg_count;
+			while ( --rmc >= 0 ) {  // walk this list backwards...
 				//
-				uint64_t hash = (uint64_t)(messages[ready_msg_count]->_cel->_hash);
+				Com_element *cel = messages[rmc]._cel;
+				uint64_t hash = (uint64_t)(cel->_hash);
+
+cout << "filter_existence_check: " << hash << " mm " << _hmap << endl;
 				uint32_t data_loc = _hmap->get(hash);  // this thread contends with others to get the value
+cout << "filter_existence_check after get: " << data_loc << endl;
 				//
 				if ( data_loc != UINT32_MAX ) {    // check if this message is already stored
-					messages[ready_msg_count]->_offset = data_loc;  // just putting in an offset... maybe something better
+					messages[rmc]._offset = data_loc;  // just putting in an offset... maybe something better
 				} else {
 					new_msgs_count++;							// the hash has not been found
-					accesses[ready_msg_count]->_offset = 0;		// the offset is not yet known (the space will claimed later)
+					accesses[rmc]._offset = 0;		// the offset is not yet known (the space will claimed later)
 				}
+
+cout << "filter_existence_check e of loop: " << hash << " messages[rmc]: " << messages[rmc]._cel << " accesses[rmc] " << accesses[rmc]._offset << endl;
+
 			}
 			return new_msgs_count;
 		}
@@ -426,6 +436,8 @@ cout << "_reserve_evictor: " << _reserve_evictor << endl;
 		uint32_t		claim_free_mem(uint32_t ready_msg_count,uint32_t *reserved_offsets) {
 			//
 			uint8_t *start = this->start();
+
+cout << "claim_free_mem (start): " << (void *)start << endl;
 			//
 			uint32_t status = pop_number(start,ready_msg_count,reserved_offsets);
 			if ( status == UINT32_MAX ) {
@@ -475,7 +487,9 @@ cout << "_reserve_evictor: " << _reserve_evictor << endl;
 			uint32_t entry_times[ready_msg_count];
 			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
 				entry_times[i] = current_time_next();
+cout << "entry_times[i]: " << entry_times[i] << endl;
 			}
+cout << "adding to timeout table"  << endl;
 			_timeout_table->add_entries(lru_element_offsets,entry_times,ready_msg_count);
 			//
 		}
