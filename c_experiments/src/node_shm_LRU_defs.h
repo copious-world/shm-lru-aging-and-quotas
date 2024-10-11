@@ -21,6 +21,7 @@ using namespace std;
 
 #include "random_selector.h"
 #include "atomic_proc_rw_state.h"
+#include "holey_buffer.h"
 
 
 using namespace std::chrono;
@@ -203,7 +204,7 @@ class LRU_Consts {
 			size_t com_reader_per_proc_sz = sizeof(Com_element)*num_procs;
 			size_t max_count_lru_regions_sz = (sizeof(LRU_element) + record_size)*(els_per_tier + 2);
 			// _max_count*2 + num_procs
-			size_t holey_buffer_sz = sizeof(pair<uint32_t,uint32_t>)*els_per_tier*2 + sizeof(pair<uint32_t,uint32_t>)*num_procs; // storage for timeout management
+			size_t holey_buffer_sz = Shared_KeyValueManager::check_expected_holey_buffer_size(els_per_tier,num_procs); // storage for timeout management
 
 			uint32_t predict = (this_tier_atomics_sz + com_reader_per_proc_sz + max_count_lru_regions_sz + holey_buffer_sz);
 			//

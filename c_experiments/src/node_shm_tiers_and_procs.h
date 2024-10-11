@@ -404,7 +404,6 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 		atomic<COM_BUFFER_STATE> *get_read_marker(uint8_t tier = 0) {
-cout << "_owner_proc_area: " << _owner_proc_area << endl;
 			Com_element *ce = (_owner_proc_area + tier);  // From the instance's reserved com elements by it's `_proc` member.
 			return &(ce->_marker);   // The marker (may be the first field), provides access to just the atomically shared field.
 		}
@@ -539,7 +538,8 @@ cout << "_owner_proc_area: " << _owner_proc_area << endl;
 			}
 #endif
 		}
-		
+
+
 		bool 		wakeup_removal(uint32_t tier) {
 			_removerAtomicFlag[tier]->test_and_set();
 #ifndef __APPLE__

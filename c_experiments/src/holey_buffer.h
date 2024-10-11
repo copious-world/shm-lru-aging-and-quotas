@@ -819,12 +819,14 @@ public:
 
 class SpinlockWriters {
 public:
-  SpinlockWriters() { }
+  SpinlockWriters() { unlock(); }
 
   virtual ~SpinlockWriters(void) { unlock(); }
 
   void lock(void){
-    while( flag.test_and_set() ) __libcpp_thread_yield();
+	do {
+	    while( flag.test_and_set() ) __libcpp_thread_yield();
+	} while ( !(flag.test()) );
   }
 
   void unlock(){
@@ -837,19 +839,51 @@ public:
 };
 
 
+const uint8_t NUM_H_BUFFER_ATOMICS = 9;
+
 
 class Shared_KeyValueManager : public KeyValueManager {
 
 	public:
 
-		Shared_KeyValueManager(pair<uint32_t,uint32_t> *primary_storage,
+		Shared_KeyValueManager(atomic<uint32_t> *start_atoms, pair<uint32_t,uint32_t> *primary_storage,
 									uint32_t count_size, pair<uint32_t,uint32_t> *shared_queue, uint16_t expected_proc_max)
 											: KeyValueManager(primary_storage,count_size,shared_queue,expected_proc_max)
 								 {
+			atomic<uint32_t> *atoms = start_atoms;
+			_share_N = atoms; atoms++;
+			_share_N->store(0);
+			_share_M = atoms; atoms++;
+			_share_M->store(0);
+			_share_blackout_count = atoms; atoms++;
+			_share_blackout_count->store(0);
+			_share_nouveau_max = atoms; atoms++;
+			_share_nouveau_max->store(0);
+			_share_nouveau_min = atoms; atoms++;
+			_share_nouveau_min->store(0);
+			_share_min_hole_offset_first = atoms; atoms++;
+			_share_min_hole_offset_first->store(0);
+			_share_min_hole_offset_second = atoms; atoms++;
+			_share_min_hole_offset_second->store(0);
+			_share_max_hole_offset_first = atoms; atoms++;
+			_share_max_hole_offset_first->store(0);
+			_share_max_hole_offset_second = atoms; atoms++;
+			_share_max_hole_offset_second->store(0);
 		}
 
 		virtual ~Shared_KeyValueManager() {
 		}
+
+	public:
+
+
+		static size_t check_expected_holey_buffer_size(size_t els_per_tier, uint32_t num_procs) {
+			size_t predict = sizeof(pair<uint32_t,uint32_t>)*els_per_tier*2 + sizeof(pair<uint32_t,uint32_t>)*num_procs;
+			predict += sizeof(atomic<uint32_t>)*NUM_H_BUFFER_ATOMICS;
+			return predict;
+		}
+
+		static const uint8_t atomic_region_size = NUM_H_BUFFER_ATOMICS*sizeof(atomic<uint32_t>);
 
 
 
@@ -959,13 +993,9 @@ class Shared_KeyValueManager : public KeyValueManager {
 		*/
 		inline bool add_entries(uint32_t *lru_element_offsets,uint32_t *entry_times,uint32_t ready_msg_count) {
 			//
-
-cout << "add_entries: _writer_lock, _reader_lock :: lru_element_offsets " << lru_element_offsets << " entry_times " << entry_times << endl;
-
 			_writer_lock.lock();
 			_reader_lock.lock(true);
 
-cout << "add_entries: _share_N, _reader_lock: " << _share_N << " _share_M: " << _share_M << endl;
 			if ( _share_N == nullptr ) return false;
 			if ( _share_M == nullptr ) return false;
 
@@ -976,9 +1006,7 @@ cout << "add_entries: _share_N, _reader_lock: " << _share_N << " _share_M: " << 
 			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
 				uint32_t value = lru_element_offsets[i];
 				uint32_t key = entry_times[i];
-cout << "lru_element_offsets[i] " << value << "  entry_times[i]   " << key << endl;
 				any_ok |= this->add_entry(key, value);
-cout << "added "  << any_ok << endl;
 			}
 			//
 			if ( any_ok ) {
@@ -987,11 +1015,10 @@ cout << "added "  << any_ok << endl;
 				_share_nouveau_max->store(_nouveau_max);
 				_share_nouveau_min->store(_nouveau_min);
 			}
-cout << "UNLOCK" << endl;
+
 			_reader_lock.unlock();
 			_writer_lock.unlock();
 			//
-cout << "Attatched " << endl;
 			return any_ok;
 		}
 
@@ -1065,8 +1092,6 @@ cout << "Attatched " << endl;
 
 			return status;
 		}
-
-
 
 	public:
 

@@ -28,7 +28,6 @@ using namespace std;
 #include "node_shm_queued.h"
 #include "node_shm_internal.h"
 
-#include "holey_buffer.h"
 #include "atomic_proc_rw_state.h"
 #include "time_bucket.h"
 #include "atomic_stack.h"
@@ -103,7 +102,10 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				throw "lru_cache (3) sizes overrun allocated region determined by region_sz";
 			}
 			//
-			pair<uint32_t,uint32_t> *holey_buffer = (pair<uint32_t,uint32_t> *)(_end);
+			uint8_t *end_atomics = (uint8_t *)_end;
+			atomic<uint32_t> *atomics_region = (atomic<uint32_t> *)end_atomics;
+			end_atomics += Shared_KeyValueManager::atomic_region_size;
+			pair<uint32_t,uint32_t> *holey_buffer = (pair<uint32_t,uint32_t> *)(end_atomics);
 			pair<uint32_t,uint32_t> *shared_queue = (holey_buffer + _max_count*2 + num_procs);  // late arrivals
 			if ( !check_end((uint8_t *)shared_queue) ) {
 				throw "lru_cache (4) sizes overrun allocated region determined by region_sz";
@@ -125,7 +127,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				//
 				initialize_com_area(num_procs);
 				//
-				_timeout_table = new Shared_KeyValueManager(holey_buffer, _max_count, shared_queue, num_procs);
+				_timeout_table = new Shared_KeyValueManager(atomics_region,holey_buffer, _max_count, shared_queue, num_procs);
 				_configured_tier_cooling = ONE_HOUR;
 				_configured_shrinkage = 0.3333;
 
@@ -540,7 +542,15 @@ cout << "adding to timeout table"  << endl;
 			uint32_t min_max_time = (t_c - _configured_tier_cooling);
 			uint32_t as_many_as = min((uint32_t)(_max_count*_configured_shrinkage),(req_count*3));
 			//
-			_timeout_table->displace_lowest_value_threshold(offsets_moving,min_max_time,as_many_as);
+			list<uint32_t> ll;
+			_timeout_table->displace_lowest_value_threshold(ll,min_max_time,as_many_as);
+			// filter already deleted 
+			for ( auto offset : ll ) {
+				LRU_element *lel = (LRU_element *)(this->_start + offset);
+				if ( _hmap->get(lel->_hash) != UINT32_MAX ) {
+					offsets_moving.push_back(offset);
+				}
+			}
 			return offsets_moving.size();
 		}
 
@@ -642,7 +652,7 @@ cout << "adding to timeout table"  << endl;
 				LRU_element *el = (LRU_element *)(start + offset);
 				uint64_t hash64  = el->_hash;
 				this->return_to_free_mem(el);
-				this->_hmap->del(hash64,thread_id);
+				this->_hmap->del(hash64,thread_id);  // if the hash is not in the table this will be a noop.
 			}
 			//
 		}
@@ -870,8 +880,9 @@ cout << "RUNNING EVICTOR: " << endl;
 		*/
 
 		void 			remove_key(uint32_t full_hash, uint32_t h_bucket, uint32_t timestamp) {
-			_timeout_table->remove_entry(timestamp);
-			_hmap->del(full_hash,h_bucket);
+			if ( _timeout_table->remove_entry(timestamp) ) {
+				_hmap->del(full_hash,h_bucket);
+			}
 		}
 
 
@@ -947,7 +958,7 @@ cout << "RUNNING EVICTOR: " << endl;
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
  		HMap_interface 					*_hmap;
- 		Shared_KeyValueManager			*_timeout_table;
+ 		Shared_KeyValueManager					*_timeout_table;
 		//
 		LRU_cache 						**_all_tiers;		// set by caller
 		//
