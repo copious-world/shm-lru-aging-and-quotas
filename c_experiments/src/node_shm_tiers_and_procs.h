@@ -57,7 +57,155 @@ typedef struct R_ENTRY {
 template<uint16_t const ExpectedMax = 100>
 class RemovalEntryHolder : public  SharedQueue_SRSW<r_entry,ExpectedMax> {};
 
+template<const uint8_t MAX_TIERS = 8>
+class WorkWaiters {
 
+	public:
+
+		WorkWaiters(void) {}
+		virtual ~WorkWaiters(void) {}
+
+	public:
+
+
+		/**
+		 * wait_for_removal_notification
+		*/
+
+		void 		wait_for_removal_notification(uint8_t tier) {
+#ifndef __APPLE__
+			_removerAtomicFlag[tier]->clear();
+			_removerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
+#else
+			while ( _removerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) ) {
+				microseconds us = microseconds(100);
+				auto start = high_resolution_clock::now();
+				auto end = start + us;
+				do {
+					std::this_thread::yield();
+				} while ( high_resolution_clock::now() < end );
+			}
+#endif
+		}
+
+
+
+		// Stop the process on a futex until notified...
+		void		wait_for_data_present_notification(uint8_t tier,bool *thread_is_running) {
+#ifndef __APPLE__
+			_readerAtomicFlag[tier]->clear();
+			_readerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
+#else
+//cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier << endl;
+//cout << "waiting..."; cout.flush();
+			// FOR MAC OSX
+			while ( _readerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) && *thread_is_running) {
+//cout << "+"; cout.flush();
+				microseconds us = microseconds(100);
+				auto start = high_resolution_clock::now();
+				auto end = start + us;
+				do {
+					std::this_thread::yield();
+//cout << "."; cout.flush();
+				} while ( high_resolution_clock::now() < end );
+			}
+#endif
+		}
+
+
+
+		/**
+		 * Waking up any thread that waits on input into the tier.
+		 * Any number of processes may place a message into a tier. 
+		 * If the tier is full, the reader has the job of kicking off the eviction process.
+		*/
+		bool		wake_up_write_handlers(uint32_t tier) {
+#ifndef __APPLE__
+			_readerAtomicFlag[tier]->test_and_set();
+			_readerAtomicFlag[tier]->notify_all();
+#else
+			_readerAtomicFlag[tier]->clear();
+#endif
+			return true;
+		}
+
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+		// -- set_reader_atomic_tags
+		/**
+		 * set_reader_atomic_tags
+		*/
+		void 		set_reader_atomic_tags(atomic_flag *c_buffer,uint32_t n_tiers) {
+			if ( c_buffer != nullptr ) {
+				atomic_flag *af = (atomic_flag *)c_buffer;
+				for ( uint32_t tier = 0; tier < n_tiers; tier++ ) {
+#ifndef __APPLE__ 
+					af->clear();
+#else
+					while ( !af->test_and_set() );  // set it high
+#endif
+					_readerAtomicFlag[tier] = af;
+					af++;
+				}
+			}
+		}
+
+
+		/**
+		 * set_removal_atomic_tags
+		*/
+		void		set_removal_atomic_tags(atomic_flag *c_buffer,uint32_t n_tiers) {
+			if ( c_buffer != nullptr ) {
+				atomic_flag *af = ((atomic_flag *)c_buffer) + n_tiers;
+				for ( uint32_t i = 0; i < n_tiers; i++ ) {
+					_removerAtomicFlag[i] = af;
+					af++;
+				}
+			}
+		}
+
+
+		bool 		wakeup_removal(uint32_t tier) {
+			_removerAtomicFlag[tier]->test_and_set();
+#ifndef __APPLE__
+			_removerAtomicFlag[tier]->notify_all();
+#else
+			_removerAtomicFlag[tier]->clear();
+#endif
+			return true;
+		}
+
+		// removal_waiting
+		void		removal_waiting(uint8_t tier) {
+			if ( _removal_work[tier].empty() ) {
+				wait_for_removal_notification(tier);
+			}
+		}
+
+		// add_work
+		void add_work(uint8_t tier,r_entry &re) {
+			_removal_work[tier].push(re);
+		}
+		
+		// has_removal_work
+		bool		has_removal_work(uint8_t tier) {
+			return !_removal_work[tier].empty();
+		}
+
+		// get_work
+		bool		get_work(uint8_t tier,r_entry &re) {
+			return _removal_work[tier].pop(re);
+		}
+
+	protected:
+
+		RemovalEntryHolder<>	_removal_work[MAX_TIERS];
+		atomic_flag 			*_removerAtomicFlag[MAX_TIERS];
+		atomic_flag 			*_readerAtomicFlag[MAX_TIERS];
+
+};
 
 #define ONE_HOUR 	(60*60*1000)
 
@@ -65,7 +213,7 @@ class RemovalEntryHolder : public  SharedQueue_SRSW<r_entry,ExpectedMax> {};
 // duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
 
 template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_FACTOR = 3,class LRU_c_impl = LRU_cache>
-class TierAndProcManager : public LRU_Consts {
+class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 
 	public:
 
@@ -282,39 +430,6 @@ class TierAndProcManager : public LRU_Consts {
 		}
 
 
-		// -- set_reader_atomic_tags
-		/**
-		 * set_reader_atomic_tags
-		*/
-		void 		set_reader_atomic_tags(void) {
-			if ( _com_buffer != nullptr ) {
-				atomic_flag *af = (atomic_flag *)_com_buffer;
-				for ( uint32_t tier = 0; tier < _NTiers; tier++ ) {
-#ifndef __APPLE__ 
-					af->clear();
-#else
-					while ( !af->test_and_set() );  // set it high
-#endif
-					_readerAtomicFlag[tier] = af;
-					af++;
-				}
-			}
-		}
-
-		/**
-		 * set_removal_atomic_tags
-		*/
-		void		set_removal_atomic_tags(void) {
-			if ( _com_buffer != nullptr ) {
-				atomic_flag *af = ((atomic_flag *)_com_buffer) + _NTiers;
-				for ( uint32_t i = 0; i < _NTiers; i++ ) {
-					_removerAtomicFlag[i] = af;
-					af++;
-				}
-			}
-		}
-
-
 		/**
 		 * get_proc_entries
 		*/
@@ -332,8 +447,8 @@ class TierAndProcManager : public LRU_Consts {
 		bool 		set_and_init_com_buffer() {
 			//
 			if ( _com_buffer == nullptr ) return false;
-			set_reader_atomic_tags();
-			set_removal_atomic_tags();
+			this->set_reader_atomic_tags((atomic_flag *)_com_buffer,_NTiers);
+			this->set_removal_atomic_tags((atomic_flag *)_com_buffer,_NTiers);
 			set_owner_proc_area();
 			//
 			if ( _am_initializer ) {
@@ -479,84 +594,13 @@ class TierAndProcManager : public LRU_Consts {
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 
-		// Stop the process on a futex until notified...
-		void		wait_for_data_present_notification(uint8_t tier) {
-#ifndef __APPLE__
-			_readerAtomicFlag[tier]->clear();
-			_readerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
-#else
-//cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier << endl;
-//cout << "waiting..."; cout.flush();
-			// FOR MAC OSX
-			while ( _readerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) && this->_thread_running[tier] ) {
-//cout << "+"; cout.flush();
-				microseconds us = microseconds(100);
-				auto start = high_resolution_clock::now();
-				auto end = start + us;
-				do {
-					std::this_thread::yield();
-//cout << "."; cout.flush();
-				} while ( high_resolution_clock::now() < end );
-			}
-#endif
-		}
-
-
-
-		/**
-		 * Waking up any thread that waits on input into the tier.
-		 * Any number of processes may place a message into a tier. 
-		 * If the tier is full, the reader has the job of kicking off the eviction process.
-		*/
-		bool		wake_up_write_handlers(uint32_t tier) {
-#ifndef __APPLE__
-			_readerAtomicFlag[tier]->test_and_set();
-			_readerAtomicFlag[tier]->notify_all();
-#else
-			_readerAtomicFlag[tier]->clear();
-#endif
-			return true;
-		}
-
-
-		/**
-		 * wait_for_removal_notification
-		*/
-
-		void 		wait_for_removal_notification(uint8_t tier) {
-#ifndef __APPLE__
-			_removerAtomicFlag[tier]->clear();
-			_removerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
-#else
-			while ( _removerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) ) {
-				microseconds us = microseconds(100);
-				auto start = high_resolution_clock::now();
-				auto end = start + us;
-				do {
-					std::this_thread::yield();
-				} while ( high_resolution_clock::now() < end );
-			}
-#endif
-		}
-
-
-		bool 		wakeup_removal(uint32_t tier) {
-			_removerAtomicFlag[tier]->test_and_set();
-#ifndef __APPLE__
-			_removerAtomicFlag[tier]->notify_all();
-#else
-			_removerAtomicFlag[tier]->clear();
-#endif
-			return true;
-		}
-
 
 		/**
 		 * launch_second_phase_threads
 		*/
 		void 		launch_second_phase_threads(LRU_Alloc_Sections_and_Threads &last) {  // handle reads ...
 			//
-			uint32_t P = _Procs;
+			//uint32_t P = _Procs;
 			uint32_t T = _NTiers;
 			for ( uint8_t i = 0; i < T; i++ ) {
 				// secondary_runner -- this is always run...
@@ -710,7 +754,7 @@ class TierAndProcManager : public LRU_Consts {
 				}
 				//
 				if ( ready_procs.size() == 0 ) {
-					wait_for_data_present_notification(assigned_tier);
+					this->wait_for_data_present_notification(assigned_tier,&(this->_thread_running[assigned_tier]));
 				}
 			} while ( (ready_procs.size() == 0) && this->_thread_running[assigned_tier] );
 		}
@@ -734,7 +778,6 @@ class TierAndProcManager : public LRU_Consts {
 				queue<uint32_t> ready_procs;		// ---- ---- ---- ---- ---- ----
 				second_phase_waiter(ready_procs, proc_count, assigned_tier);
 				//
-cout << "second_phase_waiter: " << (int)(assigned_tier) << endl;
 				//
 				com_or_offset *messages = messages_reserved;  // get this many addrs if possible...
 				com_or_offset *accesses = duplicate_reserved;
@@ -754,27 +797,20 @@ cout << "second_phase_waiter: " << (int)(assigned_tier) << endl;
 					uint32_t proc = ready_procs.front();
 					ready_procs.pop();
 					//
-cout << "read_marker: " << endl;
 					atomic<COM_BUFFER_STATE> *read_marker = this->get_read_marker(proc, assigned_tier);
-cout << "access_point: " << endl;
 					Com_element *access = this->access_point(proc,assigned_tier);
 					//
-cout << "read_marker: " << read_marker <<  "  " << access << endl;
 					if ( read_marker->load() == CLEARED_FOR_ALLOC ) {   // process has a message
 						//
-cout << "read_marker claim_for_alloc: " << endl;
 						claim_for_alloc(read_marker); // This is the atomic update of the write state
 						//
-cout << "read_marker claim_for_alloc: " << ready_msg_count << " messages " << messages << " accesses " << accesses << endl;
 						messages[ready_msg_count]._cel = access;
 						accesses[ready_msg_count]._cel = access;
 						//
-cout << "read_marker claim_for_alloc: " << ready_msg_count << " messages[0]._cel " << messages[ready_msg_count]._cel << " accesses " << accesses[0]._offset << endl;
 						ready_msg_count++;
 					}
 					//
 				}
-cout << "read_marker ready_msg_count: " << ready_msg_count << endl;
 				// rof; 
 				//
 				// SECOND: If duplicating, free the message slot, otherwise gather memory for storing new objecs
@@ -784,7 +820,6 @@ cout << "read_marker ready_msg_count: " << ready_msg_count << endl;
 					// 	-- FILTER - only allocate for new objects
 					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
 
-cout << " ADDITIONAL LOCATIONS " << endl;
 					//
 					// accesses are null or zero offset if the hash already has an allocated location.
 					// If accesses[i] is a zero offset, then the element is new. Otherwise, the element 
@@ -825,7 +860,6 @@ cout << " ADDITIONAL LOCATIONS " << endl;
 					if ( count_updates > 0 ) {
 						lru->timestamp_update(maybe_update,count_updates);
 					}
-cout << "before additional locations" << endl;
 					//
 					//	additional_locations
 					//		new items go into memory -- hence new allocation (or taking) of positions
@@ -846,8 +880,6 @@ cout << "before additional locations" << endl;
 						}
 						// GET LIST FROM FREE MEMORY 
 						//
-
-cout << "Free mem requested"  << endl;
 						// should be on stack
 						uint32_t lru_element_offsets[additional_locations+1];
 						// clear the buffer
@@ -857,7 +889,6 @@ cout << "Free mem requested"  << endl;
 						// obtain storage for the object data 
 						bool mem_claimed = (UINT32_MAX != lru->claim_free_mem(additional_locations,lru_element_offsets)); // negotiate getting a list from free memory
 						//
-cout << "free mem claimed" << endl;
 						// if there are elements, they are already removed from free memory and this basket belongs to this process..
 						if ( mem_claimed ) {
 							//
@@ -878,18 +909,14 @@ cout << "free mem claimed" << endl;
 									//
 									offset = *current++;
 									//
-cout << "access point (offset)" << offset << endl;
 									Com_element *ce = access_point._cel;
-cout << "access point 2 (ce)" << ce << endl;
 									//
 									uint32_t *write_offset_here = (&ce->_offset);
 									uint64_t *hash_parameter =  (&ce->_hash);
-cout << "access point 3: ... " << hash_parameter << endl;
 									//
 									uint64_t hash64 = hash_parameter[0];
 									uint32_t full_hash = (uint32_t)((hash64 >> HALF) & 0xFFFFFFFF);
 									uint32_t hash_bucket = (uint32_t)(hash64 & 0xFFFFFFFF);
-cout << "access point 4" << endl;
 									//
 									// second phase writer hands the hash and offset to the lru
 									//	this is the first time the lru pairs the hash and offset.
@@ -908,10 +935,8 @@ cout << "access point 4" << endl;
 									CBIT_stash_holder *cbit_stashes[4];
 
 
-cout << "getting augmented hash" << endl;
 									// hash_bucket goes in by ref and will be stamped
 									uint64_t augmented_hash = lru->get_augmented_hash_locking(full_hash,&control_bits,&hash_bucket,&which_slice,&cbits,&cbits_op,&cbits_base_op,&el,&buffer,&end_buffer,cbit_stashes);
-cout << "augmented_hash: " << augmented_hash << endl;
 									if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
 										write_offset_here[0] = offset;
 										// the 64 bit version goes back to the caller...
@@ -920,13 +945,11 @@ cout << "augmented_hash: " << augmented_hash << endl;
 										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
 										clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
 										// -- if there is a problem, it will affect older entries
-cout << "store in hash: " << endl;
 										lru->store_in_hash_unlocking(control_bits,full_hash,hash_bucket,offset,which_slice,cbits,cbits_op,cbits_base_op,el,buffer,end_buffer,cbit_stashes);
 									} // else the bucket has not been locked...
 								}
 							}
 
-cout << "attaching to LRU list"  << endl;
 							//
 							lru->attach_to_lru_list(lru_element_offsets,ready_msg_count);  // attach to an LRU as a whole bucket...
 						} else {
@@ -984,31 +1007,27 @@ cout << "attaching to LRU list"  << endl;
 				// tell a reader to get some free memory
 				uint32_t *hpar_low = (uint32_t *)hash_parameter;
 				uint32_t *hpar_hi = (hpar_low + 1);
-cout << "write parameters" << endl;
+
 				hpar_low[0] = hash_bucket;	// put in the hash so that the reader can see if this is a duplicate
 				hpar_hi[0] = full_hash;		// but also, this is the hash (not yet augmented)
 				// the write offset should come back to the process's read maker
 				offset_offset[0] = updating ? UINT32_MAX : 0;
 				//
 				//
-cout << "cleared_for_alloc: " << endl;
 				cleared_for_alloc(read_marker);   // allocators can now claim this process request
 				//
 				// will sigal just in case this is the first writer done and a thread is out there with nothing to do.
 				// wakeup a conditional reader if it happens to be sleeping and mark it for reading, 
 				// which prevents this process from writing until the data is consumed
-cout << "wake_up_write_handlers: " << endl;
-				bool status = wake_up_write_handlers(tier);
+
+				bool status = this->wake_up_write_handlers(tier);
 				if ( !status ) {
 					return -2;
 				}
 				//
-cout << "await_write_offset: " << endl;
 				if ( await_write_offset(read_marker,MAX_WAIT_LOOPS,delay_func) ) {
 					//
-cout << "await_write_offset offset_offset: "  << offset_offset << endl;
 					uint32_t write_offset = offset_offset[0];
-cout << "await_write_offset write_offset: "  << write_offset << endl;
 					//
 					if ( (write_offset == UINT32_MAX) && !(updating) ) {	// a duplicate has been found
 						clear_for_write(read_marker);   // next write from this process can now proceed...
@@ -1017,14 +1036,10 @@ cout << "await_write_offset write_offset: "  << write_offset << endl;
 					//
 					uint8_t *m_insert = lru->data_location(write_offset);  // write offset filtered by above line
 
-cout << "await write m_insert " << m_insert << endl;
 					if ( m_insert != nullptr ) {
-cout << "hpar_low[0]: " << hpar_low[0] << endl;
 						hash_bucket = hpar_low[0]; // return the augmented hash ... update by reference...
-cout << "hpar_hi[0]: " << hpar_hi[0] << endl;
 						full_hash = hpar_hi[0];
 						memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));  // COPY IN NEW DATA HERE...
-cout << "data copied" << endl; 
 					} else {
 						clear_for_write(read_marker);   // next write from this process can now proceed...
 						return -1;
@@ -1061,7 +1076,7 @@ cout << "data copied" << endl;
 		 * 
 		*/
 
-		int get_method(uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t timestamp, uint32_t tier,[[maybe_unused]] void (delay_func)()) {
+		int get_method(uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t timestamp, uint32_t tier,[[maybe_unused]] void (delay_func)(void) = default_delay) {
 			uint32_t write_offset = 0;
 			//
 			if ( tier == 0 ) {
@@ -1104,7 +1119,7 @@ cout << "data copied" << endl;
 		 * 
 		*/
 
-		int search_method(uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t tier, void (delay_func)()) {
+		int search_method(uint32_t hash_bucket, uint32_t full_hash, char *data, size_t sz, uint32_t tier, void (delay_func)(void) = default_delay) {
 			uint32_t write_offset = 0;
 			//
 			if ( tier == 0 ) {
@@ -1218,12 +1233,12 @@ cout << "data copied" << endl;
 		*/
 
 		void removal_thread(uint8_t tier) {
-			if ( _removal_work[tier].empty() ) {
-				wait_for_removal_notification(tier);
-			}
-			while ( !_removal_work[tier].empty() ) {
+
+			this->removal_waiting(tier);
+
+			while ( this->has_removal_work(tier)  ) {
 				r_entry re;
-				if ( _removal_work[tier].pop(re) ) {
+				if ( this->get_work(tier,re) ) {
 					uint32_t timestamp = re.timestamp;
 					uint32_t hash_bucket = re.h_bucket;
 					uint32_t full_hash = re.full_hash;
@@ -1243,11 +1258,11 @@ cout << "data copied" << endl;
 		 * 
 		*/
 
-		int del_method(uint32_t process,uint32_t h_bucket, uint32_t full_hash,uint32_t timestamp,uint32_t tier) {
+		void del_method(uint32_t process,uint32_t h_bucket, uint32_t full_hash,uint32_t timestamp,uint32_t tier) {
 			//
 			r_entry re = {process,timestamp,h_bucket,full_hash};
-			_removal_work[tier].push(re);
-			wakeup_removal(tier);		// just in case the removal thread is waiting.
+			this->add_work(tier,re);
+			this->wakeup_removal(tier);		// just in case the removal thread is waiting.
 		}
 
 	protected:
@@ -1304,12 +1319,7 @@ cout << "data copied" << endl;
 		uint8_t					_reserve_size;
 		uint16_t				_offset_to_com_elements;
 
-	protected:
-
 	//
-		atomic_flag 			*_readerAtomicFlag[MAX_TIERS];
-		atomic_flag 			*_removerAtomicFlag[MAX_TIERS];
-		RemovalEntryHolder<>	_removal_work[MAX_TIERS];
 
 };
 

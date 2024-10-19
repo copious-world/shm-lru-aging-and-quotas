@@ -7,6 +7,7 @@
 #include <type_traits>
 #include <iostream>
 #include <cstring>
+#include <string>
 
 #include <deque>
 #include <map>
@@ -813,6 +814,301 @@ cout << "Shutting down threads... TierAndProcManager:: " << endl;
   //
   tapm.shutdown_threads(last);
 }
+
+
+
+
+
+
+void front_end_internal_test2(void) {
+  //
+  stp_table_choice tchoice = STP_TABLE_INTERNAL_ONLY;
+  uint32_t num_procs = 8;
+  uint32_t num_tiers = 3;
+  uint32_t proc_number = 1;
+  uint32_t els_per_tier = 20000;
+  //
+  LRU_Alloc_Sections_and_Threads last = TierAndProcManager<>::section_allocation_requirements(tchoice, num_procs, num_tiers);
+
+  auto com_buf_sz = TierAndProcManager<>::check_expected_com_region_size(num_procs,num_tiers);
+
+  uint8_t *com_buffer = new uint8_t[com_buf_sz];
+  //
+  cout << "front_end_internal_test com_buf_sz: " << com_buf_sz << " com_buffer: " << ((void *)com_buffer) << " com_buffer: " << ((void *)(com_buffer + com_buf_sz)) << endl;
+  //
+  map<key_t,void *> lru_segs;
+  map<key_t,void *> hh_table_segs;
+  map<key_t,size_t> seg_sizes;
+  bool am_initializer = true;
+  uint32_t max_obj_size = 128;
+  void **random_segs = nullptr;
+
+  for ( uint32_t t = 0; t < num_tiers; t++ ) {
+    seg_sizes[t] = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier, num_procs);
+    lru_segs[t] = new uint8_t[seg_sizes[t]];
+    cout << "lru_segs[t]:: []" << t << "]  " << lru_segs[t] << endl;
+  }
+
+cout << "Initialize TierAndProcManager:: " << endl;
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  TierAndProcManager<> tapm(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+cout << "Launch threads... TierAndProcManager:: " << endl;
+
+  tapm.launch_second_phase_threads(last);
+  //
+
+  map<uint32_t,uint32_t> hash_stamp;
+
+  thread input_all([&](){
+      uint32_t hash_bucket = 0;
+      uint32_t full_hash = 0;
+      bool updating = false;
+      unsigned int size = 64;
+      char* buffer = new char[size];
+
+    string tester = "this is a test";
+
+    for ( int i = 0; i < 8; i++ ) {
+      //
+      full_hash++;
+      hash_bucket++;
+
+      tester += ' ';
+      tester += i;
+      memset(buffer,0,size);
+      strcpy(buffer,tester.c_str());
+      uint32_t timestamp = now();
+      hash_stamp[full_hash] = timestamp;
+      //
+      tapm.put_method(hash_bucket, full_hash, updating, buffer, size, timestamp);
+
+    }
+
+  });
+
+
+  for ( int j = 0; j < 100; j++ ) tick();
+
+  thread get_all([&](){
+      uint32_t hash_bucket = 0;
+      uint32_t full_hash = 0;
+      unsigned int size = 64;
+      char* buffer = new char[size];
+
+    string tester = "this is a test";
+
+    for ( int i = 0; i < 8; i++ ) {
+      //
+      full_hash++;
+      hash_bucket++;
+      //
+      tester += ' ';
+      tester += i;
+      memset(buffer,0,size);
+      strcpy(buffer,tester.c_str());
+      uint32_t timestamp = 0;
+      //
+      while ( timestamp == 0 ) {
+        tick();
+        timestamp = hash_stamp[full_hash];
+      }
+      //
+      tapm.get_method(hash_bucket, full_hash, buffer, size, timestamp, 0);
+      cout << hash_bucket << " -- " << buffer << endl;
+      //
+    }
+
+  });
+
+
+
+  for ( int j = 0; j < 100; j++ ) tick();
+
+
+
+  thread remove_all([&](){
+      uint32_t hash_bucket = 0;
+      uint32_t full_hash = 0;
+      unsigned int size = 64;
+      char* buffer = new char[size];
+
+    string tester = "this is a test";
+
+    for ( int i = 0; i < 8; i++ ) {
+      //
+      full_hash++;
+      hash_bucket++;
+      //
+      tester += ' ';
+      tester += i;
+      memset(buffer,0,size);
+      strcpy(buffer,tester.c_str());
+      uint32_t timestamp = 0;
+      //
+      while ( timestamp == 0 ) {
+        tick();
+        timestamp = hash_stamp[full_hash];
+      }
+      //
+      tapm.del_method(0,hash_bucket, full_hash,timestamp,0);
+      //
+    }
+
+  });
+
+
+cout << "Shutting down threads... TierAndProcManager:: " << endl;
+  //
+  tapm.shutdown_threads(last);
+}
+
+
+
+
+void front_end_internal_test3(void) {
+  //
+  stp_table_choice tchoice = STP_TABLE_INTERNAL_ONLY;
+  uint32_t num_procs = 8;
+  uint32_t num_tiers = 3;
+  uint32_t proc_number = 1;
+  uint32_t els_per_tier = 20000;
+  //
+  LRU_Alloc_Sections_and_Threads last = TierAndProcManager<>::section_allocation_requirements(tchoice, num_procs, num_tiers);
+
+  auto com_buf_sz = TierAndProcManager<>::check_expected_com_region_size(num_procs,num_tiers);
+
+  uint8_t *com_buffer = new uint8_t[com_buf_sz];
+  //
+  cout << "front_end_internal_test com_buf_sz: " << com_buf_sz << " com_buffer: " << ((void *)com_buffer) << " com_buffer: " << ((void *)(com_buffer + com_buf_sz)) << endl;
+  //
+  map<key_t,void *> lru_segs;
+  map<key_t,void *> hh_table_segs;
+  map<key_t,size_t> seg_sizes;
+  bool am_initializer = true;
+  uint32_t max_obj_size = 128;
+  void **random_segs = nullptr;
+
+  for ( uint32_t t = 0; t < num_tiers; t++ ) {
+    seg_sizes[t] = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier, num_procs);
+    lru_segs[t] = new uint8_t[seg_sizes[t]];
+    cout << "lru_segs[t]:: []" << t << "]  " << lru_segs[t] << endl;
+  }
+
+cout << "Initialize TierAndProcManager:: " << endl;
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  TierAndProcManager<> tapm(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+cout << "Launch threads... TierAndProcManager:: " << endl;
+
+  tapm.launch_second_phase_threads(last);
+  //
+
+  map<uint32_t,uint32_t> hash_stamp;
+
+
+  thread *input_alls[num_procs];
+
+
+  for ( uint32_t i = 0; i < num_procs; i++ ) {
+    input_alls[i] = new thread([&](int j){
+      uint32_t hash_bucket = (uint32_t)j;
+      uint32_t full_hash = (uint32_t)j;
+      bool updating = false;
+      unsigned int size = 64;
+      char* buffer = new char[size];
+
+      string tester = "this is a test";
+
+      for ( int i = 0; i < 8; i++ ) {
+        //
+        full_hash++;
+        hash_bucket++;
+
+        tester += ' ';
+        tester += (i+j);
+        memset(buffer,0,size);
+        strcpy(buffer,tester.c_str());
+        uint32_t timestamp = now();
+        hash_stamp[full_hash] = timestamp;
+        //
+        tapm.put_method(hash_bucket, full_hash, updating, buffer, size, timestamp);
+
+      }
+
+      for ( int j = 0; j < 100; j++ ) tick();
+
+      hash_bucket = (uint32_t)j;
+      full_hash = (uint32_t)j;
+
+      for ( int i = 0; i < 8; i++ ) {
+        //
+        full_hash++;
+        hash_bucket++;
+        //
+        memset(buffer,0,size);
+        uint32_t timestamp = 0;
+        //
+        while ( timestamp == 0 ) {
+          tick();
+          timestamp = hash_stamp[full_hash];
+        }
+        //
+        tapm.get_method(hash_bucket, full_hash, buffer, size, timestamp, 0);
+        cout << hash_bucket << " -- " << buffer << endl;
+        //
+      }
+
+      for ( int j = 0; j < 100; j++ ) tick();
+
+      hash_bucket = (uint32_t)j;
+      full_hash = (uint32_t)j;
+
+      for ( int i = 0; i < 8; i++ ) {
+        //
+        full_hash++;
+        hash_bucket++;
+        //
+        uint32_t timestamp = 0;
+        //
+        while ( timestamp == 0 ) {
+          tick();
+          timestamp = hash_stamp[full_hash];
+        }
+        //
+        tapm.del_method(0,hash_bucket, full_hash,timestamp,0);
+        //
+      }
+
+    },i);
+  }
+
+
+cout << "Shutting down threads... TierAndProcManager:: " << endl;
+  //
+  tapm.shutdown_threads(last);
+
+
+    for ( uint32_t i = 0; i < num_procs; i++ ) {
+      input_alls[i]->join();
+    }
+}
+
+
+
+
 
 /**
  * main ...

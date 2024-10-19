@@ -127,7 +127,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				//
 				initialize_com_area(num_procs);
 				//
-				_timeout_table = new Shared_KeyValueManager(atomics_region,holey_buffer, _max_count, shared_queue, num_procs);
+				_timeout_table = new Shared_KeyValueManager(atomics_region, holey_buffer, _max_count, shared_queue, num_procs);
 				_configured_tier_cooling = ONE_HOUR;
 				_configured_shrinkage = 0.3333;
 
@@ -349,10 +349,7 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				//
 				Com_element *cel = messages[rmc]._cel;
 				uint64_t hash = (uint64_t)(cel->_hash);
-
-cout << "filter_existence_check: " << hash << " mm " << _hmap << endl;
 				uint32_t data_loc = _hmap->get(hash);  // this thread contends with others to get the value
-cout << "filter_existence_check after get: " << data_loc << endl;
 				//
 				if ( data_loc != UINT32_MAX ) {    // check if this message is already stored
 					messages[rmc]._offset = data_loc;  // just putting in an offset... maybe something better
@@ -360,9 +357,6 @@ cout << "filter_existence_check after get: " << data_loc << endl;
 					new_msgs_count++;							// the hash has not been found
 					accesses[rmc]._offset = 0;		// the offset is not yet known (the space will claimed later)
 				}
-
-cout << "filter_existence_check e of loop: " << hash << " messages[rmc]: " << messages[rmc]._cel << " accesses[rmc] " << accesses[rmc]._offset << endl;
-
 			}
 			return new_msgs_count;
 		}
@@ -403,7 +397,7 @@ cout << "filter_existence_check e of loop: " << hash << " messages[rmc]: " << me
 		 * check_count_free_against_reserve -- check to see if the number of stored objects is nearing the storage limit,
 		 * if it is, then tell the evictor to start evicting what it can. (notify thread)
 		*/
-		void			check_count_free_against_reserve() {
+		void			check_count_free_against_reserve(void) {
 			auto boundary = _reserve;
 			auto current_count = _count_free->load();
 			if ( current_count < boundary ) {
@@ -438,8 +432,6 @@ cout << "filter_existence_check e of loop: " << hash << " messages[rmc]: " << me
 		uint32_t		claim_free_mem(uint32_t ready_msg_count,uint32_t *reserved_offsets) {
 			//
 			uint8_t *start = this->start();
-
-cout << "claim_free_mem (start): " << (void *)start << endl;
 			//
 			uint32_t status = pop_number(start,ready_msg_count,reserved_offsets);
 			if ( status == UINT32_MAX ) {
@@ -958,7 +950,7 @@ cout << "RUNNING EVICTOR: " << endl;
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
  		HMap_interface 					*_hmap;
- 		Shared_KeyValueManager					*_timeout_table;
+ 		Shared_KeyValueManager			*_timeout_table;
 		//
 		LRU_cache 						**_all_tiers;		// set by caller
 		//
