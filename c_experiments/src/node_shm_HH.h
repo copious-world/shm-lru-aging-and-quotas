@@ -31,6 +31,8 @@
 
 
 #include "hh_queues_and_states.h"
+#include "worker_waiters.h"
+
 
 
 /**
@@ -170,7 +172,7 @@ using namespace std;
 
 
 template<const uint32_t NEIGHBORHOOD = 32>
-class HH_map : public Random_bits_generator<>, public HMap_interface {
+class HH_map : public RestoreAndCropWaiters, public Random_bits_generator<>, public HMap_interface {
 
 
 	public:
@@ -194,8 +196,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			_endof_region = _region + seg_sz;
 			//
 			_num_threads = num_threads;
-			_sleeping_reclaimer.clear();  // atomic that pauses the relcaimer thread until set.
-			_sleeping_cropper.clear();
+
+			initialize_waiters();
 			//
 			_status = true;
 			_initializer = am_initializer;
@@ -224,12 +226,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 			// ----
 			uint8_t *start = _region;
 
-			_rand_gen_thread_waiting_spinner = (atomic_flag *)start;
-			_random_share_lock = (atomic_flag *)(_rand_gen_thread_waiting_spinner + 1);
-			_random_gen_region = (atomic<uint32_t> *)(_random_share_lock + 1);
-
-			_rand_gen_thread_waiting_spinner->clear();
-			_random_share_lock->clear();
+			initialize_random_waiters((atomic_flag *)start);
+			_random_gen_region = (atomic<uint32_t> *)(start + sizeof(atomic_flag)*2);
 
 			// start is now passed the atomics...
 			start = (uint8_t *)(_random_gen_region + 1);
@@ -447,16 +445,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * available buffer is used up.
 		*/
 		void share_lock(void) override {
-#ifndef __APPLE__
-				while ( _random_share_lock->test() ) {  // if not cleared, then wait
-					_random_share_lock->wait(true);
-				};
-				while ( !_random_share_lock->test_and_set() );
-#else
-				while ( _random_share_lock->test_and_set() ) {
-					thread_sleep(10);
-				};
-#endif			
+			randoms_worker_lock();
 		}
 
 
@@ -466,16 +455,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		 * override the lock for shared random bits (in parent this is a no op)
 		*/
 		void share_unlock(void) override {
-#ifndef __APPLE__
-			while ( _random_share_lock->test() ) {
-				_random_share_lock->clear();
-			};
-			_random_share_lock->notify_one();
-#else
-			while ( _random_share_lock->test() ) {   // make sure it clears
-				_random_share_lock->clear();
-			};
-#endif
+			randoms_worker_unlock();
 		}
 
 
@@ -487,15 +467,7 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 		void random_generator_thread_runner(void) override {
 			while ( true ) {
-#ifndef __APPLE__
-				do {
-					_rand_gen_thread_waiting_spinner->wait(false);
-				} while ( !_rand_gen_thread_waiting_spinner->test() );
-#else
-				while ( _rand_gen_thread_waiting_spinner->test_and_set() ) {
-					thread_sleep(10);
-				}
-#endif
+				random_waiter_wait_for_signal();
 				bool which_region = _random_gen_region->load(std::memory_order_acquire);
 				regenerate_shared(which_region);		
 			}
@@ -511,12 +483,8 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 		void wakeup_random_generator(uint8_t which_region) {   //
 			//
 			_random_gen_region->store(which_region);
-#ifndef __APPLE__
-			while ( !(_rand_gen_thread_waiting_spinner->test_and_set()) );
-			_rand_gen_thread_waiting_spinner->notify_one();
-#else
-			_rand_gen_thread_waiting_spinner->clear(std::memory_order_release);
-#endif
+			//
+			random_waiter_notify();
 		}
 
 
@@ -1815,34 +1783,6 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 	// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 		/**
-		 * wait_notification_restore - put the restoration thread into a wait state...
-		*/
-		void  wait_notification_restore() {
-#ifndef __APPLE__
-			do {
-				_sleeping_reclaimer.wait(false);
-			} while ( _sleeping_reclaimer.test(std::memory_order_acquire) );
-#else
-			while ( _sleeping_reclaimer.test_and_set() ) __libcpp_thread_yield();
-#endif
-		}
-
-		/**
-		 * wake_up_one_restore -- called by the requesting thread looking to have a value put back in the table
-		 * after its temporary removal.
-		*/
-		void wake_up_one_restore(void) {
-#ifndef __APPLE__
-			do {
-				_sleeping_reclaimer.test_and_set();
-			} while ( !(_sleeping_reclaimer.test(std::memory_order_acquire)) );
-			_sleeping_reclaimer.notify_one();
-#else
-			_sleeping_reclaimer.clear();
-#endif
-		}
-
-		/**
 		 * is_restore_queue_empty - check on the state of the restoration queue.
 		 * 
 		 * 
@@ -2062,8 +2002,6 @@ class HH_map : public Random_bits_generator<>, public HMap_interface {
 
 		uint8_t							_round_robbin_proc_table_threads{1};
 		//
-		atomic_flag						_sleeping_reclaimer;
-		atomic_flag						_sleeping_cropper;
 
 	public:
 

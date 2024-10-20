@@ -36,12 +36,13 @@ using namespace std;
 
 #include "node_shm_LRU_defs.h"
 
-using namespace std::chrono;
+
 
 // class LRU_cache : public LRU_Consts {
 // 	//
 // 	public:
 // 		// LRU_cache -- constructor
+
 
 
 /**
@@ -51,7 +52,7 @@ using namespace std::chrono;
  * 		Contention for the stack is managed by atomic access.  
 */
 
-class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
+class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LRU_element> {
 
 	public:
 
@@ -84,8 +85,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			_lb_time = (atomic<uint32_t> *)(region);   // these are governing time boundaries of the particular tier
 			_ub_time = 			(_lb_time + 1);
 			_memory_requested =	(_ub_time + 1); // the next pointer in memory
-			_count_free = 		(_memory_requested + 1);	
-			_reserve_evictor =	(atomic_flag *)(_count_free + 1); // the next pointer in memory
+			_count_free = 		(_memory_requested + 1);
+			set_shared_evictor_flag((atomic_flag *)(_count_free + 1));
 			//
 			_cascaded_com_area = (Com_element *)(_lb_time + LRU_ATOMIC_HEADER_WORDS);  // past atomic evictors and reserved ones as well
 			_end_cascaded_com_area = _cascaded_com_area + _Procs;
@@ -123,7 +124,8 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 				}
 				_ub_time->store(UINT32_MAX);
 				_memory_requested->store(0);
-				_reserve_evictor->clear();
+
+				init_evictor();
 				//
 				initialize_com_area(num_procs);
 				//
@@ -403,18 +405,6 @@ class LRU_cache : public LRU_Consts, public AtomicStack<LRU_element> {
 			if ( current_count < boundary ) {
 				notify_evictor(boundary - current_count);
 			}
-		}
-
-		/**
-		 * notify_evictor -- use atomic notification.
-		*/
-		void 			notify_evictor([[maybe_unused]] uint32_t reclaim_target) {
-			while( !( _reserve_evictor->test_and_set() ) );
-#ifndef __APPLE__
-			_reserve_evictor->notify_one();					// NOTIFY FOR LINUX  (can ony test on an apple)
-#else
-			_evictor_spinner.signal();
-#endif
 		}
 
 
@@ -720,11 +710,8 @@ cout << "adding to timeout table"  << endl;
 
 		void			local_evictor(void) {   // parent caller executes a while loop and determins if it is still running
 			//
-#ifndef __APPLE__
-			_reserve_evictor->wait(true,std::memory_order_acquire);
-#else
-			_evictor_spinner.wait();
-#endif
+			evictor_wait_for_work();
+			//
 cout << "RUNNING EVICTOR: " << endl;
 			uint8_t thread_id = this->_thread_id;
 			if ( (_Tier+1) < _max_tiers ) {
@@ -962,12 +949,6 @@ cout << "RUNNING EVICTOR: " << endl;
 		atomic<uint32_t>				*_lb_time;
 		atomic<uint32_t>				*_ub_time;
 		atomic<uint32_t>				*_memory_requested;
-		atomic_flag						*_reserve_evictor;
-		//
-
-#ifdef __APPLE__
-		Spinners						_evictor_spinner;
-#endif
 
 };
 

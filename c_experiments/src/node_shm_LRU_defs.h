@@ -222,3 +222,56 @@ class LRU_Consts {
 };
 
 
+
+
+class EvictorWaiter {
+
+
+	public:
+
+		EvictorWaiter(void) {
+		}
+
+		virtual ~EvictorWaiter(void) {
+		}
+
+	public:
+
+		void init_evictor(void) {
+			_reserve_evictor->clear();
+		}
+		
+		void set_shared_evictor_flag(atomic_flag *evict_flag) {
+			_reserve_evictor =	evict_flag; // the next pointer in memory
+		}
+
+		/**
+		 * notify_evictor -- use atomic notification.
+		*/
+		void 			notify_evictor([[maybe_unused]] uint32_t reclaim_target) {
+			while( !( _reserve_evictor->test_and_set() ) );
+#ifndef __APPLE__
+			_reserve_evictor->notify_one();					// NOTIFY FOR LINUX  (can ony test on an apple)
+#else
+			_evictor_spinner.signal();
+#endif
+		}
+
+
+		void 			evictor_wait_for_work(void) {
+#ifndef __APPLE__
+			_reserve_evictor->wait(true,std::memory_order_acquire);
+#else
+			_evictor_spinner.wait();
+#endif
+		}
+
+
+		atomic_flag						*_reserve_evictor;
+		//
+#ifdef __APPLE__
+		Spinners						_evictor_spinner;
+#endif
+
+};
+
