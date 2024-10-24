@@ -52,12 +52,12 @@ using namespace std;
  * 		Contention for the stack is managed by atomic access.  
 */
 
-class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LRU_element> {
+class LRU_cache_mock : public LRU_Consts, public EvictorWaiter, public AtomicStack<LRU_element> {
 
 	public:
 
 		// LRU_cache -- constructor
-		LRU_cache(void *region, size_t record_size, size_t seg_sz, size_t els_per_tier, size_t reserve, uint16_t num_procs, bool am_initializer, uint8_t tier) {
+		LRU_cache_mock(void *region, size_t record_size, size_t seg_sz, size_t els_per_tier, size_t reserve, uint16_t num_procs, bool am_initializer, uint8_t tier) {
 			//
 			init_diff_timer();
 			_all_tiers = nullptr;
@@ -146,7 +146,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			//
 		}
 
-		virtual ~LRU_cache() {}
+		virtual ~LRU_cache_mock() {}
 
 	public:
 
@@ -185,7 +185,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		 * Each LRU works for tier. Sometimes one LRU may exchange entries with another tier.
 		 * 
 		*/
-		void set_tier_table(LRU_cache **siblings_and_self,uint8_t max_tiers) {
+		void set_tier_table(LRU_cache_mock **siblings_and_self,uint8_t max_tiers) {
 			_all_tiers = siblings_and_self;
 			_max_tiers = max_tiers;
 		}
@@ -218,34 +218,14 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		 * set_hash_impl - allow the user class to determine the implementation of the hash table. 
 		 * -- called by initHopScotch -- set two paritions servicing a random selection.
 		*/
-		void set_hash_impl(void *hh_region,size_t hh_seg_sz,uint32_t els_per_tier,stp_table_choice tchoice) {
-			uint8_t *reg1 = (uint8_t *)hh_region;
-			switch (tchoice) {
-				case STP_TABLE_HH: {
-					_hmap = new HH_map<>(reg1,hh_seg_sz,els_per_tier,_am_initializer);
-					break;
-				}
-				case STP_TABLE_SLABS: {
-					_hmap = new SSlab_map<>(reg1,hh_seg_sz,els_per_tier,_am_initializer);
-					break;
-				}
-				case STP_TABLE_QUEUED: {
-					_hmap = new QUEUED_map<>(reg1,hh_seg_sz,els_per_tier,_am_initializer);
-					break;
-				}
-				case STP_TABLE_INTERNAL_ONLY:
-				default: {
-					_hmap = new INTERNAL_map<>(els_per_tier,_am_initializer);
-					break;
-				}
-			}
+		void set_hash_impl([[maybe_unused]] void *hh_region,[[maybe_unused]] size_t hh_seg_sz,[[maybe_unused]] uint32_t els_per_tier,[[maybe_unused]] stp_table_choice tchoice) {
+			_hmap = nullptr;
+			cout << "setting hash impl" << endl;
 		}
 
 
-		void set_random_bits(void *shared_bit_region) {
-			if ( _hmap ) {
-				_hmap->set_random_bits(shared_bit_region);
-			}
+		void set_random_bits([[maybe_unused]] void *shared_bit_region) {
+			cout << "call to set random bits" << endl;
 		}
 
 
@@ -286,13 +266,11 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		 * 	This in spite of the fact that the calling class provides the reference. 
 		*/
 
-		void hash_table_value_restore_thread(uint8_t slice_for_thread) {  // a wrapper (parent must call a while loop... )
-			_hmap->value_restore_runner(slice_for_thread,this->_thread_id);
+		void hash_table_value_restore_thread([[maybe_unused]] uint8_t slice_for_thread) {  // a wrapper (parent must call a while loop... )
 		}
 
 
-		void hash_table_cropper_runner_thread(uint8_t slice_for_thread) {
-			_hmap->cropper_runner(slice_for_thread,this->_thread_id);
+		void hash_table_cropper_runner_thread([[maybe_unused]] uint8_t slice_for_thread) {
 		}
 
 
@@ -300,7 +278,6 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		 * hash_table_random_generator_thread_runner
 		*/
 		void hash_table_random_generator_thread_runner(void) {
-			_hmap->random_generator_thread_runner();
 		}
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -344,23 +321,11 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		 * The `_cel` parameter refers to the process table.
 		*/
 
-		uint32_t		filter_existence_check(com_or_offset *messages,com_or_offset *accesses,uint32_t ready_msg_count) {
-			uint32_t new_msgs_count = 0;
+		uint32_t		filter_existence_check([[maybe_unused]] com_or_offset *messages,[[maybe_unused]] com_or_offset *accesses,[[maybe_unused]] uint32_t ready_msg_count) {
+			// uint32_t new_msgs_count = 0;
 			int rmc = (int)ready_msg_count;
-			while ( --rmc >= 0 ) {  // walk this list backwards...
-				//
-				Com_element *cel = messages[rmc]._cel;
-				uint64_t hash = (uint64_t)(cel->_hash);
-				uint32_t data_loc = _hmap->get(hash);  // this thread contends with others to get the value
-				//
-				if ( data_loc != UINT32_MAX ) {    // check if this message is already stored
-					messages[rmc]._offset = data_loc;  // just putting in an offset... maybe something better
-				} else {
-					new_msgs_count++;							// the hash has not been found
-					accesses[rmc]._offset = 0;		// the offset is not yet known (the space will claimed later)
-				}
-			}
-			return new_msgs_count;
+// [[maybe_unused]] 
+			return rmc;
 		}
 
 
@@ -466,17 +431,15 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		 * 		system time and then puts the offset,time pair into the data structure, `_timeout_table`.
 		 * 
 		*/
-		void 			attach_to_lru_list(uint32_t *lru_element_offsets, uint32_t ready_msg_count) {
+		void 			attach_to_lru_list([[maybe_unused]] uint32_t *lru_element_offsets, uint32_t ready_msg_count) {
 			//
 			uint32_t entry_times[ready_msg_count];
 			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
 				entry_times[i] = current_time_next();
-cout << "entry_times[i]: " << entry_times[i] << endl;
+//cout << "entry_times[i]: " << entry_times[i] << endl;
 			}
-cout << "adding to timeout table"  << endl;
-			if ( _timeout_table != nullptr ) {
-				_timeout_table->add_entries(lru_element_offsets,entry_times,ready_msg_count);
-			}
+//cout << "adding to timeout table"  << endl;
+			//  _timeout_table->add_entries(lru_element_offsets,entry_times,ready_msg_count);
 			//
 		}
 
@@ -493,9 +456,7 @@ cout << "adding to timeout table"  << endl;
 				old_times[i++] = lrue->_when;
 			}
 			//
-			if ( _timeout_table != nullptr ) {
-				_timeout_table->update_entries(old_times,entry_times,count_updates);
-			}
+			// _timeout_table->update_entries(old_times,entry_times,count_updates);
 		}
 
 		/**
@@ -521,25 +482,24 @@ cout << "adding to timeout table"  << endl;
 		/**
 		 * timeout_table_evictions
 		*/
-		uint32_t 		timeout_table_evictions(list<uint32_t> &offsets_moving,uint32_t req_count) {
+		uint32_t 		timeout_table_evictions([[maybe_unused]] list<uint32_t> &offsets_moving,[[maybe_unused]] uint32_t req_count) {
 			//
-			const auto now = system_clock::now();
-    		const time_t t_c = system_clock::to_time_t(now);
-			uint32_t min_max_time = (t_c - _configured_tier_cooling);
-			uint32_t as_many_as = min((uint32_t)(_max_count*_configured_shrinkage),(req_count*3));
-			//
-			list<uint32_t> ll;
-			if ( _timeout_table != nullptr ) {
-				_timeout_table->displace_lowest_value_threshold(ll,min_max_time,as_many_as);
-			}
-			// filter already deleted 
-			for ( auto offset : ll ) {
-				LRU_element *lel = (LRU_element *)(this->_start + offset);
-				if ( _hmap->get(lel->_hash) != UINT32_MAX ) {
-					offsets_moving.push_back(offset);
-				}
-			}
-			return offsets_moving.size();
+			// const auto now = system_clock::now();
+    		// const time_t t_c = system_clock::to_time_t(now);
+			// uint32_t min_max_time = (t_c - _configured_tier_cooling);
+			// uint32_t as_many_as = min((uint32_t)(_max_count*_configured_shrinkage),(req_count*3));
+			// //
+			// list<uint32_t> ll;
+			// _timeout_table->displace_lowest_value_threshold(ll,min_max_time,as_many_as);
+			// // filter already deleted 
+			// for ( auto offset : ll ) {
+			// 	LRU_element *lel = (LRU_element *)(this->_start + offset);
+			// 	if ( _hmap->get(lel->_hash) != UINT32_MAX ) {
+			// 		offsets_moving.push_back(offset);
+			// 	}
+			// }
+			// return offsets_moving.size();
+			return 0;
 		}
 
 
@@ -548,7 +508,7 @@ cout << "adding to timeout table"  << endl;
 		 * 		This method takes another tier as a parameter. It works to move the hashes it wants to age out
 		 * 		to the tier that has been passed.
 		*/
-		void 			transfer_hashes(LRU_cache *next_tier,uint32_t req_count,uint8_t thread_id)  {
+		void 			transfer_hashes(LRU_cache_mock *next_tier,uint32_t req_count,uint8_t thread_id)  {
 			//
 			list<uint32_t> offsets_moving;  // the offsets that will be moved
 			//
@@ -557,7 +517,7 @@ cout << "adding to timeout table"  << endl;
 				next_tier->claim_hashes(offsets_moving,this->start());		// the next tier insersts its hashes.
 				this->relinquish_hashes(offsets_moving,thread_id);			// this tier gives up the hashes moved.
 				//
-				uint32_t lb_timestamp = (_timeout_table != nullptr) ? _timeout_table->least_time_key() : 0;	// reset the time boundaries (least time is now greater)
+				uint32_t lb_timestamp = 0;//  _timeout_table->least_time_key();	// reset the time boundaries (least time is now greater)
 				this->raise_lru_lb_time_bounds(lb_timestamp);
 			}
 		}
@@ -568,7 +528,7 @@ cout << "adding to timeout table"  << endl;
 		/**
 		 * claim_hashes -- only used during a transfer of hashes from one tier to another.
 		*/
-		void 			claim_hashes(list<uint32_t> &moving,uint8_t *evicting_tier_region) {
+		void 			claim_hashes([[maybe_unused]] list<uint32_t> &moving,[[maybe_unused]] uint8_t *evicting_tier_region) {
 			// launch this proc...
 			//
 			auto additional_locations = moving.size();
@@ -633,14 +593,14 @@ cout << "adding to timeout table"  << endl;
 		 * relinquish_hashes -- clear the tables that know of the moving hashes of the moving hashes. i.e. discard the
 		 * 		hashes mentioned in `moving`.
 		*/
-		void			relinquish_hashes(list<uint32_t> &moving,uint8_t thread_id = 1) {
+		void			relinquish_hashes([[maybe_unused]] list<uint32_t> &moving,[[maybe_unused]] uint8_t thread_id = 1) {
 			//
 			uint8_t *start = this->start();
 			for ( auto offset : moving ) {			// offset of where it is going
 				LRU_element *el = (LRU_element *)(start + offset);
-				uint64_t hash64  = el->_hash;
+				// uint64_t hash64  = el->_hash;
 				this->return_to_free_mem(el);
-				this->_hmap->del(hash64,thread_id);  // if the hash is not in the table this will be a noop.
+				// this->_hmap->del(hash64,thread_id);  // if the hash is not in the table this will be a noop.
 			}
 			//
 		}
@@ -722,7 +682,7 @@ cout << "RUNNING EVICTOR: " << endl;
 			uint8_t thread_id = this->_thread_id;
 			if ( (_Tier+1) < _max_tiers ) {
 				uint32_t req_count = _Procs;
-				LRU_cache *next_tier = this->_all_tiers[_Tier+1];
+				LRU_cache_mock *next_tier = this->_all_tiers[_Tier+1];
 				this->transfer_hashes(next_tier,req_count,thread_id);
 			} else {
 				// crisis mode...				elements will have to be discarded or sent to another machine
@@ -825,8 +785,12 @@ cout << "RUNNING EVICTOR: " << endl;
 		uint8_t 		*data_location(uint32_t write_offset) {
 			uint8_t *strt = this->start();
 			if ( strt != nullptr ) {
-				return (this->start() + write_offset + sizeof(LRU_element));
+				uint8_t *loc = this->start() + write_offset + sizeof(LRU_element);
+				if ( check_end(loc) ) {
+					return loc;
+				}
 			}
+//cout << "data location returning nullptr"  << endl;
 			return nullptr;
 		}
 
@@ -843,9 +807,9 @@ cout << "RUNNING EVICTOR: " << endl;
 		 * getter
 		*/
 
-		uint32_t		getter(uint32_t full_hash,uint32_t h_bucket,[[maybe_unused]] uint32_t timestamp = 0) {
+		uint32_t		getter([[maybe_unused]] uint32_t full_hash,[[maybe_unused]] uint32_t h_bucket,[[maybe_unused]] uint32_t timestamp = 0) {
 			// can check on the limits of the timestamp if it is not zero
-			return _hmap->get(full_hash,h_bucket);
+			return 0;
 		}
 
 
@@ -853,9 +817,9 @@ cout << "RUNNING EVICTOR: " << endl;
 		 * update_in_hash
 		*/
 
-		uint64_t		update_in_hash(uint32_t full_hash,uint32_t hash_bucket,uint32_t new_el_offset) {
-			HMap_interface *T = this->_hmap;
-			uint64_t result = T->update(full_hash,hash_bucket,new_el_offset);
+		uint64_t		update_in_hash([[maybe_unused]] uint32_t full_hash,[[maybe_unused]] uint32_t hash_bucket,[[maybe_unused]] uint32_t new_el_offset) {
+			//HMap_interface *T = this->_hmap;
+			uint64_t result = UINT64_MAX;//T->update(full_hash,hash_bucket,new_el_offset);
 			return result;
 		}
 
@@ -864,12 +828,10 @@ cout << "RUNNING EVICTOR: " << endl;
 		 * remove_key
 		*/
 
-		void 			remove_key(uint32_t full_hash, uint32_t h_bucket, uint32_t timestamp) {
-			if ( _timeout_table != nullptr ) {
-				if ( _timeout_table->remove_entry(timestamp) ) {
-					_hmap->del(full_hash,h_bucket);
-				}
-			}
+		void 			remove_key([[maybe_unused]] uint32_t full_hash, [[maybe_unused]] uint32_t h_bucket, [[maybe_unused]] uint32_t timestamp) {
+			// if ( _timeout_table->remove_entry(timestamp) ) {
+			// 	_hmap->del(full_hash,h_bucket);
+			// }
 		}
 
 
@@ -883,37 +845,17 @@ cout << "RUNNING EVICTOR: " << endl;
 			this->remove_key(hash_bucket,full_hash,timestamp);
 		}
 
-		uint64_t		get_augmented_hash_locking(uint32_t full_hash, atomic<uint32_t> **control_bits_ref, uint32_t *h_bucket_ref,uint8_t *which_table_ref,uint32_t *cbits_ref,uint32_t *cbits_op_ref,uint32_t *cbits_base_op_ref,hh_element **bucket_ref,hh_element **buffer_ref,hh_element **end_buffer_ref,CBIT_stash_holder *cbit_stashes[4]) {
-			HMap_interface *T = this->_hmap;
+		uint64_t		get_augmented_hash_locking([[maybe_unused]] uint32_t full_hash, [[maybe_unused]] atomic<uint32_t> **control_bits_ref, [[maybe_unused]] uint32_t *h_bucket_ref,[[maybe_unused]]  uint8_t *which_table_ref,[[maybe_unused]] uint32_t *cbits_ref,[[maybe_unused]] uint32_t *cbits_op_ref,[[maybe_unused]] uint32_t *cbits_base_op_ref,[[maybe_unused]] hh_element **bucket_ref,[[maybe_unused]] hh_element **buffer_ref,[[maybe_unused]] hh_element **end_buffer_ref,[[maybe_unused]] CBIT_stash_holder *cbit_stashes[4]) {
+			//HMap_interface *T = this->_hmap;
 			uint64_t result = UINT64_MAX;
 			//
-			uint8_t selector_bit = 0;
-			auto h_bucket = *h_bucket_ref;
-			// a bit for being entered and one or more for which slab...
-			if ( !(selector_bit_is_set(h_bucket,selector_bit)) ) {
-				//
-				uint8_t which_table = 0;
-				uint32_t cbits = 0;
-				uint32_t cbits_op = 0;
-				uint32_t cbits_base_ops = 0;
-				//
-				if ( T->prepare_for_add_key_value_known_refs(control_bits_ref,h_bucket,which_table,cbits,cbits_op,cbits_base_ops,bucket_ref,buffer_ref,end_buffer_ref,cbit_stashes) ) {
-					*which_table_ref = which_table;
-					h_bucket = stamp_key(h_bucket,which_table);   // but the control bits into the hash
-					*h_bucket_ref = h_bucket;
-					*cbits_ref = cbits;
-					*cbits_op_ref = cbits_op;
-					*cbits_base_op_ref = cbits_base_ops;
-					result = h_bucket | ((uint64_t)full_hash << HALF);
-				}
-			}
 			return result;
 		}
 
 		//  ----
-		void			store_in_hash_unlocking(atomic<uint32_t> *control_bits,uint32_t full_hash, uint32_t h_bucket,uint32_t offset,uint8_t which_table,uint32_t cbits,uint32_t cbits_op,uint32_t cbits_base_ops,hh_element *bucket,hh_element *buffer,hh_element *end_buffer,CBIT_stash_holder *cbit_stashes[4]) {
-			HMap_interface *T = this->_hmap;
-			T->add_key_value_known_refs(control_bits,full_hash,h_bucket,offset,which_table,cbits,cbits_op,cbits_base_ops,bucket,buffer,end_buffer,cbit_stashes);
+		void			store_in_hash_unlocking([[maybe_unused]] atomic<uint32_t> *control_bits,[[maybe_unused]] uint32_t full_hash, [[maybe_unused]] uint32_t h_bucket,[[maybe_unused]] uint32_t offset,[[maybe_unused]] uint8_t which_table,[[maybe_unused]] uint32_t cbits,[[maybe_unused]] uint32_t cbits_op,[[maybe_unused]] uint32_t cbits_base_ops,[[maybe_unused]] hh_element *bucket,[[maybe_unused]] hh_element *buffer,[[maybe_unused]] hh_element *end_buffer,[[maybe_unused]] CBIT_stash_holder *cbit_stashes[4]) {
+			//HMap_interface *T = this->_hmap;
+			//T->add_key_value_known_refs(control_bits,full_hash,h_bucket,offset,which_table,cbits,cbits_op,cbits_base_ops,bucket,buffer,end_buffer,cbit_stashes);
 		}
 		
 
@@ -947,7 +889,7 @@ cout << "RUNNING EVICTOR: " << endl;
  		HMap_interface 					*_hmap;
  		Shared_KeyValueManager			*_timeout_table;
 		//
-		LRU_cache 						**_all_tiers;		// set by caller
+		LRU_cache_mock 					**_all_tiers;		// set by caller
 		//
 		Com_element						*_cascaded_com_area;   // if outsourcing tiers ....
 		Com_element						*_end_cascaded_com_area;

@@ -85,6 +85,8 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 
 #include "../array_p_defs_storage_app.h"
 
+#include "../mock_shm_LRU.h"
+
 [[maybe_unused]] static TierAndProcManager<4> *g_tiers_procs = nullptr;
 
 using namespace node_shm;
@@ -1110,6 +1112,227 @@ cout << "Shutting down threads... TierAndProcManager:: " << endl;
 
 
 
+void front_end_internal_test_empty_shell(void) {
+  //
+  stp_table_choice tchoice = STP_TABLE_EMPTY_SHELL_TEST;
+  uint32_t num_procs = 8;
+  uint32_t num_tiers = 3;
+  uint32_t proc_number = 0;
+  uint32_t els_per_tier = 20000;
+  //
+
+  // allocation requirements
+  LRU_Alloc_Sections_and_Threads last = TierAndProcManager<8,3,LRU_cache_mock>::section_allocation_requirements(tchoice, num_procs, num_tiers);
+
+  // size of com buffer
+  auto com_buf_sz = TierAndProcManager<8,3,LRU_cache_mock>::check_expected_com_region_size(num_procs,num_tiers);
+
+  uint8_t *com_buffer = new uint8_t[com_buf_sz];
+  //
+  cout << "front_end_internal_test com_buf_sz: " << com_buf_sz << " com_buffer: " << ((void *)com_buffer) << " com_buffer: " << ((void *)(com_buffer + com_buf_sz)) << endl;
+  //
+  map<key_t,void *> lru_segs;
+  map<key_t,void *> hh_table_segs;
+  map<key_t,size_t> seg_sizes;
+  bool am_initializer = true;
+  uint32_t max_obj_size = 128;
+  void **random_segs = nullptr;
+
+  for ( uint32_t t = 0; t < num_tiers; t++ ) {
+    seg_sizes[t] = LRU_cache::check_expected_lru_region_size(max_obj_size, els_per_tier, num_procs);
+    lru_segs[t] = new uint8_t[seg_sizes[t]];
+    cout << "lru_segs[t]:: []" << t << "]  " << lru_segs[t] << endl;
+  }
+
+cout << "Initialize TierAndProcManager:: " << endl;
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+  TierAndProcManager<8,3,LRU_cache_mock> tapm_1(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  proc_number++;
+  
+  TierAndProcManager<8,3,LRU_cache_mock> tapm_2(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+  
+  proc_number++;
+  
+  TierAndProcManager<8,3,LRU_cache_mock> tapm_3(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  proc_number++;
+  
+  TierAndProcManager<8,3,LRU_cache_mock> tapm_4(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  proc_number++;
+  
+  TierAndProcManager<8,3,LRU_cache_mock> tapm_5(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  proc_number++;
+  
+  TierAndProcManager<8,3,LRU_cache_mock> tapm_6(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  proc_number++;
+  
+  TierAndProcManager<8,3,LRU_cache_mock> tapm_7(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  proc_number++;
+  
+  TierAndProcManager<8,3,LRU_cache_mock> tapm_8(com_buffer, lru_segs, hh_table_segs, seg_sizes,
+												      am_initializer, tchoice, proc_number, num_procs, num_tiers, els_per_tier,
+                              max_obj_size, random_segs);
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+cout << "Launch threads... TierAndProcManager:: " << endl;
+
+
+  TierAndProcManager<8,3,LRU_cache_mock> **tapm_refs = new TierAndProcManager<8,3,LRU_cache_mock> *[num_procs];
+
+  tapm_1.launch_second_phase_threads(last);
+  tapm_refs[0] = &tapm_1;
+  tapm_2.launch_second_phase_threads(last);
+  tapm_refs[1] = &tapm_2;
+  tapm_3.launch_second_phase_threads(last);
+  tapm_refs[2] = &tapm_3;
+  tapm_4.launch_second_phase_threads(last);
+  tapm_refs[3] = &tapm_4;
+  tapm_5.launch_second_phase_threads(last);
+  tapm_refs[4] = &tapm_5;
+  tapm_6.launch_second_phase_threads(last);
+  tapm_refs[5] = &tapm_6;
+  tapm_7.launch_second_phase_threads(last);
+  tapm_refs[6] = &tapm_7;
+  tapm_8.launch_second_phase_threads(last);
+  tapm_refs[7] = &tapm_8;
+  //
+
+
+
+  cout << "ALL THREADS READY!!" << endl;
+
+
+  map<uint32_t,uint32_t> hash_stamp;
+
+
+  thread *input_alls[num_procs];
+
+
+  for ( uint32_t i = 0; i < num_procs; i++ ) {
+    input_alls[i] = new thread([&](int j){
+      uint32_t hash_bucket = (uint32_t)j;
+      uint32_t full_hash = (uint32_t)j;
+      bool updating = false;
+      unsigned int size = 64;
+      char* buffer = new char[size];
+
+      string tester = "this is a test";
+
+      for ( int i = 0; i < 8; i++ ) {
+        //
+        full_hash++;
+        hash_bucket++;
+
+        tester += ' ';
+        tester += (i+j);
+        memset(buffer,0,size);
+        strcpy(buffer,tester.c_str());
+        uint32_t timestamp = now();
+        hash_stamp[full_hash] = timestamp;
+        //
+        tapm_refs[j]->put_method(hash_bucket, full_hash, updating, buffer, size, timestamp);
+        //
+      }
+
+      for ( int j = 0; j < 100; j++ ) tick();
+
+      // hash_bucket = (uint32_t)j;
+      // full_hash = (uint32_t)j;
+
+      // for ( int i = 0; i < 8; i++ ) {
+      //   //
+      //   full_hash++;
+      //   hash_bucket++;
+      //   //
+      //   memset(buffer,0,size);
+      //   uint32_t timestamp = 0;
+      //   //
+      //   while ( timestamp == 0 ) {
+      //     tick();
+      //     timestamp = hash_stamp[full_hash];
+      //   }
+      //   //
+      //   tapm_refs[j]->get_method(hash_bucket, full_hash, buffer, size, timestamp, 0);
+      //   cout << hash_bucket << " -- " << buffer << endl;
+      //   //
+      // }
+
+      // for ( int j = 0; j < 100; j++ ) tick();
+
+      // hash_bucket = (uint32_t)j;
+      // full_hash = (uint32_t)j;
+
+      // for ( int i = 0; i < 8; i++ ) {
+      //   //
+      //   full_hash++;
+      //   hash_bucket++;
+      //   //
+      //   uint32_t timestamp = 0;
+      //   //
+      //   while ( timestamp == 0 ) {
+      //     tick();
+      //     timestamp = hash_stamp[full_hash];
+      //   }
+      //   //
+      //   tapm_refs[j]->del_method(j,hash_bucket, full_hash,timestamp,0);
+      //   //
+      // }
+
+    },i);
+  }
+
+
+cout << "Shutting down threads... TierAndProcManager:: " << endl;
+  //
+  tapm_1.shutdown_threads(last);
+cout << "Shutdown threads 1" << endl;
+  tapm_2.shutdown_threads(last);
+cout << "Shutdown threads 2" << endl;
+  tapm_3.shutdown_threads(last);
+cout << "Shutdown threads 3" << endl;
+  tapm_4.shutdown_threads(last);
+cout << "Shutdown threads 4" << endl;
+  tapm_5.shutdown_threads(last);
+cout << "Shutdown threads 5" << endl;
+  tapm_6.shutdown_threads(last);
+cout << "Shutdown threads 6" << endl;
+  tapm_7.shutdown_threads(last);
+cout << "Shutdown threads 7" << endl;
+  tapm_8.shutdown_threads(last);
+cout << "Shutdown threads 8" << endl;
+  //
+
+    for ( uint32_t i = 0; i < num_procs; i++ ) {
+      input_alls[i]->join();
+    }
+}
+
+
+
+
+
 /**
  * main ...
  * 
@@ -1144,7 +1367,9 @@ int main(int argc, char **argv) {
 // test_node_shm_queued();
 
   // 
-  front_end_internal_test();
+  //front_end_internal_test();
+
+  front_end_internal_test_empty_shell();
 
   // test_simple_stack();
   // test_toks();

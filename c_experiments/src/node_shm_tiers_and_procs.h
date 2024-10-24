@@ -9,6 +9,9 @@ using namespace std;
 #include "node_shm_LRU.h"
 #include "worker_waiters.h"
 
+
+#define TESTING_SKIP_TABLE 1
+
 using namespace std::chrono;
 
 
@@ -73,6 +76,7 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 			//
 			_Procs = num_procs;
 			_proc = proc_number;
+//
 			_NTiers = min(num_tiers,(uint32_t)MAX_TIERS);
 			_reserve_size = RESERVE_FACTOR;	// set the precent as part of the build
 			_com_buffer = (uint8_t *)com_buffer;			// the com buffer is another share section.. separate from the shared data regions
@@ -88,7 +92,7 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 				size_t seg_sz = seg_sizes[key];
 				//
 				_tiers[tier] = new LRU_c_impl(lru_region, max_obj_size, seg_sz, els_per_tier, _reserve_size, _Procs, _am_initializer, tier);
-				_tiers[tier]->set_tier_table((LRU_cache **)_tiers,_NTiers);
+				_tiers[tier]->set_tier_table((LRU_c_impl **)_tiers,_NTiers);
 				if ( tchoice == STP_TABLE_INTERNAL_ONLY ) {
 					LRU_c_impl *lru = _tiers[tier];
 					if ( lru != nullptr ) {
@@ -184,6 +188,9 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 					last._run_cropper_threads = false;
 					break;
 				}
+				case STP_TABLE_EMPTY_SHELL_TEST: {
+					last._test_no_run_evictor_threads = true;
+				}
 				default:
 				case STP_TABLE_INTERNAL_ONLY: {
 					last._alloc_hash_tables = false;
@@ -195,6 +202,8 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 					last._run_cropper_threads = false;
 					break;
 				}
+				
+
 			}
 			return last;
 		}
@@ -469,15 +478,17 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 				//
 				LRU_c_impl *tier_lru = access_tier(i);
 				if ( tier_lru != nullptr ) {
-					
-					auto evictor_runner = [&](uint8_t tier,LRU_c_impl *lru) {
-						this->_evictors_running[tier] = true;
-						while ( this->_evictors_running[tier] ) {
-            				lru->local_evictor();
-						}
-        			};
 					//
-					_tier_evictor_threads[i] = new thread(evictor_runner,i,tier_lru);
+					if ( !(last._test_no_run_evictor_threads) ) {
+						auto evictor_runner = [&](uint8_t tier,LRU_c_impl *lru) {
+							this->_evictors_running[tier] = true;
+							while ( this->_evictors_running[tier] ) {
+								lru->local_evictor();
+							}
+						};
+						//
+						_tier_evictor_threads[i] = new thread(evictor_runner,i,tier_lru);
+					}
 					// //
 					// // hash_table_value_restore_thread
 					if ( last._run_restore_threads ) {
@@ -548,7 +559,9 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 			for ( uint8_t i = 0; i < this->_NTiers; i++  ) {
 				if ( _tier_threads[i] != nullptr ) _tier_threads[i]->join();
 				if ( _tier_removal_threads[i] != nullptr ) _tier_removal_threads[i]->join();
-				if ( _tier_evictor_threads[i] != nullptr ) _tier_evictor_threads[i]->join();
+				if ( !(last._test_no_run_evictor_threads) ) {
+					if ( _tier_evictor_threads[i] != nullptr ) _tier_evictor_threads[i]->join();
+				}
 				if ( last._run_restore_threads ) {
 					if ( _tier_value_restore_for_hmap_threads_0[i] != nullptr ) _tier_value_restore_for_hmap_threads_0[i]->join();
 					if ( _tier_value_restore_for_hmap_threads_1[i] != nullptr ) _tier_value_restore_for_hmap_threads_1[i]->join();
@@ -587,7 +600,7 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 			do {
 				for ( uint32_t proc = 0; (proc < proc_count); proc++ ) {
 					atomic<COM_BUFFER_STATE> *read_marker = this->get_read_marker(proc, assigned_tier);
-					if ( read_marker->load() == CLEARED_FOR_ALLOC ) {   // process has a message
+					if ( claim_for_alloc(read_marker) ) {
 						ready_procs.push(proc);
 					}
 				}
@@ -597,6 +610,7 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 				}
 			} while ( (ready_procs.size() == 0) && this->_thread_running[assigned_tier] );
 		}
+
 
 		// At the app level obtain the LRU for the tier and work from there
 		//
@@ -636,18 +650,12 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 					uint32_t proc = ready_procs.front();
 					ready_procs.pop();
 					//
-					atomic<COM_BUFFER_STATE> *read_marker = this->get_read_marker(proc, assigned_tier);
 					Com_element *access = this->access_point(proc,assigned_tier);
 					//
-					if ( read_marker->load() == CLEARED_FOR_ALLOC ) {   // process has a message
-						//
-						claim_for_alloc(read_marker); // This is the atomic update of the write state
-						//
-						messages[ready_msg_count]._cel = access;
-						accesses[ready_msg_count]._cel = access;
-						//
-						ready_msg_count++;
-					}
+					messages[ready_msg_count]._cel = access;
+					accesses[ready_msg_count]._cel = access;
+					//
+					ready_msg_count++;
 					//
 				}
 				// rof; 
@@ -658,7 +666,6 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 				if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
 					// 	-- FILTER - only allocate for new objects
 					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
-
 					//
 					// accesses are null or zero offset if the hash already has an allocated location.
 					// If accesses[i] is a zero offset, then the element is new. Otherwise, the element 
@@ -786,6 +793,11 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 										// -- if there is a problem, it will affect older entries
 										lru->store_in_hash_unlocking(control_bits,full_hash,hash_bucket,offset,which_slice,cbits,cbits_op,cbits_base_op,el,buffer,end_buffer,cbit_stashes);
 									} // else the bucket has not been locked...
+#ifdef TESTING_SKIP_TABLE
+									write_offset_here[0] = offset;
+									// the 64 bit version goes back to the caller...
+									hash_parameter[0] = 0xDE10EC10;  // put the augmented hash where the process can get it.
+#endif
 								}
 							}
 
@@ -841,58 +853,70 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 			// WAIT - a reader may be still taking data out of our slot.
 			// let it finish before puting in the new stuff.
 
-			if ( wait_to_write(read_marker,MAX_WAIT_LOOPS,delay_func) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
+			// if ( wait_to_write(read_marker,MAX_WAIT_LOOPS,delay_func) ) {	// will wait (spin lock style) on an atomic indicating the read state of the process
 				// 
-				// tell a reader to get some free memory
-				uint32_t *hpar_low = (uint32_t *)hash_parameter;
-				uint32_t *hpar_hi = (hpar_low + 1);
+			// The decision is that one process will access a single position and work linearly on it.
+			// At the same time, another process should be looking for this process to clear it for allocation.
+			// The calling process is the one that does that job, clearing for allocation.
+			// tell a reader to get some free memory
+			uint32_t *hpar_low = (uint32_t *)hash_parameter;
+			uint32_t *hpar_hi = (hpar_low + 1);
 
-				hpar_low[0] = hash_bucket;	// put in the hash so that the reader can see if this is a duplicate
-				hpar_hi[0] = full_hash;		// but also, this is the hash (not yet augmented)
-				// the write offset should come back to the process's read maker
-				offset_offset[0] = updating ? UINT32_MAX : 0;
-				//
-				//
-				cleared_for_alloc(read_marker);   // allocators can now claim this process request
-				//
-				// will sigal just in case this is the first writer done and a thread is out there with nothing to do.
-				// wakeup a conditional reader if it happens to be sleeping and mark it for reading, 
-				// which prevents this process from writing until the data is consumed
+			hpar_low[0] = hash_bucket;	// put in the hash so that the reader can see if this is a duplicate
+			hpar_hi[0] = full_hash;		// but also, this is the hash (not yet augmented)
+			// the write offset should come back to the process's read maker
+			offset_offset[0] = updating ? UINT32_MAX : 0;
+			//
+			//
+			cleared_for_alloc(read_marker);   // allocators can now claim this process request
+			//
+			// will sigal just in case this is the first writer done and a thread is out there with nothing to do.
+			// wakeup a conditional reader if it happens to be sleeping and mark it for reading, 
+			// which prevents this process from writing until the data is consumed
 
-				bool status = this->wake_up_write_handlers(tier);
-				if ( !status ) {
-					return -2;
+			bool status = this->wake_up_write_handlers(tier);
+			if ( !status ) {
+				return -2;
+			}
+			//
+			// This thread waits for the offset in order to put the data in memory...
+			if ( await_write_offset(read_marker,MAX_WAIT_LOOPS,delay_func) ) {
+				//
+				uint32_t write_offset = offset_offset[0];
+				//
+				if ( (write_offset == UINT32_MAX) && !(updating) ) {	// a duplicate has been found
+					clear_for_write(read_marker);   // next write from this process can now proceed...
+					return -1;
 				}
 				//
-				if ( await_write_offset(read_marker,MAX_WAIT_LOOPS,delay_func) ) {
-					//
-					uint32_t write_offset = offset_offset[0];
-					//
-					if ( (write_offset == UINT32_MAX) && !(updating) ) {	// a duplicate has been found
-						clear_for_write(read_marker);   // next write from this process can now proceed...
-						return -1;
-					}
-					//
-					uint8_t *m_insert = lru->data_location(write_offset);  // write offset filtered by above line
+				uint8_t *m_insert = lru->data_location(write_offset);  // write offset filtered by above line
 
-					if ( m_insert != nullptr ) {
-						hash_bucket = hpar_low[0]; // return the augmented hash ... update by reference...
-						full_hash = hpar_hi[0];
-						memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));  // COPY IN NEW DATA HERE...
-					} else {
-						clear_for_write(read_marker);   // next write from this process can now proceed...
-						return -1;
-					}
-					//
-					clear_for_write(read_marker);   // next write from this process can now proceed...
+char buffer[128];
+sprintf(buffer,"m_insert: %lx",(unsigned long int)m_insert);
+cout << buffer << endl;
+
+				if ( m_insert != nullptr ) {
+					hash_bucket = hpar_low[0]; // return the augmented hash ... update by reference...
+					full_hash = hpar_hi[0];
+sprintf(buffer,"hash_parameter: %llx ",*hash_parameter);
+cout << buffer << endl;
+cout << "hash_bucket: " << hash_bucket << endl;
+cout << "full_hash: " << full_hash << endl;
+					memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));  // COPY IN NEW DATA HERE...
 				} else {
 					clear_for_write(read_marker);   // next write from this process can now proceed...
 					return -1;
 				}
+				//
+				clear_for_write(read_marker);   // next write from this process can now proceed...
 			} else {
-				// something went wrong ... perhaps a frozen reader...
+				clear_for_write(read_marker);   // next write from this process can now proceed...
 				return -1;
 			}
+			// } else {
+			// 	// something went wrong ... perhaps a frozen reader...
+			// 	return -1;
+			// }
 			//
 			return 0;
 		}

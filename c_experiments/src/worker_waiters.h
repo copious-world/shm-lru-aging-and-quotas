@@ -84,7 +84,7 @@ class WorkWaiters {
 //cout << ((this->_thread_running[tier]) ? "running " : "not running ") << tier << endl;
 //cout << "waiting..."; cout.flush();
 			// FOR MAC OSX
-			while ( _readerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) && *thread_is_running) {
+			while ( _readerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) && *thread_is_running ) {
 //cout << "+"; cout.flush();
 				microseconds us = microseconds(100);
 				auto start = high_resolution_clock::now();
@@ -339,3 +339,173 @@ class RestoreAndCropWaiters {
 
 
 };
+
+
+
+
+class EvictorWaiter {
+
+
+	public:
+
+		EvictorWaiter(void) {
+		}
+
+		virtual ~EvictorWaiter(void) {
+		}
+
+	public:
+
+		void init_evictor(void) {
+			_reserve_evictor->clear();
+		}
+		
+		void set_shared_evictor_flag(atomic_flag *evict_flag) {
+			_reserve_evictor =	evict_flag; // the next pointer in memory
+		}
+
+		/**
+		 * notify_evictor -- use atomic notification.
+		*/
+		void 			notify_evictor([[maybe_unused]] uint32_t reclaim_target) {
+			while( !( _reserve_evictor->test_and_set() ) );
+#ifndef __APPLE__
+			_reserve_evictor->notify_one();					// NOTIFY FOR LINUX  (can ony test on an apple)
+#else
+			_evictor_spinner.signal();
+#endif
+		}
+
+
+		void 			evictor_wait_for_work(void) {
+#ifndef __APPLE__
+			_reserve_evictor->wait(true,std::memory_order_acquire);
+#else
+			_evictor_spinner.wait();
+#endif
+		}
+
+
+		atomic_flag						*_reserve_evictor;
+		//
+#ifdef __APPLE__
+		Spinners						_evictor_spinner;
+#endif
+
+};
+
+
+
+/*
+
+std::atomic<bool> signal;
+std::mutex m;
+std::condition_variable v;
+
+std::unique_lock<std::mutex> lock(m);
+v.wait(lock, [&] { return signal; });
+
+
+std::unique_lock<std::mutex> lock(m);
+signal = true;
+v.notify_one();
+
+
+
+
+
+
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
+std::condition_variable cv;
+std::mutex lock;
+int foo;
+
+void baz()
+{
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+
+    {
+        auto ul = std::unique_lock<std::mutex>(lock);
+        foo = 1;
+    }
+    cv.notify_one();
+}
+
+int main()
+{
+    foo = 0;
+
+    auto thread = std::thread(baz);
+
+    {
+        auto ul = std::unique_lock<std::mutex>(lock);
+        cv.wait(ul, [](){return foo != 0;});
+    }
+
+    thread.join();
+    return 0;
+}
+
+
+
+
+#include <string.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <atomic>
+
+void* create_shared_memory(size_t size) {
+    int protection = PROT_READ | PROT_WRITE;
+
+    int visibility = MAP_SHARED | MAP_ANONYMOUS;
+
+    return mmap(nullptr, size, protection, visibility, -1, 0);
+}
+
+struct SharedBuffer
+{
+    std::atomic<uint64_t> filled;
+    int arr[1024];
+};
+
+
+int main() {
+    void* shmem = create_shared_memory(sizeof(SharedBuffer));
+    auto data = static_cast<SharedBuffer*>(shmem);
+    data->filled.store(0);
+
+    int pid = fork();
+
+    uint64_t countInThisThread = 0;
+    if (pid == 0) {
+        while(data->filled.load() < 1024ULL * 1024) {
+            if (data->filled.load() % 2 == 0) {
+                data->filled++;
+                countInThisThread++;
+            }
+        }
+        printf("++ in child process: %lu\n", countInThisThread);
+    } else {
+        while(data->filled.load() < 1024ULL * 1024) {
+            if (data->filled.load() % 2 == 1) {
+                data->filled++;
+                countInThisThread++;
+            }
+        }
+        printf("++ in parent process: %lu\n", countInThisThread);
+    }
+    munmap(shmem, sizeof(SharedBuffer));
+    return 0;
+}
+// Output
+// ++ in parent process: 524288
+// ++ in child process: 524288
+
+
+
+*/
