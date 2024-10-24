@@ -471,9 +471,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			uint32_t entry_times[ready_msg_count];
 			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
 				entry_times[i] = current_time_next();
-cout << "entry_times[i]: " << entry_times[i] << endl;
 			}
-cout << "adding to timeout table"  << endl;
 			if ( _timeout_table != nullptr ) {
 				_timeout_table->add_entries(lru_element_offsets,entry_times,ready_msg_count);
 			}

@@ -1232,8 +1232,10 @@ cout << "Launch threads... TierAndProcManager:: " << endl;
 
   for ( uint32_t i = 0; i < num_procs; i++ ) {
     input_alls[i] = new thread([&](int j){
-      uint32_t hash_bucket = (uint32_t)j;
-      uint32_t full_hash = (uint32_t)j;
+      //
+      uint32_t hash_bucket = (uint32_t)j*20;
+      uint32_t full_hash = (uint32_t)j*20;
+      //
       bool updating = false;
       unsigned int size = 64;
       char* buffer = new char[size];
@@ -1256,53 +1258,65 @@ cout << "Launch threads... TierAndProcManager:: " << endl;
         //
       }
 
-      for ( int j = 0; j < 100; j++ ) tick();
+      for ( int k = 0; k < 100; k++ ) tick();
+	char logbuffer[64];
+	sprintf(logbuffer, "GET ... %d|",(int)(j));
+	cout << logbuffer << endl;
 
-      // hash_bucket = (uint32_t)j;
-      // full_hash = (uint32_t)j;
+      hash_bucket = (uint32_t)j*20;
+      full_hash = (uint32_t)j*20;
 
-      // for ( int i = 0; i < 8; i++ ) {
-      //   //
-      //   full_hash++;
-      //   hash_bucket++;
-      //   //
-      //   memset(buffer,0,size);
-      //   uint32_t timestamp = 0;
-      //   //
-      //   while ( timestamp == 0 ) {
-      //     tick();
-      //     timestamp = hash_stamp[full_hash];
-      //   }
-      //   //
-      //   tapm_refs[j]->get_method(hash_bucket, full_hash, buffer, size, timestamp, 0);
-      //   cout << hash_bucket << " -- " << buffer << endl;
-      //   //
-      // }
+      for ( int i = 0; i < 8; i++ ) {
+        //
+        full_hash++;
+        hash_bucket++;
+        //
+        memset(buffer,0,size);
+        uint32_t timestamp = 0;
+        //
+        //while ( timestamp == 0 ) {
+          tick();
+          timestamp = hash_stamp[full_hash];
+        //}
+        //
+        tapm_refs[j]->get_method(hash_bucket, full_hash, buffer, size, timestamp, 0);
+        cout << hash_bucket << " -- " << buffer << endl;
+        //
+      }
 
-      // for ( int j = 0; j < 100; j++ ) tick();
+      for ( int k = 0; k < 100; k++ ) tick();
+	sprintf(logbuffer, "DEL ... %d|",(int)(j));
+	cout << logbuffer << endl;
 
-      // hash_bucket = (uint32_t)j;
-      // full_hash = (uint32_t)j;
+      hash_bucket = (uint32_t)j*20;
+      full_hash = (uint32_t)j*20;
 
-      // for ( int i = 0; i < 8; i++ ) {
-      //   //
-      //   full_hash++;
-      //   hash_bucket++;
-      //   //
-      //   uint32_t timestamp = 0;
-      //   //
-      //   while ( timestamp == 0 ) {
-      //     tick();
-      //     timestamp = hash_stamp[full_hash];
-      //   }
-      //   //
-      //   tapm_refs[j]->del_method(j,hash_bucket, full_hash,timestamp,0);
-      //   //
-      // }
+      for ( int i = 0; i < 8; i++ ) {
+        //
+        full_hash++;
+        hash_bucket++;
+        //
+        uint32_t timestamp = 0;
+        //
+        //while ( timestamp == 0 ) {
+          tick();
+          timestamp = hash_stamp[full_hash];
+        //}
+        //
+        tapm_refs[j]->del_method(j,hash_bucket, full_hash,timestamp,0);
+        //
+      }
+
+	sprintf(logbuffer, "DONE... %d|",(int)(j));
+	cout << logbuffer << endl;
 
     },i);
   }
 
+
+cout << "enter when ready" << endl;
+string yep = "yep";
+cin >> yep;
 
 cout << "Shutting down threads... TierAndProcManager:: " << endl;
   //

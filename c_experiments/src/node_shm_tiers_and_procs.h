@@ -629,11 +629,22 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 				//
 				// 												WAIT FOR WORK
 				queue<uint32_t> ready_procs;		// ---- ---- ---- ---- ---- ----
+				// The waiter returns the input from the client in `ready_procs`
 				second_phase_waiter(ready_procs, proc_count, assigned_tier);
+				if ( ready_procs.empty() && !(this->_thread_running[assigned_tier]) ) {
+
+if ( this->_thread_running[assigned_tier] == false ) {
+	char buffer[64];
+	sprintf(buffer, "second_phase_waiter THREAD NOT RUNNING: %d ...",(int)(this->_proc));
+	cout << buffer << endl;
+}
+
+					return -1;
+				}
 				//
 				//
-				com_or_offset *messages = messages_reserved;  // get this many addrs if possible...
-				com_or_offset *accesses = duplicate_reserved;
+				com_or_offset *messages = messages_reserved;	// get this many addrs if possible...
+				com_or_offset *accesses = duplicate_reserved;	// Attempting to write an existing value
 				//
 				// 
 				// FIRST: gather messages that are aready for addition to shared data structures.
@@ -1097,7 +1108,7 @@ cout << "full_hash: " << full_hash << endl;
 
 		void removal_thread(uint8_t tier) {
 
-			this->removal_waiting(tier);
+			this->removal_waiting(tier,&(this->_removals_running[tier]));
 
 			while ( this->has_removal_work(tier)  ) {
 				r_entry re;

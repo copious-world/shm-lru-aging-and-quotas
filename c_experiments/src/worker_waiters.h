@@ -57,12 +57,12 @@ class WorkWaiters {
 		 * wait_for_removal_notification
 		*/
 
-		void 		wait_for_removal_notification(uint8_t tier) {
+		void 		wait_for_removal_notification(uint8_t tier,bool *thread_is_running) {
 #ifndef __APPLE__
 			_removerAtomicFlag[tier]->clear();
 			_removerAtomicFlag[tier]->wait(false);  // this tier's LRU shares this read flag
 #else
-			while ( _removerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) ) {
+			while ( _removerAtomicFlag[tier]->test_and_set(std::memory_order_acquire) && *thread_is_running ) {
 				microseconds us = microseconds(100);
 				auto start = high_resolution_clock::now();
 				auto end = start + us;
@@ -163,9 +163,9 @@ class WorkWaiters {
 		}
 
 		// removal_waiting
-		void		removal_waiting(uint8_t tier) {
+		void		removal_waiting(uint8_t tier,bool *thread_is_running) {
 			if ( _removal_work[tier].empty() ) {
-				wait_for_removal_notification(tier);
+				wait_for_removal_notification(tier,thread_is_running);
 			}
 		}
 
