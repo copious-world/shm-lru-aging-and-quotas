@@ -84,7 +84,6 @@ typedef struct PUT {
  * 
 */
 
-
 template<class CELL_TYPE>
 class AppAtomicQueue : public AtomicQueue<CELL_TYPE> {
 
@@ -197,6 +196,7 @@ struct TAB_PROC_DESCR {
 	void setup_all_queues(uint8_t *start, size_t q_entry_count,bool am_initializer = false) {
 		//
 		auto num_t = min(max_service_threads,_num_service_threads);
+
 		for ( uint8_t t = 0; t < num_t; t++ ) {
 			_put_com[t]._write_awake = (atomic_flag *)start;
 			start += sizeof(atomic_flag);
@@ -240,7 +240,7 @@ typedef struct TAB_PROC_DESCR<> table_proc_com;
  *  ExternalInterfaceQs
  * 
  */
-template<const uint32_t TABLE_SIZE>
+template<const uint32_t Q_SIZE>
 class ExternalInterfaceQs {
   public:
 
@@ -260,8 +260,8 @@ public:
 
     void initialize(uint8_t client_count,uint8_t thread_count,void *data_region,size_t max_els_stored,bool am_initializer = false) {
 		//
-		_proc_refs.set_region(data_region,TABLE_SIZE,am_initializer);
-		
+		_proc_refs.set_region(data_region,Q_SIZE,am_initializer);
+		//
 		_sect_size = max_els_stored/thread_count;
 		_max_els_stored = max_els_stored;
 		//
@@ -401,9 +401,7 @@ public:
 	 * unload_get_req
 	 */
     bool unload_get_req(request_cell &getter,uint8_t tnum) {
-		if ( _proc_refs._get_com[tnum]._get_queue.empty() ) {
-			return false;
-		}
+		if ( _proc_refs._get_com[tnum]._get_queue.empty() ) return false;
 		auto result = _proc_refs._get_com[tnum]._get_queue.pop_queue(getter);
 		if ( result == UINT32_MAX ) return false;
 		return true;

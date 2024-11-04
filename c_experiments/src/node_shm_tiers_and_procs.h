@@ -10,7 +10,6 @@ using namespace std;
 #include "worker_waiters.h"
 
 
-#define TESTING_SKIP_TABLE 1
 
 using namespace std::chrono;
 
@@ -20,7 +19,6 @@ void default_delay(void) {
 }
 
 
-class LRU_cache;
 
 /**
  * 
@@ -54,7 +52,7 @@ class LRU_cache;
 // messages_reserved is an area to store pointers to the messages that will be read.
 // duplicate_reserved is area to store pointers to access points that are trying to insert duplicate
 
-template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_FACTOR = 3,class LRU_c_impl = LRU_cache>
+template<const uint8_t MAX_TIERS = 8,const uint8_t RESERVE_FACTOR = 3,class LRU_c_impl = LRU_cache<>>
 class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 
 	public:
@@ -91,7 +89,12 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 				void *lru_region = p.second;
 				size_t seg_sz = seg_sizes[key];
 				//
+//				try {
 				_tiers[tier] = new LRU_c_impl(lru_region, max_obj_size, seg_sz, els_per_tier, _reserve_size, _Procs, _am_initializer, tier);
+				// } catch ( const char *estr ) {
+				// 	cout << estr << endl;
+				// 	exit(1);
+				// }
 				_tiers[tier]->set_tier_table((LRU_c_impl **)_tiers,_NTiers);
 				if ( tchoice == STP_TABLE_INTERNAL_ONLY ) {
 					LRU_c_impl *lru = _tiers[tier];
@@ -803,12 +806,13 @@ if ( this->_thread_running[assigned_tier] == false ) {
 										clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
 										// -- if there is a problem, it will affect older entries
 										lru->store_in_hash_unlocking(control_bits,full_hash,hash_bucket,offset,which_slice,cbits,cbits_op,cbits_base_op,el,buffer,end_buffer,cbit_stashes);
-									} // else the bucket has not been locked...
-#ifdef TESTING_SKIP_TABLE
-									write_offset_here[0] = offset;
-									// the 64 bit version goes back to the caller...
-									hash_parameter[0] = 0xDE10EC10;  // put the augmented hash where the process can get it.
-#endif
+									} else {  // else the bucket has not been locked...
+										write_offset_here[0] = UINT32_MAX;
+										// the 64 bit version goes back to the caller...
+										hash_parameter[0] = UINT64_MAX;  // put the augmented hash where the process can get it.
+										atomic<COM_BUFFER_STATE> *read_marker = &(ce->_marker);
+										clear_for_copy(read_marker);  // release the proc, allowing it to emplace the new data
+									}
 								}
 							}
 
@@ -879,7 +883,7 @@ if ( this->_thread_running[assigned_tier] == false ) {
 			offset_offset[0] = updating ? UINT32_MAX : 0;
 			//
 			//
-			cleared_for_alloc(read_marker);   // allocators can now claim this process request
+			clear_for_alloc(read_marker);   // allocators can now claim this process request
 			//
 			// will sigal just in case this is the first writer done and a thread is out there with nothing to do.
 			// wakeup a conditional reader if it happens to be sleeping and mark it for reading, 

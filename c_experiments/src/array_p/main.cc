@@ -131,16 +131,20 @@ thread output_com_threads[20];
 thread client_com_threads[20];
 
 static const uint32_t TABLE_SIZE = (20000);
+static const uint32_t Q_SIZE = (100);
 
-static Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE> *g_com = nullptr;
 
-Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE> *initialize_com_region(uint8_t client_count,uint8_t service_count,uint8_t q_entry_count) {
-  size_t rsiz = ExternalInterfaceQs<TABLE_SIZE>::check_expected_com_region_size(q_entry_count);
+static Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *g_com = nullptr;
+
+Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *initialize_com_region(uint8_t client_count,uint8_t service_count,uint8_t q_entry_count) {
+  size_t rsiz = ExternalInterfaceQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
   void *data_region = new uint8_t[rsiz];
-  Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE> *eiq = new Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE>(client_count,service_count,data_region,q_entry_count,true);
+  Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = new Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE>(client_count,service_count,data_region,q_entry_count,true);
   return eiq;
 }
 
+
+static bool everyone_runs = true;
 
 void launch_threads(void) {
 
@@ -154,16 +158,22 @@ void launch_threads(void) {
   // t_count is the number of threads per section and is the same for gets and puts
 
   for ( uint8_t i = 0; i < t_count; i++ ) {
-    input_com_threads[i] = thread([](uint8_t j){
+    input_com_threads[i] = thread([&](uint8_t j){
       if ( g_com != nullptr ) {
-        g_com->put_handler(j);
+        while ( everyone_runs ) {
+          g_com->put_handler(j);
+          tick();
+        }
       }
     },i);
   }
   for ( uint8_t i = 0; i < t_count; i++ ) {
-    output_com_threads[i] = thread([](uint8_t j){
+    output_com_threads[i] = thread([&](uint8_t j){
       if ( g_com != nullptr ) {
-        g_com->get_handler(j);
+        while ( everyone_runs ) {
+          g_com->get_handler(j);
+          tick();
+        }
       }
     },i);
   }
@@ -176,10 +186,10 @@ void await_thread_end(uint8_t t_count,uint8_t client_t_count) {
       input_com_threads[i].join();
       output_com_threads[i].join();
   }
-  //
-  for ( uint8_t i = 0; i < client_t_count; i++ ) {
-    client_com_threads[i].join();
-  }
+  // //
+  // for ( uint8_t i = 0; i < client_t_count; i++ ) {
+  //   client_com_threads[i].join();
+  // }
 }
 
 
@@ -207,7 +217,6 @@ int main(int argc, char **argv) {
 		cout << argv[1] << endl;
 	}
 
-
   uint32_t nowish = 0;
   const auto right_now = std::chrono::system_clock::now();
   nowish = std::chrono::system_clock::to_time_t(right_now);
@@ -215,11 +224,12 @@ int main(int argc, char **argv) {
   const uint8_t client_count = 2;
   const uint8_t service_count = 8;
 
-  Storage_ExternalInterfaceQs<THREAD_COUNT,TABLE_SIZE> *eiq = initialize_com_region(client_count,service_count,100);
+  Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = initialize_com_region(client_count,service_count,100);
   g_com = eiq;
 
   launch_threads();
   for ( int i = 0; i < 20; i++ ) tick();
+
 
   await_thread_end(8,1);
 

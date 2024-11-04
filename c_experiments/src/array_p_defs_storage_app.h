@@ -106,16 +106,16 @@ class StoreHVPairs {
 };
 
 /**
- *  ExternalInterfaceQs
+ *  Storage_ExternalInterfaceQs
  * 
  */
-template<const uint8_t THREAD_COUNT,const uint32_t TABLE_SIZE>
-class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<TABLE_SIZE> {
+template<const uint8_t THREAD_COUNT,const uint32_t Q_SIZE>
+class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<Q_SIZE> {
   public:
 
 	Storage_ExternalInterfaceQs(uint8_t client_count,uint8_t thread_count,
 									void *data_region,size_t max_els_stored,bool _am_initializer = false)
-		: ExternalInterfaceQs<TABLE_SIZE> (client_count,thread_count,data_region,max_els_stored,_am_initializer) {
+		: ExternalInterfaceQs<Q_SIZE> (client_count,thread_count,data_region,max_els_stored,_am_initializer) {
 			_storage.initialize(max_els_stored);
 	}
 
@@ -126,7 +126,7 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<TABLE_SIZE> {
 
 
 	static uint32_t check_expected_com_region_size(uint8_t q_entry_count) {
-		return ExternalInterfaceQs<TABLE_SIZE>::check_expected_com_region_size(q_entry_count);
+		return ExternalInterfaceQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
 	}
 
 	void put_handler(uint8_t t_num) {			/// t_num a thread number

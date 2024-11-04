@@ -30,13 +30,24 @@ class UpdateSource {
 
 	public:
 
-	UpdateSource(pair<uint32_t,uint32_t> *shared_queue,uint16_t expected_proc_max) 
-									: _sorted_updates(shared_queue), _NProcs(expected_proc_max) {
-		_min_value = UINT32_MAX;
-		_min_index = UINT32_MAX;
-		_max_value = 0;
-		_max_index = 0;
-	}
+		UpdateSource(pair<uint32_t,uint32_t> *shared_queue,uint16_t expected_proc_max) 
+										: _sorted_updates(shared_queue), _NProcs(expected_proc_max) {
+			_min_value = UINT32_MAX;
+			_min_index = UINT32_MAX;
+			_max_value = 0;
+			_max_index = 0;
+		}
+
+		UpdateSource(void) {}
+
+		void init(pair<uint32_t,uint32_t> *shared_queue,uint16_t expected_proc_max) {
+			_sorted_updates = shared_queue;
+			_NProcs = expected_proc_max;
+			_min_value = UINT32_MAX;
+			_min_index = UINT32_MAX;
+			_max_value = 0;
+			_max_index = 0;
+		}
 
 	public:
 

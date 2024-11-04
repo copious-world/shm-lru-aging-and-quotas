@@ -39,7 +39,7 @@ typedef enum {
 // There is one LRU per hash table group (pool), and the size of the LRU is at most 50% (maybe or) of all possible hash table
 // entries summed across the pool entries. 
 
-//
+// The writer calls this last ... resets state 
 static inline void clear_for_write(atomic<COM_BUFFER_STATE> *read_marker) {   // first and last
     auto p = read_marker;
     auto current_marker = p->load(std::memory_order_acquire);
@@ -54,11 +54,16 @@ static inline void clear_for_write(atomic<COM_BUFFER_STATE> *read_marker) {   //
 }
 
 //
-static inline void cleared_for_alloc(atomic<COM_BUFFER_STATE> *read_marker) {
+static inline void clear_for_alloc(atomic<COM_BUFFER_STATE> *read_marker) {
     auto p = read_marker;
     auto current_marker = p->load(std::memory_order_acquire);
-    while(!p->compare_exchange_weak(current_marker,CLEARED_FOR_ALLOC,std::memory_order_release)
-                    && (p->load() != CLEARED_FOR_ALLOC));
+    while ( current_marker != CLEAR_FOR_WRITE ) {
+        tick();
+    }
+    p->store(CLEARED_FOR_ALLOC,std::memory_order_release);
+
+    // while(!p->compare_exchange_weak(current_marker,CLEARED_FOR_ALLOC,std::memory_order_release)
+    //                 && (p->load() != CLEARED_FOR_ALLOC));
 }
 
 //
@@ -128,13 +133,14 @@ static inline bool await_write_offset(atomic<COM_BUFFER_STATE> *read_marker,uint
     auto p = read_marker;
     //    auto current_marker = p->load();
     uint32_t count = 0;
+    //loops = 10;
     while ( true ) {
         count++;
-        COM_BUFFER_STATE clear = (COM_BUFFER_STATE)(p->load(std::memory_order_relaxed));
+        COM_BUFFER_STATE clear = (COM_BUFFER_STATE)(p->load(std::memory_order_acquire));
         if ( clear == CLEARED_FOR_COPY ) break;
-         if ( clear == FAILED_ALLOCATOR ) {
+        if ( clear == FAILED_ALLOCATOR ) {
             return false;
-         }
+        }
         //
         if ( count > loops ) {
             return false;

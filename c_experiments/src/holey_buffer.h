@@ -234,6 +234,28 @@ class KeyValueManager {
 			_regions = nullptr;				// for future use
 		}
 
+		KeyValueManager(void) {}
+
+
+		void init(pair<uint32_t,uint32_t> *primary_storage,
+							uint32_t count_size, pair<uint32_t,uint32_t> *shared_queue, uint16_t expected_proc_max) {
+			_proc_queue.init(shared_queue,expected_proc_max);
+			_key_val = primary_storage;
+			_end_key_val = _key_val + expected_proc_max;
+			_MAX = count_size;
+			_N = 0;
+			_M = 0;
+			_blackout_count = 0;
+			_proc_count = 4;   // depends on processor and configuration
+			//
+			_nouveau_max = 0;
+			_nouveau_min = UINT32_MAX;
+			//
+			_init_min_max_holes();
+			_regions_option = false;
+			_regions = nullptr;				// for future use
+		}
+
 	public:
 		// 
 
@@ -394,7 +416,7 @@ class KeyValueManager {
 		/**
 		 * least_time_key
 		*/
-		uint32_t least_time_key() {
+		uint32_t least_time_key(void) {
 			pair<uint32_t,uint32_t> *p = _key_val;
 			pair<uint32_t,uint32_t> *eo_everything = p + _N + _M;
 
@@ -872,6 +894,35 @@ class Shared_KeyValueManager : public KeyValueManager {
 		}
 
 		virtual ~Shared_KeyValueManager() {
+		}
+
+
+		Shared_KeyValueManager(void) {}
+
+		void init(atomic<uint32_t> *start_atoms, pair<uint32_t,uint32_t> *primary_storage,
+									uint32_t count_size, pair<uint32_t,uint32_t> *shared_queue, uint16_t expected_proc_max) {
+			//
+			KeyValueManager::init(primary_storage, count_size, shared_queue, expected_proc_max);
+			atomic<uint32_t> *atoms = start_atoms;
+			_share_N = atoms; atoms++;
+			_share_N->store(0);
+			_share_M = atoms; atoms++;
+			_share_M->store(0);
+			_share_blackout_count = atoms; atoms++;
+			_share_blackout_count->store(0);
+			_share_nouveau_max = atoms; atoms++;
+			_share_nouveau_max->store(0);
+			_share_nouveau_min = atoms; atoms++;
+			_share_nouveau_min->store(0);
+			_share_min_hole_offset_first = atoms; atoms++;
+			_share_min_hole_offset_first->store(0);
+			_share_min_hole_offset_second = atoms; atoms++;
+			_share_min_hole_offset_second->store(0);
+			_share_max_hole_offset_first = atoms; atoms++;
+			_share_max_hole_offset_first->store(0);
+			_share_max_hole_offset_second = atoms; atoms++;
+			_share_max_hole_offset_second->store(0);
+			//
 		}
 
 	public:

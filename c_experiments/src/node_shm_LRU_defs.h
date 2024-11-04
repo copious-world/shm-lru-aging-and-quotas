@@ -11,6 +11,7 @@
 
 #include <map>
 #include <unordered_map>
+#include <queue>
 #include <list>
 #include <chrono>
 #include <atomic>
@@ -224,4 +225,147 @@ class LRU_Consts {
 
 };
 
+
+
+
+class LocalTimeManager {
+	public:
+
+		LocalTimeManager() {}
+		virtual ~LocalTimeManager(void) {}
+
+
+		static const uint8_t atomic_region_size = NUM_H_BUFFER_ATOMICS*sizeof(atomic<uint32_t>);
+
+
+	public:
+
+		void init([[maybe_unused]] atomic<uint32_t> *start_atoms, [[maybe_unused]] pair<uint32_t,uint32_t> *primary_storage,
+									[[maybe_unused]] uint32_t count_size, [[maybe_unused]] pair<uint32_t,uint32_t> *shared_queue, [[maybe_unused]] uint16_t expected_proc_max) {
+		}
+
+		inline bool add_entries([[maybe_unused]] uint32_t *lru_element_offsets,[[maybe_unused]] uint32_t *entry_times,[[maybe_unused]] uint32_t ready_msg_count) {
+
+			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
+				uint32_t value = lru_element_offsets[i];
+				uint32_t key = entry_times[i];
+				pair<uint32_t,uint32_t> p(key,value);
+				_timer_queue.insert(p);  //insert(key,value);
+			}
+
+			return true;
+		}
+
+		inline bool update_entries([[maybe_unused]] uint32_t *old_times,[[maybe_unused]] uint32_t *new_times,[[maybe_unused]] uint8_t count_updates) {
+			for ( uint32_t i = 0; i < count_updates; i++ ) {
+				uint32_t old_ky = old_times[i];
+				uint32_t new_ky = new_times[i];
+				auto bgnd = _timer_queue.equal_range(old_ky);
+				for ( auto kv = bgnd.first; kv != bgnd.second; kv++ ) {
+					auto value = kv->second;
+					pair<uint32_t,uint32_t> p(new_ky,value);
+					_timer_queue.insert(p);  //insert(new_ky,value);
+					uint32_t old_ky_chk = old_times[i+1];
+					uint32_t new_ky_chk = new_times[i+1];
+					if ( old_ky_chk != old_ky ) break;
+					i++;
+					new_ky = new_ky_chk;
+				}
+			}
+			return true;
+		}
+
+		void displace_lowest_value_threshold([[maybe_unused]] list<uint32_t> &deposit, [[maybe_unused]] uint32_t min_max, [[maybe_unused]] uint32_t max_count) {
+			auto itr = _timer_queue.begin();
+			while ( itr != _timer_queue.end() && (max_count != 0 )) {
+				auto tm = itr->first;
+				if ( tm < min_max ) {
+					deposit.push_back(itr->second);
+					itr++;
+					max_count--;
+				} else break;
+			}
+			_timer_queue.erase(_timer_queue.begin(),--itr);
+		}
+
+		inline bool remove_entry([[maybe_unused]] uint32_t key) {
+			_timer_queue.erase(key);
+			return true;
+		}
+
+		uint32_t least_time_key(void) {
+			auto least = _timer_queue.begin();
+			return least->first;
+		}
+
+	public:
+
+		multimap<uint32_t,uint32_t>			_timer_queue;
+
+};
+
+
+
+/**
+ * LRU_time_bounds
+ */
+
+template<class TimeManager = Shared_KeyValueManager>
+class LRU_time_bounds {
+
+	public:
+
+		LRU_time_bounds(void) {}
+		virtual ~LRU_time_bounds(void) {}
+
+		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+		void init(atomic<uint32_t> *atoms,atomic<uint32_t> *start_atoms, pair<uint32_t,uint32_t> *primary_storage,
+							uint32_t count_size, pair<uint32_t,uint32_t> *shared_queue, uint16_t expected_proc_max, uint8_t tier) {
+			_timeout_table = new TimeManager();
+			_lb_time = atoms;
+			_ub_time = atoms + 1;
+			if ( tier == 0 ) {
+				_lb_time->store(now()-1);
+			} else {
+				_lb_time->store(UINT32_MAX);
+			}
+			_ub_time->store(UINT32_MAX);
+			//
+			_timeout_table->init(start_atoms, primary_storage, count_size, shared_queue, expected_proc_max);
+		}
+
+	public:
+
+		inline bool add_entries(uint32_t *lru_element_offsets,uint32_t *entry_times,uint32_t ready_msg_count) {
+			return _timeout_table->add_entries(lru_element_offsets,entry_times,ready_msg_count);
+		}
+
+		inline bool update_entries(uint32_t *old_times,uint32_t *new_times,uint8_t count_updates) {
+			return _timeout_table->update_entries(old_times,new_times,count_updates);
+		}
+
+		inline void displace_lowest_value_threshold(list<uint32_t> &deposit, uint32_t min_max, uint32_t max_count) {
+			_timeout_table->displace_lowest_value_threshold(deposit,min_max,max_count);
+		}
+
+		inline bool remove_entry(uint32_t key){
+			return _timeout_table->remove_entry(key);
+		}
+
+		inline uint32_t least_time_key(void) {
+			return  _timeout_table->least_time_key();
+		}
+
+	public:
+
+ 		TimeManager				*_timeout_table;
+		atomic<uint32_t>		*_lb_time;
+		atomic<uint32_t>		*_ub_time;
+
+};
+
+
+
+#define TESTING_SKIP_TABLE 1
 

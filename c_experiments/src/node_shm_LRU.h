@@ -37,14 +37,6 @@ using namespace std;
 #include "node_shm_LRU_defs.h"
 
 
-
-// class LRU_cache : public LRU_Consts {
-// 	//
-// 	public:
-// 		// LRU_cache -- constructor
-
-
-
 /**
  * LRU_cache
  * 		The LRU cache manages a reference to a hopscotch hash table and to a storage area.
@@ -52,7 +44,8 @@ using namespace std;
  * 		Contention for the stack is managed by atomic access.  
 */
 
-class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LRU_element> {
+template<class LRU_timer = Shared_KeyValueManager>
+class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LRU_element>, public LRU_time_bounds<LRU_timer> {
 
 	public:
 
@@ -82,14 +75,15 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			// if the reserve goes down, an attempt to increase _count_free should take place
 			// if _count_free becomes zero, all memory is used up
 			//
-			_lb_time = (atomic<uint32_t> *)(region);   // these are governing time boundaries of the particular tier
-			_ub_time = 			(_lb_time + 1);
-			_memory_requested =	(_ub_time + 1); // the next pointer in memory
+			auto skip_atoms = (atomic<uint32_t> *)(region);   // these are governing time boundaries of the particular tier
+			_memory_requested =	(skip_atoms + 2); // the next pointer in memory
+			//
 			_count_free = 		(_memory_requested + 1);
 			set_shared_evictor_flag((atomic_flag *)(_count_free + 1));
 			//
-			_cascaded_com_area = (Com_element *)(_lb_time + LRU_ATOMIC_HEADER_WORDS);  // past atomic evictors and reserved ones as well
+			_cascaded_com_area = (Com_element *)(skip_atoms + LRU_ATOMIC_HEADER_WORDS);  // past atomic evictors and reserved ones as well
 			_end_cascaded_com_area = _cascaded_com_area + _Procs;
+
 			if ( !check_end((uint8_t *)_cascaded_com_area) || !check_end((uint8_t *)_end_cascaded_com_area) ) {
 				throw "lru_cache (1) sizes overrun allocated region determined by region_sz";
 			}
@@ -105,7 +99,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			//
 			uint8_t *end_atomics = (uint8_t *)_end;
 			atomic<uint32_t> *atomics_region = (atomic<uint32_t> *)end_atomics;
-			end_atomics += Shared_KeyValueManager::atomic_region_size;
+			end_atomics += LRU_timer::atomic_region_size;
 			pair<uint32_t,uint32_t> *holey_buffer = (pair<uint32_t,uint32_t> *)(end_atomics);
 			pair<uint32_t,uint32_t> *shared_queue = (holey_buffer + _max_count*2 + num_procs);  // late arrivals
 			if ( !check_end((uint8_t *)shared_queue) ) {
@@ -117,22 +111,16 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			// time lower bound and upper bound for a tier...
 			if ( am_initializer ) {
 				_count_free->store(_max_count);
-				if ( tier == 0 ) {
-					_lb_time->store(now()-1);
-				} else {
-					_lb_time->store(UINT32_MAX);
-				}
-				_ub_time->store(UINT32_MAX);
 				_memory_requested->store(0);
 
 				init_evictor();
 				//
 				initialize_com_area(num_procs);
 				//
-				_timeout_table = new Shared_KeyValueManager(atomics_region, holey_buffer, _max_count, shared_queue, num_procs);
+				LRU_time_bounds<LRU_timer>::init((atomic<uint32_t> *)(region),atomics_region, holey_buffer, _max_count, shared_queue, num_procs,tier);
+				//
 				_configured_tier_cooling = ONE_HOUR;
 				_configured_shrinkage = 0.3333;
-
 				//
 				// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 				auto count_free = setup_region_free_list(_start, _step,(_end - _start));
@@ -344,7 +332,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		 * The `_cel` parameter refers to the process table.
 		*/
 
-		uint32_t		filter_existence_check(com_or_offset *messages,com_or_offset *accesses,uint32_t ready_msg_count) {
+		uint32_t		filter_existence_check(com_or_offset *messages, com_or_offset *accesses, uint32_t ready_msg_count) {
 			uint32_t new_msgs_count = 0;
 			int rmc = (int)ready_msg_count;
 			while ( --rmc >= 0 ) {  // walk this list backwards...
@@ -472,9 +460,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			for ( uint32_t i = 0; i < ready_msg_count; i++ ) {
 				entry_times[i] = current_time_next();
 			}
-			if ( _timeout_table != nullptr ) {
-				_timeout_table->add_entries(lru_element_offsets,entry_times,ready_msg_count);
-			}
+			this->add_entries(lru_element_offsets,entry_times,ready_msg_count);
 			//
 		}
 
@@ -487,13 +473,15 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			for ( uint32_t i = 0; i < count_updates; i++ ) {
 				entry_times[i] = current_time_next();
 				auto offset = *updating_offsets++;
+				//
 				LRU_element *lrue = (LRU_element *)data_info_location(offset);
-				old_times[i++] = lrue->_when;
+				if ( lrue == nullptr ) {
+					continue;
+				}
+				old_times[i] = lrue->_when;
 			}
 			//
-			if ( _timeout_table != nullptr ) {
-				_timeout_table->update_entries(old_times,entry_times,count_updates);
-			}
+			this->update_entries(old_times,entry_times,count_updates);
 		}
 
 		/**
@@ -522,14 +510,12 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		uint32_t 		timeout_table_evictions(list<uint32_t> &offsets_moving,uint32_t req_count) {
 			//
 			const auto now = system_clock::now();
-    		const time_t t_c = system_clock::to_time_t(now);
+			const time_t t_c = system_clock::to_time_t(now);
 			uint32_t min_max_time = (t_c - _configured_tier_cooling);
 			uint32_t as_many_as = min((uint32_t)(_max_count*_configured_shrinkage),(req_count*3));
 			//
 			list<uint32_t> ll;
-			if ( _timeout_table != nullptr ) {
-				_timeout_table->displace_lowest_value_threshold(ll,min_max_time,as_many_as);
-			}
+			this->displace_lowest_value_threshold(ll,min_max_time,as_many_as);
 			// filter already deleted 
 			for ( auto offset : ll ) {
 				LRU_element *lel = (LRU_element *)(this->_start + offset);
@@ -555,7 +541,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 				next_tier->claim_hashes(offsets_moving,this->start());		// the next tier insersts its hashes.
 				this->relinquish_hashes(offsets_moving,thread_id);			// this tier gives up the hashes moved.
 				//
-				uint32_t lb_timestamp = (_timeout_table != nullptr) ? _timeout_table->least_time_key() : 0;	// reset the time boundaries (least time is now greater)
+				uint32_t lb_timestamp = this->least_time_key();	// reset the time boundaries (least time is now greater)
 				this->raise_lru_lb_time_bounds(lb_timestamp);
 			}
 		}
@@ -677,6 +663,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 					uint64_t hash64  = el->_hash;
 					time_t update_time = el->_when;
 					uint8_t *data = this->data_info_location(offset);  /// pointer to the header info before data block
+					if ( data == nullptr ) continue;
 					//
 					tuple<uint64_t,time_t,uint8_t *> dat{hash64,update_time,data};
 					move_data.push_back(dat);
@@ -693,7 +680,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		 * set_app_transfer_method -- the application calls this method to set the 
 		 * references to the application transfer method.
 		*/
-		void set_app_transfer_method(void (* atm)(list<tuple<uint64_t,time_t,uint8_t *>> &)) {
+		void		set_app_transfer_method(void (* atm)(list<tuple<uint64_t,time_t,uint8_t *>> &)) {
 			app_transfer_method = atm;
 		}
 
@@ -823,15 +810,22 @@ cout << "RUNNING EVICTOR: " << endl;
 		uint8_t 		*data_location(uint32_t write_offset) {
 			uint8_t *strt = this->start();
 			if ( strt != nullptr ) {
-				return (this->start() + write_offset + sizeof(LRU_element));
+				uint8_t *loc = this->start() + write_offset + sizeof(LRU_element);
+				if ( check_end(loc) ) {
+					return loc;
+				}
 			}
 			return nullptr;
 		}
 
 		uint8_t 		*data_info_location(uint32_t write_offset) {
+			if ( write_offset == UINT32_MAX ) return nullptr;
 			uint8_t *strt = this->start();
 			if ( strt != nullptr ) {
-				return (this->start() + write_offset);
+				auto loc = (this->start() + write_offset);
+				if ( check_end(loc) ) {
+					return (this->start() + write_offset);
+				}
 			}
 			return nullptr;
 		}
@@ -863,10 +857,8 @@ cout << "RUNNING EVICTOR: " << endl;
 		*/
 
 		void 			remove_key(uint32_t full_hash, uint32_t h_bucket, uint32_t timestamp) {
-			if ( _timeout_table != nullptr ) {
-				if ( _timeout_table->remove_entry(timestamp) ) {
-					_hmap->del(full_hash,h_bucket);
-				}
+			if ( this->remove_entry(timestamp) ) {
+				_hmap->del(full_hash,h_bucket);
 			}
 		}
 
@@ -943,7 +935,7 @@ cout << "RUNNING EVICTOR: " << endl;
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
  		HMap_interface 					*_hmap;
- 		Shared_KeyValueManager			*_timeout_table;
+		//
 		//
 		LRU_cache 						**_all_tiers;		// set by caller
 		//
@@ -952,8 +944,6 @@ cout << "RUNNING EVICTOR: " << endl;
 
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		//
-		atomic<uint32_t>				*_lb_time;
-		atomic<uint32_t>				*_ub_time;
 		atomic<uint32_t>				*_memory_requested;
 
 };
