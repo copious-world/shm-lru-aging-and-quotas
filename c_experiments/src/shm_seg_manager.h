@@ -130,8 +130,34 @@ class SharedSegmentsTForm : public SharedSegments {
 
 
 		/**
+		 * initialize_app_com_shm
+		 * 
+		 * A special case for tables governed by a separate custom process.
+		*/
+
+		int initialize_app_com_shm(key_t com_key, size_t size, bool am_initializer) {
+			//
+			int status = 0;
+			//
+			_app_com_buffer_size = size;
+			//
+			if ( am_initializer ) {
+				status = _shm_creator(com_key,_app_com_buffer_size);
+			} else {
+				int at_shmflg = 0;
+				status = this->_shm_attacher(com_key, at_shmflg);
+			}
+			//
+			if ( status == 0 ) _app_com_buffer = _ids_to_seg_addrs[com_key];
+			//
+			return status;
+		}
+
+
+		/**
 		 * initialize_randoms_shm
 		 */
+
 		int initialize_randoms_shm(key_t randoms_key, bool am_initializer) {
 			int status = 0;
 			//
@@ -252,8 +278,10 @@ class SharedSegmentsTForm : public SharedSegments {
 
 		//
 		void 								*_com_buffer;
+		void 								*_app_com_buffer;
 		void								*_random_bits_buffer;
 		size_t								_com_buffer_size;
+		size_t								_app_com_buffer_size;
 		size_t								_random_bits_buffer_size;
 		//
 		map<key_t,void *>					_seg_to_lrus;

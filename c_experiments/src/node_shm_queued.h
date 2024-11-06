@@ -90,8 +90,8 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 	public:
 
 		// SSlab_map LRU_cache -- constructor
-		QUEUED_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, bool am_initializer = false) {
-			initialize_all(region, seg_sz, max_element_count, num_threads, am_initializer);
+		QUEUED_map(uint8_t *region, uint32_t seg_sz, uint32_t max_element_count, uint32_t num_threads, [[maybe_unused]] bool am_initializer = false) {
+			initialize_all(region, seg_sz, max_element_count, num_threads, false);
 		}
 
 		virtual ~QUEUED_map() {

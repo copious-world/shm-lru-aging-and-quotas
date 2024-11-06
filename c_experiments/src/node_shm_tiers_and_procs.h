@@ -481,7 +481,7 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 				//
 				LRU_c_impl *tier_lru = access_tier(i);
 				if ( tier_lru != nullptr ) {
-					//
+				// 	//
 					if ( !(last._test_no_run_evictor_threads) ) {
 						auto evictor_runner = [&](uint8_t tier,LRU_c_impl *lru) {
 							this->_evictors_running[tier] = true;
@@ -492,9 +492,10 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 						//
 						_tier_evictor_threads[i] = new thread(evictor_runner,i,tier_lru);
 					}
-					// //
+				// 	// //
 					// // hash_table_value_restore_thread
 					if ( last._run_restore_threads ) {
+cout << "RESTORE THREADS" << endl;
 						auto restore_runner = [this](uint8_t slice_for_thread,uint8_t tier,LRU_c_impl *lru) {
 							this->_restores_running[tier][slice_for_thread] = true;
 							while ( this->_restores_running[tier][slice_for_thread] ) {
@@ -508,6 +509,7 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 					}
 
 					if ( last._run_cropper_threads ) {
+cout << "CROPPER THREADS" << endl;
 						auto cropper_runner = [this](uint8_t slice_for_thread,uint8_t tier,LRU_c_impl *lru) {
 							this->_croppers_running[tier][slice_for_thread] = true;
 							while ( this->_croppers_running[tier][slice_for_thread] ) {

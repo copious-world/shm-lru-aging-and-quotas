@@ -34,7 +34,7 @@ using namespace std;
 
 #include "tick.h"
 #include "array_p_defs.h"
-
+#include "node_shm_queued.h"
 
 
 typedef struct STORES {

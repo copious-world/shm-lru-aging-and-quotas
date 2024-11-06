@@ -91,6 +91,7 @@ static_assert(atomic<uint64_t>::is_always_lock_free,  // C++17
 using namespace node_shm;
 
 
+volatile std::sig_atomic_t gSignalStatus;
 
 // #include "node_shm_HH_for_test.h"
 
@@ -123,6 +124,26 @@ void print_stored(pair<uint32_t,uint32_t> *primary_storage,uint32_t print_max = 
 
 
 
+SharedSegmentsTForm<QUEUED_map<>> app_segs;
+
+
+void *create_data_region(key_t com_key,size_t size, bool am_initializer = true) {
+
+  if ( app_segs.initialize_app_com_shm(com_key, size, am_initializer) == 0 ) {
+    auto seg = app_segs._app_com_buffer;
+    return seg;
+  }
+
+  return nullptr;
+}
+
+
+void remove_segment(key_t key) {
+  //
+  app_segs.detach(key,true);
+  //
+}
+
 
 /// Internal thread management
 
@@ -136,15 +157,25 @@ static const uint32_t Q_SIZE = (100);
 
 static Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *g_com = nullptr;
 
-Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *initialize_com_region(uint8_t client_count,uint8_t service_count,uint8_t q_entry_count) {
+Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *initialize_com_region(key_t com_key,uint8_t client_count,uint8_t service_count,uint8_t q_entry_count) {
   size_t rsiz = ExternalInterfaceQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
-  void *data_region = new uint8_t[rsiz];
+  //
+  void *data_region = create_data_region(com_key,rsiz);
+  //
   Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = new Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE>(client_count,service_count,data_region,q_entry_count,true);
   return eiq;
 }
 
 
 static bool everyone_runs = true;
+static atomic_flag g_threads_ready;
+
+
+
+void shutdown_on_signal(int signal) {
+  gSignalStatus = signal;
+  everyone_runs = false;
+}
 
 void launch_threads(void) {
 
@@ -177,19 +208,20 @@ void launch_threads(void) {
       }
     },i);
   }
+  g_threads_ready.clear();
 }
 
 
+void await_threads_launch(void) {
+  while ( g_threads_ready.test() ) tick();
+}
 
-void await_thread_end(uint8_t t_count,uint8_t client_t_count) {
+
+void await_thread_end(uint8_t t_count) {
   for ( uint8_t i = 0; i < t_count; i++ ) {
       input_com_threads[i].join();
       output_com_threads[i].join();
   }
-  // //
-  // for ( uint8_t i = 0; i < client_t_count; i++ ) {
-  //   client_com_threads[i].join();
-  // }
 }
 
 
@@ -202,7 +234,8 @@ void await_thread_end(uint8_t t_count,uint8_t client_t_count) {
 
 int main(int argc, char **argv) {
 	//
-
+  std::signal(SIGINT, shutdown_on_signal);
+  //
   if ( noisy_test ) {
     cout << "--->>>  THIS IS A NOISY TEST" << endl;
   }
@@ -210,8 +243,6 @@ int main(int argc, char **argv) {
   // int status = 0;
   auto start = chrono::system_clock::now();
 
-
-  //std::signal(SIGINT, handle_catastrophic);
 
 	if ( argc == 2 ) {
 		cout << argv[1] << endl;
@@ -224,14 +255,22 @@ int main(int argc, char **argv) {
   const uint8_t client_count = 2;
   const uint8_t service_count = 8;
 
-  Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = initialize_com_region(client_count,service_count,100);
+  key_t com_key = 38450458;
+  Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = initialize_com_region(com_key,client_count,service_count,100);
   g_com = eiq;
 
+  g_threads_ready.clear();
+  while ( !g_threads_ready.test_and_set() );
+  //
   launch_threads();
-  for ( int i = 0; i < 20; i++ ) tick();
+  //
+  await_threads_launch();
+  //
+  cout << "Done launching threads" << endl;
+  //
+  await_thread_end(8);
 
-
-  await_thread_end(8,1);
+  remove_segment(com_key);
 
   // ----
   chrono::duration<double> dur_t1 = chrono::system_clock::now() - right_now;
