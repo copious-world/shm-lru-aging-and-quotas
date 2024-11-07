@@ -484,6 +484,7 @@ class TierAndProcManager : public WorkWaiters<MAX_TIERS>, public LRU_Consts {
 				// 	//
 					if ( !(last._test_no_run_evictor_threads) ) {
 						auto evictor_runner = [&](uint8_t tier,LRU_c_impl *lru) {
+							lru->_evictor_running = true;
 							this->_evictors_running[tier] = true;
 							while ( this->_evictors_running[tier] ) {
 								lru->local_evictor();
@@ -565,7 +566,13 @@ cout << "CROPPER THREADS" << endl;
 				if ( _tier_threads[i] != nullptr ) _tier_threads[i]->join();
 				if ( _tier_removal_threads[i] != nullptr ) _tier_removal_threads[i]->join();
 				if ( !(last._test_no_run_evictor_threads) ) {
-					if ( _tier_evictor_threads[i] != nullptr ) _tier_evictor_threads[i]->join();
+					if ( _tier_evictor_threads[i] != nullptr ) {
+						LRU_c_impl *tier_lru = access_tier(i);
+						if ( tier_lru != nullptr ) {
+							tier_lru->halt_evictor();
+							_tier_evictor_threads[i]->join();
+						}
+					}
 				}
 				if ( last._run_restore_threads ) {
 					if ( _tier_value_restore_for_hmap_threads_0[i] != nullptr ) _tier_value_restore_for_hmap_threads_0[i]->join();

@@ -131,6 +131,8 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			} else {
 				attach_region_free_list(_start,(_end - _start));
 			}
+
+			_evictor_running = false;
 			//
 		}
 
@@ -393,6 +395,12 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			if ( current_count < boundary ) {
 				notify_evictor(boundary - current_count);
 			}
+		}
+
+
+		void			halt_evictor(void) {
+			this->_evictor_running = false;
+			notify_evictor(0);
 		}
 
 
@@ -702,6 +710,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 		void			local_evictor(void) {   // parent caller executes a while loop and determins if it is still running
 			//
 			evictor_wait_for_work();
+			if ( !this->_evictor_running ) return;
 			//
 cout << "RUNNING EVICTOR: " << endl;
 			uint8_t thread_id = this->_thread_id;
@@ -945,6 +954,8 @@ cout << "RUNNING EVICTOR: " << endl;
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		//
 		atomic<uint32_t>				*_memory_requested;
+
+		bool							_evictor_running{false};
 
 };
 

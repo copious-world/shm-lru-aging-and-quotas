@@ -132,6 +132,7 @@ class LRU_cache_mock : public LRU_Consts, public EvictorWaiter, public AtomicSta
 				attach_region_free_list(_start,(_end - _start));
 			}
 			//
+			_evictor_running = false;
 		}
 
 		virtual ~LRU_cache_mock() {}
@@ -682,6 +683,7 @@ cout << "DONE transfer_hashes:" << endl;
 		void			local_evictor(void) {   // parent caller executes a while loop and determins if it is still running
 			//
 			evictor_wait_for_work();
+			if ( !this->_evictor_running ) return;
 			//
 cout << "RUNNING EVICTOR: " << endl;
 			uint8_t thread_id = this->_thread_id;
@@ -699,6 +701,13 @@ cout << "RUNNING EVICTOR: " << endl;
 			}
 			_reserve_evictor->clear();
 			
+		}
+
+
+
+		void			halt_evictor(void) {
+			this->_evictor_running = false;
+			notify_evictor(0);
 		}
 
 
@@ -907,6 +916,7 @@ cout << "RUNNING EVICTOR: " << endl;
 		// ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 		//
 		atomic<uint32_t>				*_memory_requested;
+		bool							_evictor_running{false};
 
 };
 

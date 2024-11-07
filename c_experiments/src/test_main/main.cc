@@ -1618,6 +1618,27 @@ cout << "Shutdown threads 8" << endl;
 
 
 
+static const uint32_t Q_SIZE = (100);
+SharedSegmentsTForm<QUEUED_map<>> app_segs;
+
+void *create_data_region(key_t com_key,size_t size, bool am_initializer = false) {
+
+  if ( app_segs.initialize_app_com_shm(com_key, size, am_initializer) == 0 ) {
+    auto seg = app_segs._app_com_buffer;
+    return seg;
+  }
+
+  return nullptr;
+}
+
+
+void remove_segment(key_t key) {
+  //
+  app_segs.detach(key,false);
+  //
+}
+
+
 void front_end_queued_test(void) {
   //
   stp_table_choice tchoice = STP_TABLE_QUEUED;
@@ -1649,6 +1670,14 @@ void front_end_queued_test(void) {
     lru_segs[t] = new uint8_t[seg_sizes[t]];
     cout << "lru_segs[t]:: []" << t << "]  " << lru_segs[t] << endl;
   }
+
+  uint8_t q_entry_count = 100;
+  size_t rsiz = ExternalInterfaceQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
+  //
+  key_t com_key = 38450458;
+  void *data_region = create_data_region(com_key,rsiz);
+  hh_table_segs[38450458] = data_region;
+  seg_sizes[38450458] = rsiz;
 
 cout << "Initialize TierAndProcManager:: " << endl;
   // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
@@ -1867,6 +1896,9 @@ cout << "Shutdown threads 8" << endl;
     for ( uint32_t i = 0; i < num_procs; i++ ) {
       input_alls[i]->join();
     }
+
+
+    remove_segment(com_key);
 }
 
 
