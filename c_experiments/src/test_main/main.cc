@@ -1771,95 +1771,103 @@ cout << "Launch threads... TierAndProcManager:: " << endl;
 
     //   //while ( true ) {
 
-    //     uint32_t hash_bucket = (uint32_t)j*20;
-    //     uint32_t full_hash = (uint32_t)j*20;
-    //     //
-    //     bool updating = false;
-    //     unsigned int size = 64;
-    //     char* buffer = new char[size];
+        uint32_t hash_bucket = (uint32_t)j*20;
+        uint32_t full_hash = (uint32_t)j*20;
+        uint32_t h_bucket = hash_bucket;
+        uint32_t f_hash = full_hash;
 
-    //     string tester = "this is a test";
+        //
+        bool updating = false;
+        unsigned int size = 64;
+        char* buffer = new char[size];
 
-    //     for ( int i = 0; i < 8; i++ ) {
-    //       //
-    //       full_hash++;
-    //       hash_bucket++;
+        string tester = "this is a test";
 
-    //       tester += ' ';
-    //       tester += (i+j);
-    //       memset(buffer,0,size);
-    //       strcpy(buffer,tester.c_str());
-    //       uint32_t timestamp = now();
-    //       hash_stamp[full_hash] = timestamp;
-    //       //
-    //       tapm_refs[j]->put_method(hash_bucket, full_hash, updating, buffer, size, timestamp);
-    //       //
+        for ( int i = 0; i < 8; i++ ) {
+          //
+          h_bucket++;
+          f_hash++;
+          //
+          hash_bucket = h_bucket;
+          full_hash = f_hash;
+          //
+          tester += ' ';
+          tester += (i+j);
+          memset(buffer,0,size);
+          strcpy(buffer,tester.c_str());
+          uint32_t timestamp = now();
+          hash_stamp[full_hash] = timestamp;
+          //
 
-    //     {
-    // char logbuffer[64];
-    // sprintf(logbuffer, "PUT ... %d|%d|",(int)(j),(int)(i));
-    // cout << logbuffer << endl;
-    //     }
-    //     }
+          {
+      char logbuffer[64];
+      sprintf(logbuffer, "BEFORE PUT ... %d -%d -> %x",(int)(j),(int)(i),full_hash);
+      cout << logbuffer << endl;
+          }
+
+          tapm_refs[j]->put_method(hash_bucket, full_hash, updating, buffer, size, timestamp);
+          //
+
+          {
+      char logbuffer[64];
+      sprintf(logbuffer, "PUT ... %d|%d| %x",(int)(j),(int)(i),full_hash);
+      cout << logbuffer << endl;
+          }
+        }
 
 
-    //     {
-    // char logbuffer[64];
-    // sprintf(logbuffer, "PUT 2 ... %d|",(int)(j));
-    // cout << logbuffer << endl;
-    //     }
+        for ( int k = 0; k < 100; k++ ) tick();
+    char logbuffer[64];
+    sprintf(logbuffer, "GET ... %d|",(int)(j));
+    cout << logbuffer << endl;
 
-    //     for ( int k = 0; k < 100; k++ ) tick();
-    // char logbuffer[64];
-    // sprintf(logbuffer, "GET ... %d|",(int)(j));
-    // cout << logbuffer << endl;
+        hash_bucket = (uint32_t)j*20;
+        full_hash = (uint32_t)j*20;
 
-    //     hash_bucket = (uint32_t)j*20;
-    //     full_hash = (uint32_t)j*20;
+        for ( int i = 0; i < 8; i++ ) {
+          //
+          full_hash++;
+          hash_bucket++;
+          //
+          memset(buffer,0,size);
+          uint32_t timestamp = 0;
+          //
+          //while ( timestamp == 0 ) {
+            tick();
+            timestamp = hash_stamp[full_hash];
+          //}
+          //
+          if ( tapm_refs[j]->get_method(hash_bucket, full_hash, buffer, size, timestamp, 0) >= 0 ) {
+            cout << hash_bucket << " -- " << buffer << endl;
+          }
+          //
+        }
 
-    //     for ( int i = 0; i < 8; i++ ) {
-    //       //
-    //       full_hash++;
-    //       hash_bucket++;
-    //       //
-    //       memset(buffer,0,size);
-    //       uint32_t timestamp = 0;
-    //       //
-    //       //while ( timestamp == 0 ) {
-    //         tick();
-    //         timestamp = hash_stamp[full_hash];
-    //       //}
-    //       //
-    //       tapm_refs[j]->get_method(hash_bucket, full_hash, buffer, size, timestamp, 0);
-    //       cout << hash_bucket << " -- " << buffer << endl;
-    //       //
-    //     }
+        for ( int k = 0; k < 100; k++ ) tick();
+    sprintf(logbuffer, "DEL ... %d|",(int)(j));
+    cout << logbuffer << endl;
 
-    //     for ( int k = 0; k < 100; k++ ) tick();
-    // sprintf(logbuffer, "DEL ... %d|",(int)(j));
-    // cout << logbuffer << endl;
+        hash_bucket = (uint32_t)j*20;
+        full_hash = (uint32_t)j*20;
 
-    //     hash_bucket = (uint32_t)j*20;
-    //     full_hash = (uint32_t)j*20;
+        for ( int i = 0; i < 8; i++ ) {
+          //
+          full_hash++;
+          hash_bucket++;
+          //
+          uint32_t timestamp = 0;
+          //
+          //while ( timestamp == 0 ) {
+            tick();
+            timestamp = hash_stamp[full_hash];
+          //}
+          //
+          tapm_refs[j]->del_method(j,hash_bucket, full_hash,timestamp,0);
+          //
+        }
 
-    //     for ( int i = 0; i < 8; i++ ) {
-    //       //
-    //       full_hash++;
-    //       hash_bucket++;
-    //       //
-    //       uint32_t timestamp = 0;
-    //       //
-    //       //while ( timestamp == 0 ) {
-    //         tick();
-    //         timestamp = hash_stamp[full_hash];
-    //       //}
-    //       //
-    //       tapm_refs[j]->del_method(j,hash_bucket, full_hash,timestamp,0);
-    //       //
-    //     }
-
-    // sprintf(logbuffer, "DONE... %d|",(int)(j));
-    // cout << logbuffer << endl;
+    sprintf(logbuffer, "DONE... %d|",(int)(j));
+    cout << logbuffer << endl;
 
 
     },i);

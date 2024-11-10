@@ -281,12 +281,18 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 
 		// el_key == hull_hash (usually)
 
-		uint32_t get(uint32_t el_key, [[maybe_unused]] uint32_t h_bucket) override {  // full_hash,hash_bucket
+		uint32_t get([[maybe_unused]] uint32_t el_key, [[maybe_unused]] uint32_t h_bucket) override {  // full_hash,hash_bucket
 			//
 			if ( el_key == UINT32_MAX ) return UINT32_MAX;
 
-			uint32_t val = 0;
+			uint32_t val = UINT32_MAX;
 			_com.com_req(el_key,val,_proc_id);
+{
+	char buffer[128];
+	sprintf(buffer, "QUEUED GET  %d ...",val);
+	cout << buffer << endl;
+}
+			if ( val == 0 ) val = UINT32_MAX;
 			//
 			return val;
 		}

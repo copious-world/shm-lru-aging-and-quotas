@@ -344,6 +344,11 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 				uint32_t data_loc = _hmap->get(hash);  // this thread contends with others to get the value
 				//
 				if ( data_loc != UINT32_MAX ) {    // check if this message is already stored
+// {
+// 	char buffer[128];
+// 	sprintf(buffer, "filter_existence_check EXISTS data_loc:::  %d ...",(int)(data_loc));
+// 	cout << buffer << endl;
+// }
 					messages[rmc]._offset = data_loc;  // just putting in an offset... maybe something better
 				} else {
 					new_msgs_count++;							// the hash has not been found
@@ -419,12 +424,26 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			//
 			uint8_t *start = this->start();
 			//
+//char buffer[256];
 			uint32_t status = pop_number(start,ready_msg_count,reserved_offsets);
+// sprintf(buffer,"CLAIM FREE MEM :: claim_free_mem: pop_number %d ",status);
+// cout << buffer << endl;
 			if ( status == UINT32_MAX ) {
 				_status = false;
 				_reason = "out of free memory: free count == 0";
 				return(UINT32_MAX);
 			}
+
+// auto check = reserved_offsets;
+// auto end = check + ready_msg_count;
+// sprintf(buffer,"claim_free_mem: OUTPUT ");
+// string logger = buffer;
+// while  ( check < end ) {
+// 	sprintf(buffer," %d",*check);
+// 	logger += buffer;
+// 	check++;
+// }
+// cout << logger << endl;
 
 			// If the request cuts into reserves, then the handling thread will 
 			// be flagged with a state indicating that some offline eviction should be starting 
@@ -434,7 +453,7 @@ class LRU_cache : public LRU_Consts, public EvictorWaiter, public AtomicStack<LR
 			//
 			free_mem_claim_satisfied(ready_msg_count);
 			//
-			return 0;
+			return 0;  // status checked against (status == UINT32_MAX)
 		}
 
 
@@ -889,6 +908,7 @@ cout << "RUNNING EVICTOR: " << endl;
 			uint8_t selector_bit = 0;
 			auto h_bucket = *h_bucket_ref;
 			// a bit for being entered and one or more for which slab...
+
 			if ( !(selector_bit_is_set(h_bucket,selector_bit)) ) {
 				//
 				uint8_t which_table = 0;
@@ -896,6 +916,7 @@ cout << "RUNNING EVICTOR: " << endl;
 				uint32_t cbits_op = 0;
 				uint32_t cbits_base_ops = 0;
 				//
+				// pass h_bucket 
 				if ( T->prepare_for_add_key_value_known_refs(control_bits_ref,h_bucket,which_table,cbits,cbits_op,cbits_base_ops,bucket_ref,buffer_ref,end_buffer_ref,cbit_stashes) ) {
 					*which_table_ref = which_table;
 					h_bucket = stamp_key(h_bucket,which_table);   // but the control bits into the hash

@@ -10,6 +10,8 @@ using namespace std;
 #include "worker_waiters.h"
 
 
+#include "hmap_interface.h"
+
 
 using namespace std::chrono;
 
@@ -644,13 +646,6 @@ cout << "CROPPER THREADS" << endl;
 				// The waiter returns the input from the client in `ready_procs`
 				second_phase_waiter(ready_procs, proc_count, assigned_tier);
 				if ( ready_procs.empty() && !(this->_thread_running[assigned_tier]) ) {
-
-if ( this->_thread_running[assigned_tier] == false ) {
-	char buffer[64];
-	sprintf(buffer, "second_phase_waiter THREAD NOT RUNNING: %d ...",(int)(this->_proc));
-	cout << buffer << endl;
-}
-
 					return -1;
 				}
 				//
@@ -686,9 +681,20 @@ if ( this->_thread_running[assigned_tier] == false ) {
 				// SECOND: If duplicating, free the message slot, otherwise gather memory for storing new objecs
 				// 		OP on com buff
 				//
+// {
+// 	char buffer[128];
+// 	sprintf(buffer, "second_phase_waiter READY MESSAGE ready_msg_count:  %d ...",(int)(ready_msg_count));
+// 	cout << buffer << endl;
+// }
 				if ( ready_msg_count > 0 ) {  // a collection of message this process/thread will enque
 					// 	-- FILTER - only allocate for new objects
-					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
+ 					uint32_t additional_locations = lru->filter_existence_check(messages,accesses,ready_msg_count);
+// {
+// 	char buffer[128];
+// 	sprintf(buffer, "second_phase_waiter FILTER filter_existence_check additional_locations:  %d ...",(int)(additional_locations));
+// 	cout << buffer << endl;
+// }
+
 					//
 					// accesses are null or zero offset if the hash already has an allocated location.
 					// If accesses[i] is a zero offset, then the element is new. Otherwise, the element 
@@ -733,7 +739,6 @@ if ( this->_thread_running[assigned_tier] == false ) {
 					//	additional_locations
 					//		new items go into memory -- hence new allocation (or taking) of positions
 					if ( additional_locations > 0 ) {  // new (additional) locations have been allocated 
-						//
 						// Is there enough memory?							--- CHECK FREE MEMORY
 						// there is enough free memory even if this tier cuts into reserves.
 						bool add = true;
@@ -792,9 +797,8 @@ if ( this->_thread_running[assigned_tier] == false ) {
 									// 	the lru calls upon the hash table to store the hash/offset pair...
 									//
 
-									//auto thread_id = lru->_thread_id;
 									uint8_t which_slice;
-									atomic<uint32_t> *control_bits;
+									atomic<uint32_t> *control_bits = nullptr;
 									uint32_t cbits = 0;
 									uint32_t cbits_op = 0;
 									uint32_t cbits_base_op = 0;
@@ -802,8 +806,7 @@ if ( this->_thread_running[assigned_tier] == false ) {
 									hh_element *end_buffer = nullptr;
 									hh_element *el = nullptr;
 									CBIT_stash_holder *cbit_stashes[4];
-
-
+									//
 									// hash_bucket goes in by ref and will be stamped
 									uint64_t augmented_hash = lru->get_augmented_hash_locking(full_hash,&control_bits,&hash_bucket,&which_slice,&cbits,&cbits_op,&cbits_base_op,&el,&buffer,&end_buffer,cbit_stashes);
 									if ( augmented_hash != UINT64_MAX ) { // add to the hash table...
@@ -907,6 +910,7 @@ if ( this->_thread_running[assigned_tier] == false ) {
 			if ( await_write_offset(read_marker,MAX_WAIT_LOOPS,delay_func) ) {
 				//
 				uint32_t write_offset = offset_offset[0];
+cout << "write_offset: " << write_offset << endl;
 				//
 				if ( (write_offset == UINT32_MAX) && !(updating) ) {	// a duplicate has been found
 					clear_for_write(read_marker);   // next write from this process can now proceed...
@@ -914,18 +918,9 @@ if ( this->_thread_running[assigned_tier] == false ) {
 				}
 				//
 				uint8_t *m_insert = lru->data_location(write_offset);  // write offset filtered by above line
-
-char buffer[128];
-sprintf(buffer,"m_insert: %lx",(unsigned long int)m_insert);
-cout << buffer << endl;
-
 				if ( m_insert != nullptr ) {
 					hash_bucket = hpar_low[0]; // return the augmented hash ... update by reference...
 					full_hash = hpar_hi[0];
-sprintf(buffer,"hash_parameter: %llx ",*hash_parameter);
-cout << buffer << endl;
-cout << "hash_bucket: " << hash_bucket << endl;
-cout << "full_hash: " << full_hash << endl;
 					memcpy(m_insert,buffer,min(size,MAX_MESSAGE_SIZE));  // COPY IN NEW DATA HERE...
 				} else {
 					clear_for_write(read_marker);   // next write from this process can now proceed...
