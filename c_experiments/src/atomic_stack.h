@@ -17,6 +17,9 @@ typedef struct BASIC_ELEMENT_HDR {
 } Basic_element;
 
 
+static int local_counter{0};
+
+
 template<class StackEl>
 class AtomicStack {		// ----
 	//
@@ -94,7 +97,7 @@ class AtomicStack {		// ----
 				uint32_t el_offset = (uint32_t)(((uint8_t *)el) - start);	// 
 				uint32_t hdr_offset = head->load(std::memory_order_relaxed);
 				el->_next = hdr_offset;
-				while(!head->compare_exchange_weak(hdr_offset, el_offset));
+				while( !head->compare_exchange_weak(hdr_offset, el_offset) );
 				increment_free_count();
 			}
 		}

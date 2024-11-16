@@ -663,8 +663,8 @@ void test_node_shm_queued(void) {
 
 
 
-  cout << "q_test._proc_refs._put_com->_put_queue._count_free: " << q_test._proc_refs._put_com[0]._put_queue._count_free << endl;
-  cout << "q_client._com._proc_refs._put_com->_put_queue._count_free: " << q_client._com._proc_refs._put_com[0]._put_queue._count_free << endl;
+  //cout << "q_test._proc_refs._put_com->_put_queue._count_free: " << q_test._proc_refs._put_com[0]._put_queue._count_free << endl;
+  //cout << "q_client._com._proc_refs._put_com->_put_queue._count_free: " << q_client._com._proc_refs._put_com[0]._put_queue._count_free << endl;
 
   cout << "region initialized: ..." << endl;
 
@@ -1778,10 +1778,8 @@ cout << "Launch threads... TierAndProcManager:: " << endl;
 
         //
         bool updating = false;
-        unsigned int size = 64;
+        unsigned int size = 128;
         char* buffer = new char[size];
-
-        string tester = "this is a test";
 
         for ( int i = 0; i < 8; i++ ) {
           //
@@ -1791,10 +1789,8 @@ cout << "Launch threads... TierAndProcManager:: " << endl;
           hash_bucket = h_bucket;
           full_hash = f_hash;
           //
-          tester += ' ';
-          tester += (i+j);
           memset(buffer,0,size);
-          strcpy(buffer,tester.c_str());
+          sprintf(buffer,"this is a test : %d %d %d",(i+j), i, j);
           uint32_t timestamp = now();
           hash_stamp[full_hash] = timestamp;
           //
@@ -1838,33 +1834,34 @@ cout << "Launch threads... TierAndProcManager:: " << endl;
           //}
           //
           if ( tapm_refs[j]->get_method(hash_bucket, full_hash, buffer, size, timestamp, 0) >= 0 ) {
-            cout << hash_bucket << " -- " << buffer << endl;
+    sprintf(logbuffer, "<- GET ... %d| %s",(int)(hash_bucket),buffer);
+    cout << logbuffer << endl;
           }
           //
         }
 
-        for ( int k = 0; k < 100; k++ ) tick();
-    sprintf(logbuffer, "DEL ... %d|",(int)(j));
-    cout << logbuffer << endl;
+    //     for ( int k = 0; k < 100; k++ ) tick();
+    // sprintf(logbuffer, "DEL ... %d|",(int)(j));
+    // cout << logbuffer << endl;
 
-        hash_bucket = (uint32_t)j*20;
-        full_hash = (uint32_t)j*20;
+    //     hash_bucket = (uint32_t)j*20;
+    //     full_hash = (uint32_t)j*20;
 
-        for ( int i = 0; i < 8; i++ ) {
-          //
-          full_hash++;
-          hash_bucket++;
-          //
-          uint32_t timestamp = 0;
-          //
-          //while ( timestamp == 0 ) {
-            tick();
-            timestamp = hash_stamp[full_hash];
-          //}
-          //
-          tapm_refs[j]->del_method(j,hash_bucket, full_hash,timestamp,0);
-          //
-        }
+    //     for ( int i = 0; i < 8; i++ ) {
+    //       //
+    //       full_hash++;
+    //       hash_bucket++;
+    //       //
+    //       uint32_t timestamp = 0;
+    //       //
+    //       //while ( timestamp == 0 ) {
+    //         tick();
+    //         timestamp = hash_stamp[full_hash];
+    //       //}
+    //       //
+    //       tapm_refs[j]->del_method(j,hash_bucket, full_hash,timestamp,0);
+    //       //
+    //     }
 
     sprintf(logbuffer, "DONE... %d|",(int)(j));
     cout << logbuffer << endl;
@@ -1912,6 +1909,225 @@ cout << "Shutdown threads 8" << endl;
 
 
 
+void test_circ_buf(void) {
+
+
+  auto sz = c_table_proc_com::check_expected_region_size(20);
+  cout << "c_table_proc_com::check_expected_region_size(20): " << sz << endl;
+
+  auto sz2 = c_table_proc_com::check_expected_region_size(20,2,8);
+  cout << "c_table_proc_com::check_expected_region_size(20,2,8): " << sz2 << endl;
+
+  c_table_proc_com  cbuf{
+    ._num_client_p = 2,
+    ._num_service_threads = 8
+  };
+
+  uint8_t *data_region = new uint8_t[sz2];
+
+  cout << " cbuf._num_service_threads  : " << (int)cbuf._num_service_threads << endl; 
+  cbuf.set_region(data_region,20,sz2,true);
+
+
+
+}
+
+
+key_t g_com_key = 38450458;
+
+
+uint32_t g_put_count[2] = {0,0};
+//
+void mid_layer_queued_test(void) {
+  //
+  stp_table_choice tchoice = STP_TABLE_QUEUED;
+  uint32_t num_procs = 8;
+  uint32_t num_tiers = 3;
+  uint32_t proc_number = 0;
+  uint32_t els_per_tier = 20000;
+
+  //
+  map<key_t,void *> lru_segs;
+  map<key_t,void *> hh_table_segs;
+  map<key_t,size_t> seg_sizes;
+  bool am_initializer = true;
+  uint32_t max_obj_size = 128;
+  void **random_segs = nullptr;
+
+  uint8_t q_entry_count = 100;
+  size_t rsiz = ExternalInterfaceWaitQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
+  //
+  key_t com_key = 38450458;
+  g_com_key = com_key;
+  void *data_region = create_data_region(com_key,rsiz);
+  hh_table_segs[38450458] = data_region;
+  seg_sizes[38450458] = rsiz;
+
+
+  ExternalInterfaceWaitQs<Q_SIZE> x_i_q;
+
+  uint8_t client_count = 8;
+  uint8_t thread_count = 8;
+
+  x_i_q.initialize(client_count,thread_count,data_region,els_per_tier);
+  //
+  //  //
+
+  auto sect_size = els_per_tier/thread_count;
+  thread *input_alls[client_count];
+
+
+  map<uint32_t,uint32_t> stored[2];
+  map<uint32_t,uint32_t> retrieved[8];
+  map<uint32_t,uint32_t> retrieved_count[8];
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  for ( uint32_t i = 0; i < 2; i++ ) {
+    //
+    auto thread_id = x_i_q.next_thread_id();
+    //
+    input_alls[i] = new thread([&](int j){
+      //
+      cout << "thread_id: " << (int)j << endl;
+      //
+      uint16_t m = 0;
+      while ( m++ < 1000 ) {
+        //
+        uint32_t w = 0;
+        g_put_count[j]++;
+        //
+        //for ( uint32_t hh = 0; hh < els_per_tier; hh += sect_size ) {
+        for ( uint32_t hh = 0; hh < 1; hh += sect_size ) {
+          //
+          auto h_hat = hh;
+          for ( int i = 0; i < 10; i++ ) {
+            h_hat++;
+            h_hat += j*20;
+            x_i_q.com_put(h_hat,++w,j);
+            stored[j][h_hat] = w;
+          }
+          //
+        }
+
+        // for ( int n = 0; n < 500; n++ ) tick();
+      }
+      //
+      cout << "WRITER THREAD DONE: " << (int)j << endl;
+      //
+    },thread_id);
+    //
+  }
+
+
+// cout << "enter when ready for gets::: " << endl;
+// string go = "yep";
+// cin >> go;
+
+
+  bool may_use_counter = true;
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  for ( uint32_t i = 2; i < client_count; i++ ) {
+    //
+    auto thread_id = x_i_q.next_thread_id();
+    //
+    input_alls[i] = new thread([&](int j){
+      //
+      cout << "thread_id: " << (int)j << endl;
+      //
+      uint16_t m = 0;
+      while ( m++ < 1000 ) {
+        //
+        uint32_t val = 0;
+        //
+        //for ( uint32_t hh = 0; hh < els_per_tier; hh += sect_size ) {
+        for ( uint32_t hh = 0; hh < 1; hh += sect_size ) {
+          //
+          auto h_hat = hh;
+          for ( int i = 0; i < 10; i++ ) {
+            h_hat++;
+            h_hat += (j%2)*20;
+            //
+            x_i_q.com_req(h_hat,val,j);
+            //
+            if ( may_use_counter ) {
+              retrieved[j][h_hat] = val;
+              auto rc = retrieved_count[j][h_hat];
+              retrieved_count[j][h_hat] = rc + 1;
+            }
+            //
+          }
+          //
+        }
+
+      }
+
+    },thread_id);
+  }
+
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+      // cout << x_i_q.com_put(1,UINT32_MAX,thread_id) << endl;
+      // cout << x_i_q.com_req(1,val,thread_id) << endl;
+
+      // cout << "val: " << val << endl;
+
+  //
+
+
+cout << "ALL THREADS INITIALIZED" <<  endl;
+
+  //for ( int k = 0; k < 1000; k++ ) tick();
+
+cout << "enter when ready" << endl;
+string yep = "yep";
+cin >> yep;
+may_use_counter = false;
+
+
+cout << "REPORT" << endl;
+// map<uint32_t,uint32_t> stored[2];
+// map<uint32_t,uint32_t> retrieved[8];
+// map<uint32_t,uint32_t> retrieved_count[8];
+
+for ( int l = 0; l < 2; l++ ) {
+  for ( auto p : stored[l] ) {
+    auto hh = p.first;
+    auto val = p.second;
+    for ( int k = l; k < 8; k += 2 ) {
+      auto gval = retrieved[k][hh];
+      cout << val << " " << "gval == val: " << (gval == val ? "true" : "false") << endl;
+      auto count = retrieved_count[k][hh];
+      cout << "retrieved by " << k << " ---> " << count << " times" << endl;
+    }
+  }
+}
+
+
+cout << "Shutting down threads... TierAndProcManager:: " << endl;
+
+
+    for ( uint32_t i = 0; i < client_count; i++ ) {
+      input_alls[i]->join();
+    }
+
+
+    remove_segment(com_key);
+}
+
+
+/**
+ * shutdown_on_signal
+ */
+void shutdown_on_signal(int signal) {
+  gSignalStatus = signal;
+
+  cout << "g_put_count[0]: " << g_put_count[0] << "  g_put_count[1]: " << g_put_count[1] << endl;
+  remove_segment(g_com_key);
+
+  exit(0);
+}
+
 
 
 /**
@@ -1921,6 +2137,7 @@ cout << "Shutdown threads 8" << endl;
 
 int main(int argc, char **argv) {
 	//
+  std::signal(SIGINT, shutdown_on_signal);
 
   if ( noisy_test ) {
     cout << "--->>>  THIS IS A NOISY TEST" << endl;
@@ -1948,9 +2165,13 @@ int main(int argc, char **argv) {
 // test_node_shm_queued();
 
   // 
-  //front_end_internal_test();
+  // front_end_internal_test();
 
-  front_end_queued_test();
+  // front_end_queued_test();
+
+  // mid_layer_queued_test();
+
+    test_circ_buf();
 
   // test_simple_stack();
   // test_toks();

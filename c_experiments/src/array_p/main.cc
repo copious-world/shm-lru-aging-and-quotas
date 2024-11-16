@@ -172,9 +172,19 @@ static atomic_flag g_threads_ready;
 
 
 
+key_t g_com_key = 38450458;
+
+
+uint8_t sg_ctrl_c_hits = 0; 
 void shutdown_on_signal(int signal) {
   gSignalStatus = signal;
   everyone_runs = false;
+cout << "STOPPING" << endl;
+  sg_ctrl_c_hits++;
+  if ( sg_ctrl_c_hits > 4 ) {
+    remove_segment(g_com_key);
+    exit(0);
+  }
 }
 
 void launch_threads(void) {
@@ -244,18 +254,22 @@ int main(int argc, char **argv) {
   auto start = chrono::system_clock::now();
 
 
-	if ( argc == 2 ) {
+  uint8_t client_count = 8;
+  uint8_t service_count = 8;
+
+
+	if ( argc >= 2 ) {
 		cout << argv[1] << endl;
+    client_count = (uint8_t)atoi(argv[1]);
 	}
 
   uint32_t nowish = 0;
   const auto right_now = std::chrono::system_clock::now();
   nowish = std::chrono::system_clock::to_time_t(right_now);
 
-  const uint8_t client_count = 2;
-  const uint8_t service_count = 8;
-
   key_t com_key = 38450458;
+  g_com_key = com_key;
+
   Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = initialize_com_region(com_key,client_count,service_count,100);
   g_com = eiq;
 

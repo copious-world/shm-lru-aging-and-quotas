@@ -287,11 +287,6 @@ class QUEUED_map : public Random_bits_generator<>, public HMap_interface {
 
 			uint32_t val = UINT32_MAX;
 			_com.com_req(el_key,val,_proc_id);
-{
-	char buffer[128];
-	sprintf(buffer, "QUEUED GET  %d ...",val);
-	cout << buffer << endl;
-}
 			if ( val == 0 ) val = UINT32_MAX;
 			//
 			return val;

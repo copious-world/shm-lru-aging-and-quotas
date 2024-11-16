@@ -36,7 +36,10 @@ using namespace std;
 #include "shm_seg_manager.h"
 #include "atomic_queue.h"
 
+// https://dennisbabkin.com/blog/?t=interprocess-communication-using-mach-messages-for-macos#mach_comm_code
 
+
+#include "circbuf.h"
 
 static const uint8_t Q_CTRL_ATOMIC_FLAG_COUNT = 2;
 
@@ -263,6 +266,9 @@ public:
 		_proc_refs.set_region(data_region,Q_SIZE,am_initializer);
 		//
 		_sect_size = max_els_stored/thread_count;
+
+cout << "thread_count: " << thread_count << endl;
+cout << "_sect_size: " << _sect_size << endl;
 		_max_els_stored = max_els_stored;
 		//
 		_thread_count = thread_count;
@@ -287,7 +293,7 @@ public:
 	 */
 	uint8_t next_thread_id(void) {
 		proc_com_cell *tpc = _proc_refs._outputs;
-		for ( uint8_t p = 0; p < _thread_count; p++ ) {
+		for ( uint8_t p = 0; p < _client_count; p++, tpc++ ) {
 			auto pid = tpc->_proc_id;
 			if ( pid == 255 ) {
 				tpc->_proc_id = p;
@@ -329,24 +335,36 @@ public:
 
 	/**
 	 * com_put
+	 * 
+	 * Parameters: 
+	 * 		- uint32_t hh - the bucket number...
+	 * 		- uint32_t val - the value
+	 * 		- uint8_t return_to_pid - the index of the output block for return values.
 	 */
-    void com_put(uint32_t hh,uint32_t val,uint8_t return_to_pid) {
+    uint32_t com_put(uint32_t hh,uint32_t val,uint8_t return_to_pid) {
 		put_cell entry;
 		entry._hash = hh;
 		entry._value = val;
 		entry._proc_id = return_to_pid;
+
 		uint8_t tnum = (hh%_max_els_stored)/_sect_size;
+		if ( _thread_count <= tnum ) {
+			cout << "BEYOND THREAD COUNT!!! " << endl;
+			return UINT32_MAX;
+		}
 		//
-		while ( _proc_refs._put_com[tnum]._put_queue.full() ) tick();
+		uint32_t cnt = 0;
+		while ( _proc_refs._put_com[tnum]._put_queue.full() ) { tick(); if ( cnt++ > 10000 ) { return UINT32_MAX; } }
 		//
 		auto result = _proc_refs._put_com[tnum]._put_queue.push_queue(entry);
 		uint16_t pcnt = 0;
-		while ( result == UINT32_MAX && pcnt < 1024 ) {
+		while ( (result == UINT32_MAX) && (pcnt < 1024) ) {
 			for ( int i = 0; i < 100; i++ ) tick();
 			pcnt++;
 			result = _proc_refs._put_com[tnum]._put_queue.push_queue(entry);
 		}
 		//
+		return result;
     }
 
 
@@ -354,16 +372,21 @@ public:
 	/**
 	 * com_req
 	 */
-    void com_req(uint32_t hh,uint32_t &val,uint8_t return_to_pid) {
+    uint32_t com_req(uint32_t hh,uint32_t &val,uint8_t return_to_pid) {
 		request_cell entry;
 		entry._hash = hh;
 		entry._proc_id = return_to_pid;
 		uint8_t tnum = (hh%_max_els_stored)/_sect_size;
+		if ( _thread_count <= tnum ) {
+			cout << "BEYOND THREAD COUNT!!! " << endl;
+			return UINT32_MAX;
+		}
 		//
-		while ( !(_proc_refs._outputs[return_to_pid]._writer.test_and_set()) ) tick();  // if doubling back on itself for any reason.
-		while ( !(_proc_refs._outputs[return_to_pid]._reader.test_and_set()) ) tick();  // for com with service.
-		//
-		while ( _proc_refs._get_com[tnum]._get_queue.full() ){ tick(); }  // let the tnum thread clear some things out
+		while ( !(_proc_refs._outputs[return_to_pid]._writer.test_and_set()) ) { tick(); }  // if doubling back on itself for any reason.
+		while ( !(_proc_refs._outputs[return_to_pid]._reader.test_and_set()) ) { tick(); }   // for com with service.
+		
+		while ( _proc_refs._get_com[tnum]._get_queue.full() ){ tick(); cout << '.'; cout.flush(); }  // let the tnum thread clear some things out
+	
 		auto result = _proc_refs._get_com[tnum]._get_queue.push_queue(entry);
 		uint16_t pcnt = 0;
 		while ( (result == UINT32_MAX) && pcnt < 1024 ) {
@@ -371,18 +394,21 @@ public:
 			pcnt++;
 			result = _proc_refs._get_com[tnum]._get_queue.push_queue(entry);
 		}
-		//
+		if ( UINT32_MAX == result ) return UINT32_MAX;
+		
 		uint16_t cnt = 0;
-		while ( _proc_refs._outputs[return_to_pid]._reader.test() && cnt < 1024 ) { cnt++, tick(); } // for com with service.
+		while ( !(_proc_refs._outputs[return_to_pid]._reader.test_and_set()) && cnt < 1024 ) { cnt++, tick(); } // for com with service.
 		if ( cnt >= 1024 ) {
 			while ( _proc_refs._outputs[return_to_pid]._reader.test() ) {
 				_proc_refs._outputs[return_to_pid]._reader.clear();
+				cout << 'Y'; cout.flush(); 
 			}
 			val = UINT32_MAX;
 		} else {
 			val = _proc_refs._outputs[return_to_pid]._value;
 		}
 		_proc_refs._outputs[return_to_pid]._writer.clear();
+		return result;
     }
 
 
@@ -402,7 +428,9 @@ public:
 	 */
     bool unload_get_req(request_cell &getter,uint8_t tnum) {
 		if ( _proc_refs._get_com[tnum]._get_queue.empty() ) return false;
+cout << 'G'; cout.flush();
 		auto result = _proc_refs._get_com[tnum]._get_queue.pop_queue(getter);
+cout << "getter._hash: " << getter._hash << " " << getter._proc_id << endl;
 		if ( result == UINT32_MAX ) return false;
 		return true;
     }
@@ -413,9 +441,12 @@ public:
     void write_to_proc(uint32_t hh,uint32_t val,uint8_t return_to_pid) {
 		_proc_refs._outputs[return_to_pid]._hash = hh;
 		_proc_refs._outputs[return_to_pid]._value = val;
+		//
+		_proc_refs._outputs[return_to_pid]._reader.clear();
 		while ( _proc_refs._outputs[return_to_pid]._reader.test() ) {
 			_proc_refs._outputs[return_to_pid]._reader.clear();
 		}
+		//
     }
 
 
@@ -431,6 +462,218 @@ public:
 
 };
 
+
+
+
+
+
+
+
+/**
+ *  ExternalInterfaceWaitQs
+ * 
+ */
+template<const uint32_t Q_SIZE>
+class ExternalInterfaceWaitQs {
+
+public:
+
+	ExternalInterfaceWaitQs() {}
+
+    ExternalInterfaceWaitQs(uint8_t client_count,uint8_t thread_count,void *data_region,size_t max_els_stored,bool am_initializer = false) {
+		initialize(client_count, thread_count, data_region, max_els_stored, am_initializer);
+    }
+
+    virtual ~ExternalInterfaceWaitQs(void) {}
+
+
+
+public:
+
+
+    void initialize(uint8_t client_count,uint8_t thread_count,void *data_region,size_t max_els_stored,bool am_initializer = false) {
+		//
+		_proc_refs.set_region(data_region,Q_SIZE,am_initializer);
+		//
+		_sect_size = max_els_stored/thread_count;
+		_max_els_stored = max_els_stored;
+		//
+		_thread_count = thread_count;
+		_client_count = client_count;
+		_proc_refs._num_client_p = client_count;
+		_proc_refs._num_service_threads = thread_count;
+		//
+		for ( uint8_t t = 0; t < thread_count; t++ ) {
+			_proc_refs._put_com[t]._write_awake->clear();
+			_proc_refs._put_com[t]._client_privilege->clear();
+			_proc_refs._get_com[t]._get_awake->clear();
+			_proc_refs._get_com[t]._client_privilege->clear();
+		}
+    	//
+		_data_ref = data_region; /// temporarily set....
+
+    }
+
+
+
+	/**
+	 * next_thread_id
+	 * 	find a spot in the output section of the shared com buffer, and return its index.
+	 * 	Overwrite the marker showing that it is not taken with the index.
+	 */
+	uint8_t next_thread_id(void) {
+		c_proc_com_cell *tpc = _proc_refs._outputs;
+		for ( uint8_t p = 0; p < _client_count; p++, tpc++ ) {
+			auto pid = tpc->_proc_id;
+			if ( pid == 255 ) {
+				tpc->_proc_id = p;
+				return p;
+			}
+		}
+		return 255;
+	}
+
+    // ---- check_expected_com_region_size
+    //
+	static uint32_t check_expected_com_region_size(uint8_t q_entry_count) {
+		//
+		uint32_t c_regions_size = table_proc_com::check_expected_region_size((size_t)q_entry_count);
+		//
+		return c_regions_size;
+	}
+
+
+    // 
+    void await_put(uint8_t tnum) {
+      while ( !( _proc_refs._put_com[tnum]._write_awake->test_and_set() ) ) tick();
+    }
+
+    // 
+    void await_get(uint8_t tnum) {
+      while ( !( _proc_refs._get_com[tnum]._get_awake->test_and_set() ) ) tick();
+    }
+
+    // 
+    void clear_put(uint8_t tnum) {
+      _proc_refs._put_com[tnum]._write_awake->clear();
+    }
+
+    // 
+    void clear_get(uint8_t tnum) {
+      _proc_refs._get_com[tnum]._get_awake->clear();
+    }
+
+
+	/**
+	 * com_put
+	 * 
+	 * Parameters: 
+	 * 		- uint32_t hh - the bucket number...
+	 * 		- uint32_t val - the value
+	 * 		- uint8_t return_to_pid - the index of the output block for return values.
+	 */
+    uint32_t com_put(uint32_t hh,uint32_t val,uint8_t return_to_pid) {
+		put_cell entry;
+		entry._hash = hh;
+		entry._value = val;
+		entry._proc_id = return_to_pid;
+
+		uint8_t tnum = (hh%_max_els_stored)/_sect_size;
+		if ( _thread_count <= tnum ) {
+			cout << "BEYOND THREAD COUNT!!! " << endl;
+			return UINT32_MAX;
+		}
+		//
+		uint32_t result = 0;
+		//
+		await_put(tnum);
+
+		if ( tnum != 0 ) {
+			cout << "put writing to " << (int)tnum << " hh: " << hh << " val " << val << endl;
+		}
+
+		clear_put(tnum);
+		//
+		return result;
+    }
+
+
+
+	/**
+	 * com_req
+	 */
+    uint32_t com_req(uint32_t hh,uint32_t &val,uint8_t return_to_pid) {
+		request_cell entry;
+		entry._hash = hh;
+		entry._proc_id = return_to_pid;
+		uint8_t tnum = (hh%_max_els_stored)/_sect_size;
+		if ( _thread_count <= tnum ) {
+			cout << "BEYOND THREAD COUNT!!! " << endl;
+			return UINT32_MAX;
+		}
+		uint32_t result = 0;
+		//
+		await_get(tnum);
+
+		if ( tnum != 0 ) {
+			cout << "get requesting hh: " << hh << "from " << (int)tnum << endl;
+		}
+
+		clear_get(tnum);
+		//
+		return result;
+    }
+
+
+	/**
+	 * unload_put_req
+	 */
+    bool unload_put_req(put_cell &setter,uint8_t tnum) {
+		await_put(tnum);
+cout << "put request handled by: " << (int)tnum << endl;
+for ( int i = 0; i < 10; i++ ) tick();
+		clear_put(tnum);
+		return false;
+    }
+
+
+	/**
+	 * unload_get_req
+	 */
+    bool unload_get_req(request_cell &getter,uint8_t tnum) {
+		await_get(tnum);
+cout << "get request handled by: " << (int)tnum << endl;
+for ( int i = 0; i < 10; i++ ) tick();
+		clear_get(tnum);
+		return false;
+    }
+
+	/**
+	 * write_to_proc
+	 */
+    void write_to_proc(uint32_t hh,uint32_t val,uint8_t return_to_pid) {
+
+		// _proc_refs._outputs[return_to_pid]._hash = hh;
+		// _proc_refs._outputs[return_to_pid]._value = val;
+		// //
+		// _proc_refs._outputs[return_to_pid]._reader.clear();
+		// while ( _proc_refs._outputs[return_to_pid]._reader.test() ) {
+		// 	_proc_refs._outputs[return_to_pid]._reader.clear();
+		// }
+		//
+    }
+
+public:
+
+	void *_data_ref;
+
+    c_table_proc_com      _proc_refs;
+    uint8_t               _thread_count{0};
+    uint8_t               _client_count{0};
+    uint32_t              _sect_size{0};
+    uint32_t              _max_els_stored{0};
+
+};
 
 
 

@@ -75,29 +75,40 @@ class StoreHVPairs {
 	}
 
     bool store_pair(uint32_t hash, uint32_t val, uint8_t thread_index) {
-      stores &thread_section = _sections[thread_index];
-      //
-      thread_section.await_reading();   // manage just the relation between store and get
-      //
-      auto ref = hash - thread_section._min_hash;
-      thread_section._table[ref] = val;
-      //
-      thread_section.release_reading();
-      return true;
+		stores &thread_section = _sections[thread_index];
+		//
+		thread_section.await_reading();   // manage just the relation between store and get
+		//
+		auto ref = hash - thread_section._min_hash;
+		if ( val == UINT32_MAX ) {
+			thread_section._table.erase(ref);
+		} else {
+			thread_section._table[ref] = val;
+		}
+		//
+		thread_section.release_reading();
+		return true;
     }
 
 
 
     uint32_t get_val(uint32_t hash, uint8_t thread_index) {
-      stores &thread_section = _sections[thread_index];
-      //
-      thread_section.await_reading();   // manage just the relation between store and get
-      //
-      auto ref = hash - thread_section._min_hash;
-      uint32_t val = thread_section._table[ref];
-      //
-      thread_section.release_reading();
-      return val;
+		stores &thread_section = _sections[thread_index];
+		//
+		thread_section.await_reading();   // manage just the relation between store and get
+		//
+		auto ref = hash - thread_section._min_hash;
+
+		auto itr = thread_section._table.find(ref);
+		uint32_t val = UINT32_MAX;
+		if ( itr != thread_section._table.end() ) {
+			val = itr->second;
+		}
+
+		//uint32_t val = thread_section._table[ref];
+		//
+		thread_section.release_reading();
+		return val;
     }
 
     uint32_t                              		_sect_size{0};
@@ -110,12 +121,12 @@ class StoreHVPairs {
  * 
  */
 template<const uint8_t THREAD_COUNT,const uint32_t Q_SIZE>
-class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<Q_SIZE> {
+class Storage_ExternalInterfaceQs : public ExternalInterfaceWaitQs<Q_SIZE> {
   public:
 
 	Storage_ExternalInterfaceQs(uint8_t client_count,uint8_t thread_count,
 									void *data_region,size_t max_els_stored,bool _am_initializer = false)
-		: ExternalInterfaceQs<Q_SIZE> (client_count,thread_count,data_region,max_els_stored,_am_initializer) {
+		: ExternalInterfaceWaitQs<Q_SIZE> (client_count,thread_count,data_region,max_els_stored,_am_initializer) {
 			_storage.initialize(max_els_stored);
 	}
 
@@ -126,9 +137,14 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<Q_SIZE> {
 
 
 	static uint32_t check_expected_com_region_size(uint8_t q_entry_count) {
-		return ExternalInterfaceQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
+		return ExternalInterfaceWaitQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
 	}
 
+	/**
+	 * put_handler
+	 * 
+	 * parameter: t_num = the number of the calling thread...
+	 */
 	void put_handler(uint8_t t_num) {			/// t_num a thread number
 		//
         put_cell setter;
@@ -141,14 +157,20 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceQs<Q_SIZE> {
 	}
 
 
+	/**
+	 * get_handler
+	 * 
+	 * parameter:  t_num
+	 */
 	void get_handler(uint8_t t_num) {
 		//
 		request_cell getter;
 		while ( this->unload_get_req(getter,t_num) ) {
 			auto hh = getter._hash;
 			auto return_to_pid = getter._proc_id;
-			auto val = _storage.get_val(hh,t_num);
-			this->write_to_proc(hh,val,return_to_pid);
+			auto val = 0; //_storage.get_val(hh,t_num);
+cout << "::" << hh << "::" << endl;
+//			this->write_to_proc(hh,val,return_to_pid);
 		}
 		//
 	}
