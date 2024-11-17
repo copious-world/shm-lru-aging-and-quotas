@@ -109,6 +109,8 @@ random_device rdv;  // a seed source for the random number engine
 mt19937 gen_v(rdv()); // mersenne_twister_engine seeded with rd()
 
 
+static bool using_segments = true;
+
 
 // ---- ---- ---- ---- ----
 //
@@ -1911,6 +1913,84 @@ cout << "Shutdown threads 8" << endl;
 
 void test_circ_buf(void) {
 
+  auto sz = c_table_proc_com::check_expected_region_size(20);
+  cout << "c_table_proc_com::check_expected_region_size(20): " << sz << endl;
+
+  auto sz2 = c_table_proc_com::check_expected_region_size(20,2,8);
+  cout << "c_table_proc_com::check_expected_region_size(20,2,8): " << sz2 << endl;
+
+  c_table_proc_com  cbuf{
+    ._num_client_p = 2,
+    ._num_service_threads = 8
+  };
+
+  uint8_t *data_region = new uint8_t[sz2];
+
+  cout << " cbuf._num_service_threads  : " << (int)cbuf._num_service_threads << endl; 
+  cbuf.set_region(data_region,20,sz2,true);
+
+  if ( cbuf._put_com[0]._put_queue.full() ) cout << "put queue is full " << endl;
+  if ( cbuf._put_com[0]._put_queue.empty() ) cout << "put queue is empty " << endl;
+
+  int i = 0;
+  while ( !(cbuf._put_com[0]._put_queue.full()) ) {
+    c_put_cell input;
+    c_put_cell output;
+    //
+    i++;
+    input._hash = i + 11;
+    input._proc_id =  1;
+    input._value = 2 + i*23;
+    cbuf._put_com[0]._put_queue.push_queue(input);
+    if ( i%3 == 0 ) {
+      cbuf._put_com[0]._put_queue.pop_queue(output);
+      cout << " output : " << output._hash << " :: " << output._value << endl;
+    }
+    if ( cbuf._put_com[0]._put_queue.full() ) cout << "put queue is full " << endl;
+    if ( cbuf._put_com[0]._put_queue.empty() ) cout << "put queue is empty " << endl;
+  }
+  
+  i = 0;
+  while ( !(cbuf._put_com[0]._put_queue.empty()) ) {
+    c_put_cell input;
+    c_put_cell output;
+    //
+    i++;
+    if ( i%2 == 0 ) {
+      input._hash = i + 11;
+      input._proc_id =  1;
+      input._value = 2 + i*23;
+      cbuf._put_com[0]._put_queue.push_queue(input);
+    }
+    cbuf._put_com[0]._put_queue.pop_queue(output);
+    cout << " output : " << output._hash << " :: " << output._value << endl;
+  }
+
+  if ( cbuf._put_com[0]._put_queue.full() ) cout << "put queue is full " << endl;
+  if ( cbuf._put_com[0]._put_queue.empty() ) cout << "put queue is empty " << endl;
+
+}
+
+
+atomic_flag _write_awake;
+// 
+void await_put(void) {
+
+  while ( true ) {
+    while ( _write_awake.test() ) tick();
+    if ( _write_awake.test_and_set() ) continue;
+    break;
+  }
+}
+// 
+void clear_put(void) {
+  _write_awake.clear();
+}
+
+void test_circ_buf_threads(void) {
+
+  using_segments = false;
+  _write_awake.clear();
 
   auto sz = c_table_proc_com::check_expected_region_size(20);
   cout << "c_table_proc_com::check_expected_region_size(20): " << sz << endl;
@@ -1928,7 +2008,83 @@ void test_circ_buf(void) {
   cout << " cbuf._num_service_threads  : " << (int)cbuf._num_service_threads << endl; 
   cbuf.set_region(data_region,20,sz2,true);
 
+  if ( cbuf._put_com[0]._put_queue.full() ) cout << "put queue is full " << endl;
+  if ( cbuf._put_com[0]._put_queue.empty() ) cout << "put queue is empty " << endl;
 
+  bool may_use_counter = true;
+  thread *input_alls[3];
+
+    // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  for ( uint32_t i = 0; i < 2; i++ ) {
+    input_alls[i] = new thread([&](int j){
+      //
+      int i = 0;
+      while ( may_use_counter ) {
+        //
+        while ( !(cbuf._put_com[0]._put_queue.full()) ) {
+          c_put_cell input;
+          //
+          i++;
+          input._hash = i + 11;
+          input._proc_id =  1;
+          input._value = 2 + i*23;
+          await_put();
+          cbuf._put_com[0]._put_queue.push_queue(input);
+          clear_put();
+          //
+          if ( cbuf._put_com[0]._put_queue.full() ) cout << "put queue is full " << endl;
+          if ( cbuf._put_com[0]._put_queue.empty() ) cout << "put queue is empty " << endl;
+        }
+        //
+        int k = 0;
+        while ( (k < 50) && may_use_counter ) {
+          k++;
+          while ( cbuf._put_com[0]._put_queue.full() && may_use_counter ) tick();
+        }
+      }
+      //
+    },i);
+  }
+
+  for ( int i = 0; i < 100; i++ ) tick();
+
+  input_alls[2] = new thread([&](int j){
+    //
+    int i = 0;
+    while ( may_use_counter ) {
+      //
+      while ( !(cbuf._put_com[0]._put_queue.empty()) ) {
+        c_put_cell input;
+        c_put_cell output;
+        //
+        await_put();
+        cbuf._put_com[0]._put_queue.pop_queue(output);
+        clear_put();
+        cout << " output : " << output._hash << " :: " << output._value << endl;
+      }
+      //
+      int k = 0;
+      while ( (k < 50) && may_use_counter ) {
+        k++;
+        while ( cbuf._put_com[0]._put_queue.empty() && may_use_counter ) tick();
+      }
+    }
+    //
+  },2);
+
+
+  cout << "ALL THREADS INITIALIZED" <<  endl;
+
+    //for ( int k = 0; k < 1000; k++ ) tick();
+
+  cout << "enter when ready" << endl;
+  string yep = "yep";
+  cin >> yep;
+  may_use_counter = false;
+
+  for ( int i = 0; i < 3; i++ ) {
+    input_alls[i]->join();
+  }
 
 }
 
@@ -2123,8 +2279,9 @@ void shutdown_on_signal(int signal) {
   gSignalStatus = signal;
 
   cout << "g_put_count[0]: " << g_put_count[0] << "  g_put_count[1]: " << g_put_count[1] << endl;
-  remove_segment(g_com_key);
-
+  if ( using_segments ) {
+    remove_segment(g_com_key);
+  }
   exit(0);
 }
 
@@ -2171,7 +2328,8 @@ int main(int argc, char **argv) {
 
   // mid_layer_queued_test();
 
-    test_circ_buf();
+  // test_circ_buf();
+  test_circ_buf_threads();
 
   // test_simple_stack();
   // test_toks();

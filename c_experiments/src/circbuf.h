@@ -38,8 +38,10 @@ class CircBuff {		// ----
 		*/
 		uint32_t pop_queue(QueueEl &output) {
 			uint32_t rslt = UINT32_MAX;
+			auto shared_atoms_section_size = NUM_SHARED_ATOMS_C*sizeof(atomic<uint32_t>);
+
 			uint8_t *start = (uint8_t *)_q_head;
-			start += NUM_SHARED_ATOMS_C*sizeof(atomic<uint32_t>);
+			start +=shared_atoms_section_size;
 			//
 			if ( !(this->empty()) ) {
 				auto cur_tail = _q_tail->load();
@@ -68,8 +70,10 @@ class CircBuff {		// ----
 		*/
 		uint32_t push_queue(QueueEl &input) {
 			uint32_t rslt = UINT32_MAX;
+			auto shared_atoms_section_size = NUM_SHARED_ATOMS_C*sizeof(atomic<uint32_t>);
+
 			uint8_t *start = (uint8_t *)_q_head;
-			start += NUM_SHARED_ATOMS_C*sizeof(atomic<uint32_t>);
+			start += shared_atoms_section_size;
 			if ( !(this->full()) ) {
 				//
 				auto cur_tail = _q_tail->load();
@@ -362,10 +366,8 @@ struct CTAB_PROC_DESCR {
 
 		for ( uint8_t t = 0; t < num_t; t++ ) {
 			start += _put_com[t].setup_queue(start, q_entry_count, am_initializer);
-			//
 			start += _get_com[t].setup_queue(start, q_entry_count, am_initializer);
 		}
-
 
 		if ( end_region < start ) {
 			cout << "setup_all_queues: " << (start - end_region) << " queues overrun region" << endl;
