@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <atomic>
+#include <stdexcept>
 
 using namespace std;
 
@@ -126,17 +127,17 @@ class CircBuff {		// ----
 		uint16_t setup_queue_region(uint8_t *start, size_t step, size_t region_size) {
 			_q_head = (atomic<uint32_t> *)start;
 			_q_tail = _q_head + 1;
+			_q_shared_count = _q_tail + 1;
+			_q_pop_count = _q_shared_count + 1;
+			_popper = (atomic_flag *)(_q_pop_count + 1);
+
 			_q_head->store(0);
 			_q_tail->store(0);
-			_q_shared_count = _q_tail + 1;
 			_q_shared_count->store(0);
-			_q_pop_count = _q_shared_count + 1;
 			_q_pop_count->store(0);
-			_popper = (atomic_flag *)(_q_pop_count + 1);
 			_popper->clear();
 
 			auto shared_atoms_section_size = NUM_SHARED_ATOMS_C*sizeof(atomic<uint32_t>);
-//
 			auto sz = region_size - shared_atoms_section_size;
 //
 			uint8_t *el = start + shared_atoms_section_size;
@@ -156,7 +157,7 @@ class CircBuff {		// ----
 		}
 
 
-		void attach_queue_region(uint8_t *start, size_t region_size) {
+		uint16_t attach_queue_region(uint8_t *start, size_t region_size) {
 			_q_head = (atomic<uint32_t> *)start;
 			_q_tail = _q_head + 1;
 			_q_shared_count = _q_tail + 1;
@@ -165,6 +166,7 @@ class CircBuff {		// ----
 			//auto sz = region_size - NUM_SHARED_ATOMS_C*sizeof(atomic<uint32_t>);
 			// attach
 			uint16_t count = _q_shared_count->load();
+			return count;
 		}
 
 
@@ -196,10 +198,10 @@ typedef struct CPROC_COM {
 
 
 typedef struct CREQUEST {
-	uint32_t	_hash;
 	uint8_t		_proc_id;
-	uint32_t	_next;
-	uint32_t	_prev;
+	uint32_t	_hash;
+	// uint32_t	_next;
+	// uint32_t	_prev;
 	//uint8_t	_filler[3];
 
 	void		init(uint32_t hash_init = UINT32_MAX) {
@@ -211,15 +213,14 @@ typedef struct CREQUEST {
 typedef struct CPUT {
 	uint8_t		_proc_id;
 	uint32_t	_hash;
+	// uint32_t	_next;
+	// uint32_t	_prev;
 	uint32_t	_value;
-	uint32_t	_next;
-	uint32_t	_prev;
 	//uint8_t	_filler[3];
 
 	void		init(uint32_t hash_init = UINT32_MAX) {
 		_hash = hash_init;
 	}
-
 } c_put_cell;
 
 /**
@@ -323,7 +324,7 @@ typedef struct CGET_QUEUE_MANAGER {
 
 
 
-template<uint8_t max_req_procs = 8,uint8_t max_service_threads = 16>
+template<uint8_t max_req_procs = 16,uint8_t max_service_threads = 16>
 struct CTAB_PROC_DESCR {
 	//
 	c_proc_com_cell							*_outputs;
@@ -341,7 +342,6 @@ struct CTAB_PROC_DESCR {
 		//
 		uint8_t *start = (uint8_t *)data;
 		auto m_procs = min(max_req_procs,_num_client_p);
-
 		auto proc_area_size = sizeof(c_proc_com_cell)*m_procs;
 		auto q_area_size = (reg_sz -  proc_area_size);
 
@@ -363,15 +363,15 @@ struct CTAB_PROC_DESCR {
 		auto num_t = min(max_service_threads,_num_service_threads);
 
 		auto end_region = start + reg_sz;
-
 		for ( uint8_t t = 0; t < num_t; t++ ) {
 			start += _put_com[t].setup_queue(start, q_entry_count, am_initializer);
 			start += _get_com[t].setup_queue(start, q_entry_count, am_initializer);
 		}
 
 		if ( end_region < start ) {
-			cout << "setup_all_queues: " << (start - end_region) << " queues overrun region" << endl;
-			exit(0);
+			cout << " from _outputs: " << (start - (uint8_t *)_outputs) << endl;
+			cout << "setup_all_queues: start is ahead of end by " << (start - end_region) << " ... queues overrun region" << endl;
+			throw std::runtime_error(std::string("Initialization overruns buffer"));
 		}
 
 		if ( start == end_region ) {

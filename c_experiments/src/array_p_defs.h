@@ -510,8 +510,6 @@ public:
 			_proc_refs._get_com[t]._client_privilege->clear();
 		}
     	//
-		_data_ref = data_region; /// temporarily set....
-
     }
 
 
@@ -545,17 +543,25 @@ public:
 
     // 
     void await_put(uint8_t tnum) {
-      while ( !( _proc_refs._put_com[tnum]._write_awake->test_and_set() ) ) tick();
-    }
-
-    // 
-    void await_get(uint8_t tnum) {
-      while ( !( _proc_refs._get_com[tnum]._get_awake->test_and_set() ) ) tick();
+		while ( true ) {
+			while ( _proc_refs._put_com[tnum]._write_awake->test() ) tick();
+			if ( _proc_refs._put_com[tnum]._write_awake->test_and_set() ) continue;
+			break;
+		}
     }
 
     // 
     void clear_put(uint8_t tnum) {
       _proc_refs._put_com[tnum]._write_awake->clear();
+    }
+
+    // 
+    void await_get(uint8_t tnum) {
+		while ( true ) {
+			while ( _proc_refs._get_com[tnum]._get_awake->test() ) tick();
+			if ( _proc_refs._get_com[tnum]._get_awake->test_and_set() ) continue;
+			break;
+		}
     }
 
     // 
@@ -573,10 +579,13 @@ public:
 	 * 		- uint8_t return_to_pid - the index of the output block for return values.
 	 */
     uint32_t com_put(uint32_t hh,uint32_t val,uint8_t return_to_pid) {
-		put_cell entry;
+		c_put_cell entry;
 		entry._hash = hh;
 		entry._value = val;
 		entry._proc_id = return_to_pid;
+
+
+cout << " _sect_size: "  << _sect_size << endl;
 
 		uint8_t tnum = (hh%_max_els_stored)/_sect_size;
 		if ( _thread_count <= tnum ) {
@@ -588,9 +597,7 @@ public:
 		//
 		await_put(tnum);
 
-		if ( tnum != 0 ) {
-			cout << "put writing to " << (int)tnum << " hh: " << hh << " val " << val << endl;
-		}
+		_proc_refs._put_com[tnum]._put_queue.push_queue(entry);
 
 		clear_put(tnum);
 		//
@@ -603,9 +610,14 @@ public:
 	 * com_req
 	 */
     uint32_t com_req(uint32_t hh,uint32_t &val,uint8_t return_to_pid) {
-		request_cell entry;
+		c_request_cell entry;
 		entry._hash = hh;
 		entry._proc_id = return_to_pid;
+
+
+cout << " _sect_size: "  << _sect_size << endl;
+
+
 		uint8_t tnum = (hh%_max_els_stored)/_sect_size;
 		if ( _thread_count <= tnum ) {
 			cout << "BEYOND THREAD COUNT!!! " << endl;
@@ -615,9 +627,7 @@ public:
 		//
 		await_get(tnum);
 
-		if ( tnum != 0 ) {
-			cout << "get requesting hh: " << hh << "from " << (int)tnum << endl;
-		}
+		_proc_refs._get_com[tnum]._get_queue.push_queue(entry);
 
 		clear_get(tnum);
 		//
@@ -628,11 +638,11 @@ public:
 	/**
 	 * unload_put_req
 	 */
-    bool unload_put_req(put_cell &setter,uint8_t tnum) {
+    bool unload_put_req(c_put_cell &setter,uint8_t tnum) {
 		await_put(tnum);
-cout << "put request handled by: " << (int)tnum << endl;
-for ( int i = 0; i < 10; i++ ) tick();
+		auto result = _proc_refs._put_com[tnum]._put_queue.pop_queue(setter);
 		clear_put(tnum);
+		if ( result == UINT32_MAX ) return false;
 		return false;
     }
 
@@ -640,11 +650,11 @@ for ( int i = 0; i < 10; i++ ) tick();
 	/**
 	 * unload_get_req
 	 */
-    bool unload_get_req(request_cell &getter,uint8_t tnum) {
+    bool unload_get_req(c_request_cell &getter,uint8_t tnum) {
 		await_get(tnum);
-cout << "get request handled by: " << (int)tnum << endl;
-for ( int i = 0; i < 10; i++ ) tick();
+		auto result = _proc_refs._get_com[tnum]._get_queue.pop_queue(getter);
 		clear_get(tnum);
+		if ( result == UINT32_MAX ) return false;
 		return false;
     }
 
@@ -664,8 +674,6 @@ for ( int i = 0; i < 10; i++ ) tick();
     }
 
 public:
-
-	void *_data_ref;
 
     c_table_proc_com      _proc_refs;
     uint8_t               _thread_count{0};

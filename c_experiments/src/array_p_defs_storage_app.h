@@ -147,10 +147,12 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceWaitQs<Q_SIZE> {
 	 */
 	void put_handler(uint8_t t_num) {			/// t_num a thread number
 		//
-        put_cell setter;
+        c_put_cell setter;
         while ( this->unload_put_req(setter,t_num) ) {
           auto hh = setter._hash;
           auto val = setter._value;
+
+cout << "put handler hh:: "  << hh << "  val: "  << endl;
           _storage.store_pair(hh,val,t_num);
         }
 		//
@@ -164,7 +166,7 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceWaitQs<Q_SIZE> {
 	 */
 	void get_handler(uint8_t t_num) {
 		//
-		request_cell getter;
+		c_request_cell getter;
 		while ( this->unload_get_req(getter,t_num) ) {
 			auto hh = getter._hash;
 			auto return_to_pid = getter._proc_id;
