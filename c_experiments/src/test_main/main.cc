@@ -2011,12 +2011,26 @@ void setup_get_write_awake(void) {
   }
 }
 
+void clear_all_atomic_flags(void) {
+  for ( int i = 0; i < 32; i++  ) {
+    if ( ref_write_awake[i] != nullptr ) {
+      ref_write_awake[i]->clear();
+    }    ref_get_awake[i] = nullptr;
+    if ( ref_get_awake[i] != nullptr ) {
+      ref_get_awake[i]->clear();
+    }
+  }
+}
+
+
 void add_write_awake(uint8_t q,atomic_flag *rflag) {
+  rflag->clear();
   ref_write_awake[q] = rflag;
 }
 
 
 void add_get_awake(uint8_t q,atomic_flag *rflag) {
+  rflag->clear();
   ref_get_awake[q] = rflag;
 }
 
@@ -2025,29 +2039,55 @@ atomic_flag g_global_shutdown;
 // 
 void await_put(uint8_t q) {
 
+  // while ( true ) {
+  //   if ( g_global_shutdown.test() ) return;
+  //   while ( _write_awake.test() ) {
+  //     if ( g_global_shutdown.test() ) return;
+  //     tick();
+  //   }
+  //   if ( _write_awake.test_and_set() ) continue;
+  //   break;
+  // }
+
   while ( true ) {
     if ( g_global_shutdown.test() ) return;
+    uint16_t check = 0;
     while ( ref_write_awake[q]->test() ) {
       if ( g_global_shutdown.test() ) return;
       tick();
+      if ( ++check > 1000 ) { ref_write_awake[q]->clear();  check = 0; }
     }
     if ( ref_write_awake[q]->test_and_set() ) continue;
     break;
   }
+
 }
 // 
 void clear_put(uint8_t q) {
+  //_write_awake.clear();
   ref_write_awake[q]->clear();
 }
 
 
 void await_get(uint8_t q) {
 
+  // while ( true ) {
+  //   if ( g_global_shutdown.test() ) return;
+  //   while ( _get_awake.test() ) {
+  //     if ( g_global_shutdown.test() ) return;
+  //     tick();
+  //   }
+  //   if ( _get_awake.test_and_set() ) continue;
+  //   break;
+  // }
+
   while ( true ) {
     if ( g_global_shutdown.test() ) return;
+    uint16_t check = 0;
     while ( ref_get_awake[q]->test() ) {
       if ( g_global_shutdown.test() ) return;
       tick();
+      if ( ++check > 1000 ) {ref_get_awake[q]->clear(); check = 0; }
     }
     if ( ref_get_awake[q]->test_and_set() ) continue;
     break;
@@ -2055,6 +2095,7 @@ void await_get(uint8_t q) {
 }
 // 
 void clear_get(uint8_t q) {
+  //_get_awake.clear();
   ref_get_awake[q]->clear();
 }
 
@@ -2224,9 +2265,8 @@ void test_circ_buf_threads(uint8_t test_proc_number = 0) {
 void test_circ_buf_prod_threads(uint8_t test_proc_number = 0) {
 
   using_segments = true;
-  _write_awake.clear();
+  //_write_awake.clear();
   g_global_shutdown.clear();
-
 
   uint8_t number_clients = 10;
   uint8_t n_type_service = 8;
@@ -2246,7 +2286,7 @@ void test_circ_buf_prod_threads(uint8_t test_proc_number = 0) {
   // map<key_t,void *> lru_segs;
   // map<key_t,void *> hh_table_segs;
   // map<key_t,size_t> seg_sizes;
-  bool am_initializer = ((test_proc_number < 2) ? true : false );
+  bool am_initializer = (((test_proc_number == 2) || (test_proc_number == 0)) ? true : false );
   // uint32_t max_obj_size = 128;
   // void **random_segs = nullptr;
 
@@ -2286,18 +2326,17 @@ void test_circ_buf_prod_threads(uint8_t test_proc_number = 0) {
   // CLIENT QUEUES
   if ( (test_proc_number == 0) || (test_proc_number == 1) ) {
 
-  cout << " cbuf._num_service_threads  : " << (int)cbufs[0]._num_service_threads << endl; 
-    try {
-      cbufs[0].set_region(data_region,queue_depth,rsiz,am_initializer);
-    } catch ( std::exception ex ) {
-      cout << "Failed to create region" << endl;
-      remove_segment(com_key,( (test_proc_number < 2) ? true : false ));
-      exit(0);
-    }
+    // try {
+    //   cbufs[0].set_region(data_region,queue_depth,rsiz,am_initializer);
+    // } catch ( std::exception ex ) {
+    //   cout << "Failed to create region" << endl;
+    //   remove_segment(com_key,( (test_proc_number < 2) ? true : false ));
+    //   exit(0);
+    // }
 
   cout << "ATTACHING DATA REGION" << endl;
     am_initializer = false;
-    for ( int i = 1; i < number_clients; i++ ) {
+    for ( int i = 0; i < number_clients; i++ ) {
       try {
         cbufs[i].set_region(data_region,queue_depth,rsiz,am_initializer);
       } catch ( std::exception ex ) {
@@ -2307,8 +2346,9 @@ void test_circ_buf_prod_threads(uint8_t test_proc_number = 0) {
       }
     }
   cout << "DATA REGIONS ATTACHED" << endl;
+    uint8_t num_puters = 2;
     // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    for ( uint32_t i = 0; i < number_clients; i++ ) {
+    for ( uint32_t i = 0; i < num_puters; i++ ) {
       //
       input_alls[i] = new thread([&](int j){
         //
@@ -2316,7 +2356,6 @@ void test_circ_buf_prod_threads(uint8_t test_proc_number = 0) {
 
         for ( uint8_t w = 0; w < n_type_service; w++ ) {
           add_write_awake(w,cbufp->_put_com[w]._write_awake);
-          add_get_awake(w,cbufp->_get_com[w]._get_awake);
         }
 
         //
@@ -2351,12 +2390,12 @@ cout << buffer << endl;
               continue;
             }
             //
-            if ( may_use_counter ) {
+            if ( may_use_counter && !g_global_shutdown.test() ) {
               cbufp->_put_com[which_q]._put_queue.push_queue(input);
               clear_put(which_q);
             }
             //
-            if ( may_use_counter ) {
+            if ( may_use_counter && !g_global_shutdown.test() ) {
               if ( cbufp->_put_com[which_q]._put_queue.full() ) cout << "put queue is full " << endl;
               if ( cbufp->_put_com[which_q]._put_queue.empty() ) cout << "put queue is empty " << endl;
             }
@@ -2368,6 +2407,85 @@ cout << "THIS THREAD IS DONE" << endl;
         //
       },i);
     }
+
+    for ( uint32_t i = num_puters; i < number_clients; i++ ) {
+      //
+      input_alls[i] = new thread([&](int j){
+        //
+        c_table_proc_com *cbufp = &cbufs[j];
+
+        for ( uint8_t w = 0; w < n_type_service; w++ ) {
+          add_get_awake(w,cbufp->_get_com[w]._get_awake);
+          cbufp->_outputs[j]._reader.clear();
+        }
+
+        //
+        uint32_t k = 0;
+        bool pick_2 = false;
+        while ( may_use_counter && !(g_global_shutdown.test()) ) {
+          //
+          //
+          c_request_cell input;
+          //
+          // auto which_q = (pick_2 ? 0 : 1); //get_rand();
+          // pick_2 = !pick_2;
+          auto which_q = get_rand();
+          if ( ( which_q > 7 ) || ( which_q < 0 ) ) continue;
+          k++;
+          k = k%(UINT32_MAX-20);
+          input._hash = (which_q*11 + k)%(UINT32_MAX-20);
+          input._proc_id =  j;
+          //
+
+// {
+// char buffer[64];
+// sprintf(buffer,"&%dg",(int)which_q);
+// cout << buffer << endl; 
+// }
+
+          await_put(which_q);
+          if ( !g_global_shutdown.test() ) {
+            if ( may_use_counter && cbufp->_get_com[which_q]._get_queue.full() ) {
+              clear_put(which_q);
+              continue;
+            }
+            //
+            if ( may_use_counter && !g_global_shutdown.test() ) {
+              while( !(cbufp->_outputs[j]._reader.test_and_set()) );
+              //
+              cbufp->_get_com[which_q]._get_queue.push_queue(input);
+              uint16_t check  = 0;
+              while ( cbufp->_outputs[j]._reader.test() ) {
+                if ( check++ > 1000 ) {
+                  if ( g_global_shutdown.test() ) return;
+                  break; 
+                }
+                tick();
+              }
+              if ( check < 1000 ) {
+                auto val = cbufp->_outputs[j]._value;
+cout << "GOT VALUE " << val << endl;
+              } else {
+                cbufp->_outputs[j]._reader.clear();
+cout << "NO VALUE DELIVERED" << endl;
+              }
+              clear_put(which_q);
+            }
+            //
+            if ( may_use_counter && !g_global_shutdown.test() ) {
+              if ( cbufp->_get_com[which_q]._get_queue.full() ) cout << "put queue is full " << endl;
+              if ( cbufp->_get_com[which_q]._get_queue.empty() ) cout << "put queue is empty " << endl;
+            }
+          }
+        }
+
+
+cout << "GET THREAD IS DONE" << endl;
+        //
+      },i);
+
+    }
+
   }
   //
   if ( test_proc_number == 0 ) {
@@ -2380,12 +2498,12 @@ cout << "THIS THREAD IS DONE" << endl;
     //
 
 cout << "ATTACHING DATA REGION" << endl;
-    am_initializer = false;
+    am_initializer = true;
     try {
       cbufs[number_clients].set_region(data_region,queue_depth,rsiz,am_initializer);
     } catch ( std::exception ex ) {
       cout << "Failed to attach region" << endl;
-      remove_segment(com_key,false);
+      remove_segment(com_key,true);
       exit(0);
     }
 
@@ -2405,25 +2523,22 @@ cout << "DATA REGIONS ATTACHED" << endl;
           int k = 0;
           while ( (k < 50) && may_use_counter ) {
             k++;
+            if ( g_global_shutdown.test() ) {
+              cout << "quick exit thread " << j << endl;
+              return;
+            }
             if ( !(g_global_shutdown.test()) && may_use_counter && cbufp->_put_com[j]._put_queue.empty() ) tick();
             else break;
           }
           //
-{
-char buffer[64];
-sprintf(buffer,"-%d+",(int)j);
-cout << buffer << endl; 
-}
           await_put(j);
           if ( !(g_global_shutdown.test()) ) {
             if ( cbufp->_put_com[j]._put_queue.empty() ) {
               clear_put(j);
               continue;
             }
-            if ( may_use_counter ) {
+            if ( may_use_counter && !g_global_shutdown.test() ) {
               c_put_cell output;
-              //
-cout << "popping" << endl;
               cbufp->_put_com[j]._put_queue.pop_queue(output);
               clear_put(j);
 {
@@ -2435,18 +2550,23 @@ cout << buffer << endl;
           }
         }
         //
-        cout << "Leaving service thread" << endl;
+        cout << "Leaving service thread" << j << endl;
       },i);
 
       auto n = n_type_service + m;
       input_alls[m] = new thread([&](int j){
         add_get_awake(j,cbufp->_get_com[j]._get_awake);
+        cbufp->_get_com[j]._client_privilege->clear();
         //
        while ( may_use_counter && !g_global_shutdown.test() ) {
           //
           int k = 0;
           while ( (k < 50) && may_use_counter ) {
             k++;
+            if ( g_global_shutdown.test() ) {
+              cout << "quick exit thread " << j << endl;
+              return;
+            }
             if ( !(g_global_shutdown.test()) && may_use_counter && cbufp->_get_com[j]._get_queue.empty() ) tick();
             else break;
           }
@@ -2457,23 +2577,29 @@ cout << buffer << endl;
               clear_get(j);
               continue;
             }
-            if ( may_use_counter ) {
+            if ( may_use_counter && !g_global_shutdown.test() ) {
               c_request_cell output;
               //
-cout << "popping" << endl;
               cbufp->_get_com[j]._get_queue.pop_queue(output);
-              cbufp->_get_com[j]._get_awake->clear();
+              //
+              if ( output._proc_id < number_clients ) {
+                cbufp->_outputs[output._proc_id]._value = get_rand();
+                cbufp->_outputs[output._proc_id]._reader.clear();
+              } else {
+                cout << " output._proc_id way too big: " << (int) output._proc_id << endl;
+              }
+
               clear_get(j);
-{
-char buffer[64];
-sprintf(buffer,"> %d  get request : %d :: %d ",(int)j,output._hash,output._proc_id);
-cout << buffer << endl; 
-}
+// {
+// char buffer[64];
+// sprintf(buffer,"> %d  get request : %d :: %d ",(int)j,output._hash,output._proc_id);
+// cout << buffer << endl; 
+// }
             }
           }
         }
 
-        cout << "Leaving GET service thread" << endl;
+        cout << "Leaving GET service thread" << j << endl;
 
         //
       },m);
@@ -2485,36 +2611,38 @@ cout << buffer << endl;
 
     //for ( int k = 0; k < 1000; k++ ) tick();
 
-  cout << "enter when ready" << endl;
-  string yep = "yep";
-  cin >> yep;
-  
+  if (  test_proc_number != 2 ) {
+    cout << "enter when ready" << endl;
+    string yep = "yep";
+    cin >> yep;
+    
 
-  cout << "ENDING NOW " << endl;
-  may_use_counter = false;
-  cout << "GLOBAL CLOSE " << endl;
+    cout << "ENDING NOW " << endl;
+    may_use_counter = false;
+    cout << "GLOBAL CLOSE " << endl;
 
-  
-  while ( !(g_global_shutdown.test_and_set()) ) tick();
-  cout << "GOING... " << endl;
+    
+    while ( !(g_global_shutdown.test_and_set()) ) tick();
+    cout << "GOING... " << endl;
 
-  for ( int i = 0; i < 1000; i++ ) tick();
+    for ( int i = 0; i < 1000; i++ ) tick();
 
-  cout << "WAITING FOR USER INPUT " << endl;
+    cout << "WAITING FOR USER INPUT " << endl;
 
-  for ( int i = 0; i < 1000; i++ ) tick();
+    for ( int i = 0; i < 1000; i++ ) tick();
+  }
 
   for ( int i = 0; i < total_threads; i++ ) {
-
 cout << "joining " << i << endl;
     if ( input_alls[i] != nullptr ) {
       input_alls[i]->join();
     }
   }
   
-  cout << "REMOVING SEGMENTS" << endl;
-
-  remove_segment(com_key,( (test_proc_number < 2) ? true : false ));
+  if (  test_proc_number != 2 ) {
+    cout << "REMOVING SEGMENTS" << endl;
+    remove_segment(com_key,am_initializer);
+  }
 
 }
 
@@ -2706,6 +2834,11 @@ cout << "Shutting down threads... TierAndProcManager:: " << endl;
 void shutdown_on_signal(int signal) {
   gSignalStatus = signal;
 
+  while ( !(g_global_shutdown.test_and_set()) );
+  for ( int i = 0; i < 10; i++ ) clear_all_atomic_flags();
+  uint16_t tick_max = 10000;
+  while ( g_global_shutdown.test() && (--tick_max > 0) ) tick();
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
   cout << "g_put_count[0]: " << g_put_count[0] << "  g_put_count[1]: " << g_put_count[1] << endl;
   if ( using_segments ) {
     remove_segment(g_com_key);
