@@ -162,6 +162,8 @@ SharedSegmentsTForm<HH_map_test<>> *g_ssm_catostrophy_handler_custom = nullptr;
 */
 
 volatile std::sig_atomic_t gSignalStatus;
+static atomic_flag g_global_shutdown;
+
 
 // -------- -------- -------- -------- -------- -------- -------- -------- -------- -------- --------
 
@@ -683,7 +685,7 @@ void test_node_shm_queued(void) {
   uint8_t *region = new uint8_t[sz];
   //
 
-  Storage_ExternalInterfaceQs<8,200> q_test(client_count,thrd_count,region,els_per_tier,true);  // thread count is relevant
+  Storage_ExternalInterfaceQs<8,200> q_test(&g_global_shutdown,client_count,thrd_count,region,els_per_tier,true);  // thread count is relevant
   QUEUED_map<200> q_client(region,sz,els_per_tier,client_count);  // one per thread
 
 
@@ -2034,8 +2036,6 @@ void add_get_awake(uint8_t q,atomic_flag *rflag) {
   ref_get_awake[q] = rflag;
 }
 
-
-atomic_flag g_global_shutdown;
 // 
 void await_put(uint8_t q) {
 
@@ -2100,167 +2100,169 @@ void clear_get(uint8_t q) {
 }
 
 
-void test_circ_buf_threads(uint8_t test_proc_number = 0) {
+// void test_circ_buf_threads(uint8_t test_proc_number = 0) {
 
-  using_segments = false;
-  _write_awake.clear();
+//   using_segments = false;
+//   _write_awake.clear();
 
-  // auto sz = c_table_proc_com::check_expected_region_size(20);
-  // cout << "c_table_proc_com::check_expected_region_size(20): " << sz << endl;
+//   // auto sz = c_table_proc_com::check_expected_region_size(20);
+//   // cout << "c_table_proc_com::check_expected_region_size(20): " << sz << endl;
 
-  auto rsiz = c_table_proc_com::check_expected_region_size(20,2,8);
-  cout << "c_table_proc_com::check_expected_region_size(20,2,8): " << rsiz << endl;
+//   auto rsiz = c_table_proc_com::check_expected_region_size(20,2,8);
+//   cout << "c_table_proc_com::check_expected_region_size(20,2,8): " << rsiz << endl;
 
-  // map<key_t,void *> lru_segs;
-  // map<key_t,void *> hh_table_segs;
-  // map<key_t,size_t> seg_sizes;
-  bool am_initializer = true;
-  // uint32_t max_obj_size = 128;
-  // void **random_segs = nullptr;
+//   // map<key_t,void *> lru_segs;
+//   // map<key_t,void *> hh_table_segs;
+//   // map<key_t,size_t> seg_sizes;
+//   bool am_initializer = true;
+//   // uint32_t max_obj_size = 128;
+//   // void **random_segs = nullptr;
 
-  // uint8_t q_entry_count = 100;
-  // size_t rsiz = ExternalInterfaceWaitQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
-  //
-  key_t com_key = 38450458;
-  g_com_key = com_key;
-  void *data_region = create_data_region(com_key,rsiz,( (test_proc_number < 2) ? true : false ));    // this test is without partner
+//   // uint8_t q_entry_count = 100;
+//   // size_t rsiz = ExternalInterfaceWaitQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
+//   //
+//   key_t com_key = 38450458;
+//   g_com_key = com_key;
+//   void *data_region = create_data_region(com_key,rsiz,( (test_proc_number < 2) ? true : false ));    // this test is without partner
 
-  cout << data_region << endl;
-  if ( data_region == nullptr ) {
-    cout << " NO DATA REGION" << endl;
-    exit(0);
-  }
-  // hh_table_segs[38450458] = data_region;
-  // seg_sizes[38450458] = rsiz;
+//   cout << data_region << endl;
+//   if ( data_region == nullptr ) {
+//     cout << " NO DATA REGION" << endl;
+//     exit(0);
+//   }
+//   // hh_table_segs[38450458] = data_region;
+//   // seg_sizes[38450458] = rsiz;
 
 
-  c_table_proc_com  cbuf{
-    ._num_client_p = 2,
-    ._num_service_threads = 8
-  };
+//   c_table_proc_com  cbuf{
+//     ._num_client_p = 2,
+//     ._num_service_threads = 8
+//   };
 
-  c_table_proc_com  cbuf2{
-    ._num_client_p = 2,
-    ._num_service_threads = 8
-  };
+//   c_table_proc_com  cbuf2{
+//     ._num_client_p = 2,
+//     ._num_service_threads = 8
+//   };
 
-  c_table_proc_com  cbuf3{
-    ._num_client_p = 2,
-    ._num_service_threads = 8
-  };
+//   c_table_proc_com  cbuf3{
+//     ._num_client_p = 2,
+//     ._num_service_threads = 8
+//   };
 
-  // uint8_t *data_region = new uint8_t[rsiz];
+//   // uint8_t *data_region = new uint8_t[rsiz];
 
-  bool may_use_counter = true;
-  thread *input_alls[3] = {nullptr,nullptr,nullptr};
+//   bool may_use_counter = true;
+//   thread *input_alls[3] = {nullptr,nullptr,nullptr};
 
-  if ( (test_proc_number == 0) || (test_proc_number == 1) ) {
-  cout << " cbuf._num_service_threads  : " << (int)cbuf._num_service_threads << endl; 
-    cbuf.set_region(data_region,20,rsiz,am_initializer);
+//   if ( (test_proc_number == 0) || (test_proc_number == 1) ) {
+//   cout << " cbuf._num_service_threads  : " << (int)cbuf._num_service_threads << endl; 
+//     cbuf.set_region(data_region,20,rsiz,am_initializer);
 
-    am_initializer = false;
+//     am_initializer = false;
 
-    if ( cbuf._put_com[0]._put_queue.full() ) cout << "put queue is full " << endl;
-    if ( cbuf._put_com[0]._put_queue.empty() ) cout << "put queue is empty " << endl;
+//     if ( cbuf._put_com[0]._put_queue.full() ) cout << "put queue is full " << endl;
+//     if ( cbuf._put_com[0]._put_queue.empty() ) cout << "put queue is empty " << endl;
 
-  cout << "ATTACHING DATA REGION" << endl;
-    cbuf2.set_region(data_region,20,rsiz,am_initializer);
-      // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
-    for ( uint32_t i = 0; i < 2; i++ ) {
-      input_alls[i] = new thread([&](int j){
-        //
-        c_table_proc_com *cbufp = nullptr;
-        if ( j == 0 ) {
-          cbufp = &cbuf;
-        } else {
-          cbufp = &cbuf2;
-        }
-        int i = 0;
-        while ( may_use_counter ) {
-          //
-          while ( !(cbufp->_put_com[0]._put_queue.full()) ) {
-            c_put_cell input;
-            //
-            i++;
-            input._hash = i + 11;
-            input._proc_id =  1;
-            input._value = 2 + i*23;
-            await_put(j);
-            cbufp->_put_com[0]._put_queue.push_queue(input);
-            clear_put(j);
-            //
-            if ( cbufp->_put_com[0]._put_queue.full() ) cout << "put queue is full " << endl;
-            if ( cbufp->_put_com[0]._put_queue.empty() ) cout << "put queue is empty " << endl;
-          }
-          //
-          int k = 0;
-          while ( (k < 50) && may_use_counter ) {
-            k++;
-            while ( cbuf._put_com[0]._put_queue.full() && may_use_counter ) tick();
-          }
-        }
-        //
-      },i);
-    }
-  }
-  //
-  if ( test_proc_number == 0 ) {
-    for ( int i = 0; i < 100; i++ ) tick();
-  }
-  //
-  if ( (test_proc_number == 0) || (test_proc_number == 2) ) {
-    //
-  cout << "ATTACHING DATA REGION" << endl;
-  am_initializer = false;
-  cbuf3.set_region(data_region,20,rsiz,am_initializer);
-    //
-    input_alls[2] = new thread([&](int j){
-      //
-      int i = 0;
-      while ( may_use_counter ) {
-        //
-        while ( !(cbuf3._put_com[0]._put_queue.empty()) ) {
-          c_put_cell input;
-          c_put_cell output;
-          //
-          await_put(j);
-          cbuf3._put_com[0]._put_queue.pop_queue(output);
-          clear_put(j);
-          cout << " output : " << output._hash << " :: " << output._value << endl;
-        }
-        //
-        int k = 0;
-        while ( (k < 50) && may_use_counter ) {
-          k++;
-          while ( cbuf3._put_com[0]._put_queue.empty() && may_use_counter ) tick();
-        }
-      }
-      //
-    },2);
-  }
+//   cout << "ATTACHING DATA REGION" << endl;
+//     cbuf2.set_region(data_region,20,rsiz,am_initializer);
+//       // ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+//     for ( uint32_t i = 0; i < 2; i++ ) {
+//       input_alls[i] = new thread([&](int j){
+//         //
+//         c_table_proc_com *cbufp = nullptr;
+//         if ( j == 0 ) {
+//           cbufp = &cbuf;
+//         } else {
+//           cbufp = &cbuf2;
+//         }
+//         int i = 0;
+//         while ( may_use_counter ) {
+//           //
+//           while ( !(cbufp->_put_com[0]._put_queue.full()) ) {
+//             c_put_cell input;
+//             //
+//             i++;
+//             input._hash = i + 11;
+//             input._proc_id =  1;
+//             input._value = 2 + i*23;
+//             await_put(j);
+//             cbufp->_put_com[0]._put_queue.push_queue(input);
+//             clear_put(j);
+//             //
+//             if ( cbufp->_put_com[0]._put_queue.full() ) cout << "put queue is full " << endl;
+//             if ( cbufp->_put_com[0]._put_queue.empty() ) cout << "put queue is empty " << endl;
+//           }
+//           //
+//           int k = 0;
+//           while ( (k < 50) && may_use_counter ) {
+//             k++;
+//             while ( cbuf._put_com[0]._put_queue.full() && may_use_counter ) tick();
+//           }
+//         }
+//         //
+//       },i);
+//     }
+//   }
+//   //
+//   if ( test_proc_number == 0 ) {
+//     for ( int i = 0; i < 100; i++ ) tick();
+//   }
+//   //
+//   if ( (test_proc_number == 0) || (test_proc_number == 2) ) {
+//     //
+//   cout << "ATTACHING DATA REGION" << endl;
+//   am_initializer = false;
+//   cbuf3.set_region(data_region,20,rsiz,am_initializer);
+//     //
+//     input_alls[2] = new thread([&](int j){
+//       //
+//       int i = 0;
+//       while ( may_use_counter ) {
+//         //
+//         while ( !(cbuf3._put_com[0]._put_queue.empty()) ) {
+//           c_put_cell input;
+//           c_put_cell output;
+//           //
+//           await_put(j);
+//           cbuf3._put_com[0]._put_queue.pop_queue(output);
+//           clear_put(j);
+//           cout << " output : " << output._hash << " :: " << output._value << endl;
+//         }
+//         //
+//         int k = 0;
+//         while ( (k < 50) && may_use_counter ) {
+//           k++;
+//           while ( cbuf3._put_com[0]._put_queue.empty() && may_use_counter ) tick();
+//         }
+//       }
+//       //
+//     },2);
+//   }
 
-  cout << "ALL THREADS INITIALIZED" <<  endl;
+//   cout << "ALL THREADS INITIALIZED" <<  endl;
 
-    //for ( int k = 0; k < 1000; k++ ) tick();
+//     //for ( int k = 0; k < 1000; k++ ) tick();
 
-  cout << "enter when ready" << endl;
-  string yep = "yep";
-  cin >> yep;
-  may_use_counter = false;
+//   cout << "enter when ready" << endl;
+//   string yep = "yep";
+//   cin >> yep;
+//   may_use_counter = false;
 
-  for ( int i = 0; i < 3; i++ ) {
-    if ( input_alls[i] != nullptr ) {
-      input_alls[i]->join();
-    }
-  }
+//   for ( int i = 0; i < 3; i++ ) {
+//     if ( input_alls[i] != nullptr ) {
+//       input_alls[i]->join();
+//     }
+//   }
   
-  remove_segment(com_key,( (test_proc_number < 2) ? true : false ));
+//   remove_segment(com_key,( (test_proc_number < 2) ? true : false ));
 
-}
-
-
+// }
 
 
+
+
+
+// WORKS... 
 
 void test_circ_buf_prod_threads(uint8_t test_proc_number = 0) {
 
@@ -2648,6 +2650,10 @@ cout << "joining " << i << endl;
 
 
 
+
+
+
+
 uint32_t g_put_count[2] = {0,0};
 //
 void mid_layer_queued_test(void) {
@@ -2920,6 +2926,4 @@ int main(int argc, char **argv) {
 
   return(0);
 }
-
-
 

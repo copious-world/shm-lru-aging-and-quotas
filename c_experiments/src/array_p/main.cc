@@ -155,37 +155,61 @@ static const uint32_t TABLE_SIZE = (20000);
 static const uint32_t Q_SIZE = (100);
 
 
-static Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *g_com = nullptr;
 
-Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *initialize_com_region(key_t com_key,uint8_t client_count,uint8_t service_count,uint8_t q_entry_count) {
-  size_t rsiz = ExternalInterfaceQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
-  //
-  void *data_region = create_data_region(com_key,rsiz);
-  //
-  Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = new Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE>(client_count,service_count,data_region,q_entry_count,true);
-  return eiq;
-}
 
 
 static bool everyone_runs = true;
 static atomic_flag g_threads_ready;
-
+static atomic_flag g_global_shutdown;
 
 
 key_t g_com_key = 38450458;
 
-
+void clear_all_atomic_flags(void) {
+  //
+}
 uint8_t sg_ctrl_c_hits = 0; 
+
+
+/**
+ * shutdown_on_signal
+ */
 void shutdown_on_signal(int signal) {
   gSignalStatus = signal;
-  everyone_runs = false;
-cout << "STOPPING" << endl;
+
+  cout << "STOPPING" << endl;
   sg_ctrl_c_hits++;
   if ( sg_ctrl_c_hits > 4 ) {
     remove_segment(g_com_key);
     exit(0);
   }
+
+  while ( !(g_global_shutdown.test_and_set()) );
+  for ( int i = 0; i < 10; i++ ) clear_all_atomic_flags();
+  uint16_t tick_max = 10000;
+  while ( g_global_shutdown.test() && (--tick_max > 0) ) tick();
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  remove_segment(g_com_key);
+  exit(0);
 }
+
+
+
+
+
+
+static Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *g_com = nullptr;
+
+Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *initialize_com_region(key_t com_key,uint8_t client_count,uint8_t service_count,uint8_t q_entry_count,atomic_flag *global_shutdown) {
+  size_t rsiz = ExternalInterfaceQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
+  //
+  void *data_region = create_data_region(com_key,rsiz);
+  //
+  Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = new Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE>(global_shutdown,client_count,service_count,data_region,q_entry_count,true);
+  return eiq;
+}
+
+
 
 void launch_threads(void) {
 
@@ -201,7 +225,7 @@ void launch_threads(void) {
   for ( uint8_t i = 0; i < t_count; i++ ) {
     input_com_threads[i] = thread([&](uint8_t j){
       if ( g_com != nullptr ) {
-        while ( everyone_runs ) {
+        while ( everyone_runs && !(g_global_shutdown.test()) ) {
           g_com->put_handler(j);
           tick();
         }
@@ -211,14 +235,15 @@ void launch_threads(void) {
   for ( uint8_t i = 0; i < t_count; i++ ) {
     output_com_threads[i] = thread([&](uint8_t j){
       if ( g_com != nullptr ) {
-        while ( everyone_runs ) {
+        while ( everyone_runs && !(g_global_shutdown.test()) ) {
           g_com->get_handler(j);
           tick();
         }
       }
     },i);
   }
-  g_threads_ready.clear();
+  //
+  while ( g_threads_ready.test() ) g_threads_ready.clear();
 }
 
 
@@ -244,6 +269,8 @@ void await_thread_end(uint8_t t_count) {
 
 int main(int argc, char **argv) {
 	//
+  g_global_shutdown.clear();      // control over threads working...
+  // 
   std::signal(SIGINT, shutdown_on_signal);
   //
   if ( noisy_test ) {
@@ -252,25 +279,29 @@ int main(int argc, char **argv) {
 
   // int status = 0;
   auto start = chrono::system_clock::now();
-
-
+  //
+  //
   uint8_t client_count = 8;
   uint8_t service_count = 8;
-
+  uint8_t q_entry_count = 200;
 
 	if ( argc >= 2 ) {
 		cout << argv[1] << endl;
     client_count = (uint8_t)atoi(argv[1]);
 	}
 
+  //
+  //
+
   uint32_t nowish = 0;
   const auto right_now = std::chrono::system_clock::now();
   nowish = std::chrono::system_clock::to_time_t(right_now);
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
 
   key_t com_key = 38450458;
   g_com_key = com_key;
-
-  Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = initialize_com_region(com_key,client_count,service_count,100);
+  // ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+  Storage_ExternalInterfaceQs<THREAD_COUNT,Q_SIZE> *eiq = initialize_com_region(com_key,client_count,service_count,q_entry_count,&g_global_shutdown);
   g_com = eiq;
 
   g_threads_ready.clear();

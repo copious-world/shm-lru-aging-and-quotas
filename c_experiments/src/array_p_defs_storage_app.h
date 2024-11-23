@@ -124,9 +124,9 @@ template<const uint8_t THREAD_COUNT,const uint32_t Q_SIZE>
 class Storage_ExternalInterfaceQs : public ExternalInterfaceWaitQs<Q_SIZE> {
   public:
 
-	Storage_ExternalInterfaceQs(uint8_t client_count,uint8_t thread_count,
+	Storage_ExternalInterfaceQs(atomic_flag *global_shutdown,uint8_t client_count,uint8_t thread_count,
 									void *data_region,size_t max_els_stored,bool _am_initializer = false)
-		: ExternalInterfaceWaitQs<Q_SIZE> (client_count,thread_count,data_region,max_els_stored,_am_initializer) {
+		: ExternalInterfaceWaitQs<Q_SIZE> (client_count,thread_count,data_region,max_els_stored,_am_initializer,global_shutdown) {
 			_storage.initialize(max_els_stored);
 	}
 
@@ -136,8 +136,8 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceWaitQs<Q_SIZE> {
   public:
 
 
-	static uint32_t check_expected_com_region_size(uint8_t q_entry_count) {
-		return ExternalInterfaceWaitQs<Q_SIZE>::check_expected_com_region_size(q_entry_count);
+	static uint32_t check_expected_com_region_size(uint8_t q_entry_count, uint8_t max_rq_procs = 255, uint8_t max_srvce_threads = 255) {
+		return ExternalInterfaceWaitQs<Q_SIZE>::check_expected_com_region_size(q_entry_count,max_rq_procs,max_srvce_threads);
 	}
 
 	/**
@@ -148,11 +148,9 @@ class Storage_ExternalInterfaceQs : public ExternalInterfaceWaitQs<Q_SIZE> {
 	void put_handler(uint8_t t_num) {			/// t_num a thread number
 		//
         c_put_cell setter;
-        while ( this->unload_put_req(setter,t_num) ) {
+        while ( this->unload_put_req(setter,t_num) && !(this->shutting_down()) ) {
           auto hh = setter._hash;
           auto val = setter._value;
-
-cout << "put handler hh:: "  << hh << "  val: "  << endl;
           _storage.store_pair(hh,val,t_num);
         }
 		//
@@ -167,12 +165,11 @@ cout << "put handler hh:: "  << hh << "  val: "  << endl;
 	void get_handler(uint8_t t_num) {
 		//
 		c_request_cell getter;
-		while ( this->unload_get_req(getter,t_num) ) {
+		while ( this->unload_get_req(getter,t_num) && !(this->shutting_down()) ) {
 			auto hh = getter._hash;
 			auto return_to_pid = getter._proc_id;
-			auto val = 0; //_storage.get_val(hh,t_num);
-cout << "::" << hh << "::" << endl;
-//			this->write_to_proc(hh,val,return_to_pid);
+			auto val = _storage.get_val(hh,t_num);
+			this->write_to_proc(t_num,hh,val,return_to_pid);
 		}
 		//
 	}

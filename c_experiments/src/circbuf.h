@@ -392,7 +392,6 @@ struct CTAB_PROC_DESCR {
 	}
 
 
-
 	static uint32_t check_expected_region_size(size_t q_entry_count,uint8_t max_rq_procs,uint8_t max_srvce_threads) {
 		uint32_t sz = 0;
 		sz += c_put_queue_manager::check_expected_queue_region_size(q_entry_count);

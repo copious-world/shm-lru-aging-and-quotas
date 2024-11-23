@@ -1,7 +1,7 @@
 #pragma once
 
 /*
-worker_waters.h.
+worker_waiters.h.
 Copyright (C) 2024 Richard Leddy
 
 This program is free software: you can redistribute it and/or modify
